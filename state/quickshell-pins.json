@@ -1,0 +1,19 @@
+{
+    "autoHide": "off",
+    "desktopsJson": "{\"HDMI-A-1\":[5,6],\"DP-2\":[1,4]}",
+    "pinned": [
+        "firefox",
+        "librewolf",
+        "io.github.zortos293.lichii",
+        "kitty",
+        "com-atlauncher-App",
+        "recomplauncher",
+        "dev.vencord.Vesktop",
+        "org.signal.Signal",
+        "app.fluxer.Fluxer",
+        "IVPN",
+        "dev.eglantine.eglantine"
+    ],
+    "themeMode": "auto",
+    "wallpaper": "file:///home/joe/Pictures/Wallpapers/wallhaven-gw133q.png"
+}

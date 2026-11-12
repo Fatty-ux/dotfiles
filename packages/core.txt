@@ -1,0 +1,21 @@
+# Core desktop: Hyprland, Quickshell and the plumbing they need.
+# One package name per line. Lines starting with # are ignored.
+hyprland
+xdg-desktop-portal-hyprland
+xdg-desktop-portal-gtk
+hyprlock
+hypridle
+hyprpolkitagent
+quickshell
+qt5-wayland
+qt6-wayland
+pipewire
+pipewire-pulse
+wireplumber
+networkmanager
+brightnessctl
+playerctl
+wl-clipboard
+grim
+slurp
+flatpak

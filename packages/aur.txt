@@ -1,0 +1,2 @@
+# Packages that only live in the AUR
+pokemon-colorscripts-git

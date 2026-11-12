@@ -1,0 +1,213 @@
+import Quickshell
+import Quickshell.Io
+import Quickshell.Wayland
+import Quickshell.Hyprland
+import QtQuick
+import QtQuick.Layouts
+
+ShellRoot {
+    id: root
+
+    // Colors are #AARRGGBB. Lower the first two digits (alpha) for clearer glass.
+    property color glassColor: "#66101418"
+    property color glassBorder: "#55ffffff"
+    property color textColor: "#ffffff"
+
+    property bool launcherOpen: false
+
+    // Control the launcher from a terminal or a Hyprland keybind:
+    //   qs ipc call launcher toggle
+    IpcHandler {
+        target: "launcher"
+        function toggle(): void { root.launcherOpen = !root.launcherOpen }
+        function open(): void { root.launcherOpen = true }
+        function close(): void { root.launcherOpen = false }
+    }
+
+    SystemClock {
+        id: clock
+        precision: SystemClock.Minutes
+    }
+
+    // =====================================================
+    //                      TOP BAR (clock only)
+    // =====================================================
+    PanelWindow {
+        id: topBar
+        anchors { top: true; left: true; right: true }
+        margins { top: 8; left: 14; right: 14 }
+        implicitHeight: 40
+        color: "transparent"
+        WlrLayershell.namespace: "qs-glass"
+
+        Rectangle {
+            anchors.fill: parent
+            radius: 16
+            color: root.glassColor
+            border.width: 1
+            border.color: root.glassBorder
+
+            // ----- Left: workspace dots (display only) -----
+            Row {
+                anchors.left: parent.left
+                anchors.leftMargin: 18
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 6
+
+                Repeater {
+                    model: Hyprland.workspaces
+                    Rectangle {
+                        id: ws
+                        required property var modelData
+                        visible: ws.modelData.id > 0
+                        width: ws.modelData.focused ? 26 : 10
+                        height: 10
+                        radius: 5
+                        color: ws.modelData.focused ? "#ffffff" : "#80ffffff"
+                        Behavior on width { NumberAnimation { duration: 150 } }
+                    }
+                }
+            }
+
+            Text {
+                anchors.centerIn: parent
+                text: Qt.formatDateTime(clock.date, "ddd d MMM   hh:mm")
+                color: root.textColor
+                font.pixelSize: 14
+                font.bold: true
+            }
+        }
+    }
+
+    // =====================================================
+    //                   APP LAUNCHER / SEARCH
+    // =====================================================
+    PanelWindow {
+        id: launcherWin
+        visible: root.launcherOpen
+        implicitWidth: 560
+        implicitHeight: 440
+        color: "transparent"
+        exclusionMode: ExclusionMode.Ignore
+        WlrLayershell.namespace: "qs-glass"
+        WlrLayershell.layer: WlrLayer.Overlay
+        WlrLayershell.keyboardFocus: root.launcherOpen ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
+
+        property var results: {
+            const q = search.text.toLowerCase()
+            return Array.from(DesktopEntries.applications.values)
+                .filter(e => q === "" || e.name.toLowerCase().includes(q))
+                .sort((a, b) => a.name.localeCompare(b.name))
+                .slice(0, 30)
+        }
+
+        function launchCurrent() {
+            const e = results[list.currentIndex]
+            if (e) {
+                e.execute()
+                root.launcherOpen = false
+            }
+        }
+
+        onVisibleChanged: {
+            if (visible) {
+                search.text = ""
+                search.forceActiveFocus()
+            }
+        }
+
+        Rectangle {
+            anchors.fill: parent
+            radius: 22
+            color: root.glassColor
+            border.width: 1
+            border.color: root.glassBorder
+
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.margins: 16
+                spacing: 10
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 44
+                    radius: 12
+                    color: "#22ffffff"
+
+                    TextInput {
+                        id: search
+                        anchors.fill: parent
+                        anchors.margins: 12
+                        color: root.textColor
+                        font.pixelSize: 16
+                        verticalAlignment: TextInput.AlignVCenter
+                        focus: true
+                        onTextChanged: list.currentIndex = 0
+                        Keys.onEscapePressed: root.launcherOpen = false
+                        Keys.onDownPressed: list.incrementCurrentIndex()
+                        Keys.onUpPressed: list.decrementCurrentIndex()
+                        Keys.onReturnPressed: launcherWin.launchCurrent()
+                        Keys.onEnterPressed: launcherWin.launchCurrent()
+                    }
+                    Text {
+                        visible: search.text === ""
+                        anchors.fill: search
+                        verticalAlignment: Text.AlignVCenter
+                        text: "Search apps..."
+                        color: "#99ffffff"
+                        font.pixelSize: 16
+                    }
+                }
+
+                ListView {
+                    id: list
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    clip: true
+                    model: launcherWin.results
+                    currentIndex: 0
+
+                    delegate: Rectangle {
+                        id: entry
+                        required property var modelData
+                        required property int index
+                        width: ListView.view.width
+                        height: 44
+                        radius: 10
+                        color: ListView.isCurrentItem ? "#33ffffff" : "transparent"
+
+                        Row {
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.left: parent.left
+                            anchors.leftMargin: 10
+                            spacing: 12
+
+                            Image {
+                                width: 28
+                                height: 28
+                                source: Quickshell.iconPath(entry.modelData.icon, true)
+                                sourceSize: Qt.size(56, 56)
+                                fillMode: Image.PreserveAspectFit
+                            }
+                            Text {
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: entry.modelData.name
+                                color: root.textColor
+                                font.pixelSize: 15
+                            }
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            onEntered: list.currentIndex = entry.index
+                            onClicked: {
+                                entry.modelData.execute()
+                                root.launcherOpen = false
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

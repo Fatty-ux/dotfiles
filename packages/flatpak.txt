@@ -1,0 +1,11 @@
+# Flatpak apps, one application ID per line (written by backup.sh)
+app.fluxer.Fluxer
+com.atlauncher.ATLauncher
+com.modrinth.ModrinthApp
+com.spotify.Client
+com.valvesoftware.Steam
+dev.vencord.Vesktop
+io.github.benjamimgois.goverlay
+it.mijorus.gearlever
+org.gnome.baobab
+org.signal.Signal

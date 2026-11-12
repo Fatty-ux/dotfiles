@@ -1,0 +1,3 @@
+# Your everyday apps from the normal repos. Add or remove lines freely.
+# (./backup.sh also writes explicit-native.txt with everything you installed by hand.)
+firefox

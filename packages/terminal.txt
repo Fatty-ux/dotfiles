@@ -1,0 +1,12 @@
+# Terminal and command-line tools
+kitty
+fish
+fastfetch
+eza
+git
+github-cli
+curl
+jq
+rsync
+unzip
+base-devel

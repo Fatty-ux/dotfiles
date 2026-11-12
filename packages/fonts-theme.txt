@@ -1,0 +1,8 @@
+# Fonts and dark theming (GTK and Qt)
+ttf-jetbrains-mono-nerd
+noto-fonts
+noto-fonts-emoji
+adw-gtk-theme
+nwg-look
+qt6ct
+papirus-icon-theme

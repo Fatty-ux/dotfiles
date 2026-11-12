@@ -1,0 +1,1617 @@
+import Quickshell
+import Quickshell.Wayland
+import Quickshell.Hyprland
+import Quickshell.Widgets
+import Quickshell.Io
+import Quickshell.Services.SystemTray
+import Quickshell.Services.Mpris
+import Quickshell.Services.Pipewire
+import QtQuick
+import QtQuick.Layouts
+import Qt.labs.folderlistmodel
+
+ShellRoot {
+    id: root
+
+    // ---------- Theme ----------
+    readonly property color bg: "#1e1e2e"                  // dark text on accent buttons
+    readonly property color surface: Qt.rgba(0.19, 0.20, 0.27, 0.55)   // translucent pills
+    readonly property color overlay: Qt.rgba(0.27, 0.28, 0.35, 0.75)   // hover / active
+    readonly property color popupBg: Qt.rgba(0.12, 0.12, 0.18, 0.85)   // menus and media popup
+    readonly property color fg: "#cdd6f4"
+    readonly property color muted: "#a6adc8"
+    readonly property color accent: "#89b4fa"
+    readonly property color danger: "#f38ba8"
+
+    // ---------- Shared state ----------
+    SystemClock {
+        id: clock
+        precision: SystemClock.Seconds
+    }
+
+    // Pinned apps are saved here so they survive restarts.
+    // (Run `mkdir -p ~/.local/state` once if that folder doesn't exist.)
+    FileView {
+        id: pins
+        path: Quickshell.env("HOME") + "/.local/state/quickshell-pins.json"
+        watchChanges: true
+        onFileChanged: reload()
+        onAdapterUpdated: writeAdapter()
+        onLoadFailed: error => {
+            if (error === FileViewError.FileNotFound) writeAdapter();
+        }
+        adapter: JsonAdapter {
+            property list<string> pinned: ["firefox", "kitty"]
+            property string wallpaper: ""
+        }
+    }
+
+    // System (PipeWire) volume
+    PwObjectTracker { objects: [Pipewire.defaultAudioSink] }
+    readonly property var sink: Pipewire.defaultAudioSink
+
+    // Wallpapers: drop images into ~/Pictures/Wallpapers
+    FolderListModel {
+        id: wallpapers
+        folder: "file://" + Quickshell.env("HOME") + "/Pictures/Wallpapers"
+        nameFilters: ["*.jpg", "*.jpeg", "*.png", "*.webp", "*.JPG", "*.JPEG", "*.PNG", "*.WEBP"]
+        showDirs: false
+    }
+
+    function setWallpaper(url) {
+        pins.adapter.wallpaper = url;
+    }
+
+    function randomWallpaper() {
+        if (wallpapers.count === 0) return;
+        const i = Math.floor(Math.random() * wallpapers.count);
+        setWallpaper(wallpapers.get(i, "fileUrl").toString());
+    }
+
+    // The player shown in the media tab: whichever is playing, else the first
+    readonly property var player: pickPlayer()
+
+    function playing(p) {
+        return p && p.playbackState == MprisPlaybackState.Playing;
+    }
+
+    function pickPlayer() {
+        const list = Mpris.players.values;
+        for (let i = 0; i < list.length; i++)
+            if (playing(list[i])) return list[i];
+        return list.length > 0 ? list[0] : null;
+    }
+
+    function fmt(sec) {
+        if (!isFinite(sec) || sec < 0) return "0:00";
+        const s = Math.floor(sec);
+        return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+    }
+
+    function windowsFor(appId) {
+        const out = [];
+        const list = ToplevelManager.toplevels.values;
+        const id = appId.toLowerCase();
+        for (let i = 0; i < list.length; i++)
+            if (list[i].appId.toLowerCase() === id) out.push(list[i]);
+        return out;
+    }
+
+    function isPinned(appId) {
+        const list = pins.adapter.pinned;
+        const id = appId.toLowerCase();
+        for (let i = 0; i < list.length; i++)
+            if (list[i].toLowerCase() === id) return true;
+        return false;
+    }
+
+    function pin(appId) {
+        if (!appId || isPinned(appId)) return;
+        const list = pins.adapter.pinned;
+        const out = [];
+        for (let i = 0; i < list.length; i++) out.push(list[i]);
+        out.push(appId);
+        pins.adapter.pinned = out;
+    }
+
+    function unpin(appId) {
+        const list = pins.adapter.pinned;
+        const id = appId.toLowerCase();
+        const out = [];
+        for (let i = 0; i < list.length; i++)
+            if (list[i].toLowerCase() !== id) out.push(list[i]);
+        pins.adapter.pinned = out;
+    }
+
+    // ---------- Small reusable widgets ----------
+    // (inline components can't see ids above, so their colors are set here)
+    component ValueBar: Item {
+        id: bar
+        property real value: 0
+        signal moved(real v)
+        implicitHeight: 18
+
+        Rectangle {
+            anchors.verticalCenter: parent.verticalCenter
+            width: parent.width
+            height: 6
+            radius: 3
+            color: "#45475a"
+
+            Rectangle {
+                width: parent.width * Math.max(0, Math.min(1, bar.value))
+                height: parent.height
+                radius: 3
+                color: "#89b4fa"
+            }
+        }
+
+        MouseArea {
+            anchors.fill: parent
+            onPressed: mouse => bar.moved(Math.max(0, Math.min(1, mouse.x / width)))
+            onPositionChanged: mouse => {
+                if (pressed) bar.moved(Math.max(0, Math.min(1, mouse.x / width)));
+            }
+        }
+    }
+
+    component IconButton: Rectangle {
+        id: btn
+        property string label: ""
+        property bool dim: false
+        signal clicked()
+        implicitWidth: 44
+        implicitHeight: 34
+        radius: 8
+        color: area.containsMouse ? "#99585b70" : "#66313244"
+        opacity: dim ? 0.4 : 1
+
+        Text {
+            anchors.centerIn: parent
+            text: btn.label
+            color: "#cdd6f4"
+            font.pixelSize: 14
+        }
+
+        MouseArea {
+            id: area
+            anchors.fill: parent
+            hoverEnabled: true
+            onClicked: btn.clicked()
+        }
+    }
+
+    component ConfirmButton: Rectangle {
+        id: cb
+        property string label: ""
+        property bool armed: false
+        signal confirmed()
+        implicitWidth: 80
+        implicitHeight: 34
+        radius: 8
+        color: armed ? "#f38ba8" : (area.containsMouse ? "#45475a" : "#313244")
+
+        Timer {
+            id: reset
+            interval: 3000
+            onTriggered: cb.armed = false
+        }
+
+        Text {
+            anchors.centerIn: parent
+            text: cb.armed ? "Confirm?" : cb.label
+            color: cb.armed ? "#1e1e2e" : "#cdd6f4"
+            font.pixelSize: 13
+        }
+
+        MouseArea {
+            id: area
+            anchors.fill: parent
+            hoverEnabled: true
+            onClicked: {
+                if (cb.armed) {
+                    cb.armed = false;
+                    reset.stop();
+                    cb.confirmed();
+                } else {
+                    cb.armed = true;
+                    reset.restart();
+                }
+            }
+        }
+    }
+
+    // ---------- One bar per screen ----------
+    Variants {
+        model: Quickshell.screens
+
+        PanelWindow {
+            id: panel
+            required property var modelData
+            screen: modelData
+
+            anchors {
+                bottom: true
+                left: true
+                right: true
+            }
+            implicitHeight: 44
+            color: "transparent"
+            WlrLayershell.namespace: "quickshell-bar"
+
+            property double mediaClosedAt: 0
+            property double wallClosedAt: 0
+
+            // Opens the shared right-click menu above an item
+            function openMenu(target, entries) {
+                ctxMenu.entries = entries;
+                const p = target.mapToItem(null, 0, 0);
+                ctxMenu.anchor.rect = Qt.rect(p.x, p.y, target.width, target.height);
+                ctxMenu.visible = true;
+            }
+
+            // ===== Right-click menu =====
+            PopupWindow {
+                id: ctxMenu
+                property var entries: []
+                anchor.window: panel
+                anchor.edges: Edges.Top
+                anchor.gravity: Edges.Top
+                implicitWidth: 200
+                implicitHeight: menuCol.implicitHeight + 12
+                color: "transparent"
+                visible: false
+
+                Rectangle {
+                    anchors.fill: parent
+                    radius: 10
+                    color: root.popupBg
+                    border.color: root.overlay
+                    border.width: 1
+
+                    Column {
+                        id: menuCol
+                        anchors.fill: parent
+                        anchors.margins: 6
+                        spacing: 2
+
+                        Repeater {
+                            model: ctxMenu.entries
+
+                            delegate: Rectangle {
+                                id: menuRow
+                                required property var modelData
+                                width: menuCol.width
+                                height: 30
+                                radius: 6
+                                color: rowMouse.containsMouse ? root.overlay : "transparent"
+
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    anchors.left: parent.left
+                                    anchors.leftMargin: 10
+                                    text: menuRow.modelData.text
+                                    color: menuRow.modelData.danger ? root.danger : root.fg
+                                    font.pixelSize: 13
+                                }
+
+                                MouseArea {
+                                    id: rowMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    onClicked: {
+                                        ctxMenu.visible = false;
+                                        menuRow.modelData.action();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            HyprlandFocusGrab {
+                windows: [ctxMenu]
+                active: ctxMenu.visible
+                onCleared: ctxMenu.visible = false
+            }
+
+            // ===== Media popup =====
+            PopupWindow {
+                id: mediaPopup
+                readonly property var p: root.player
+                anchor.window: panel
+                anchor.edges: Edges.Top
+                anchor.gravity: Edges.Top
+                implicitWidth: 340
+                implicitHeight: content.implicitHeight + 24
+                color: "transparent"
+                visible: false
+
+                // Position only updates when asked, so poll while it's open
+                Timer {
+                    interval: 1000
+                    repeat: true
+                    running: mediaPopup.visible && root.playing(mediaPopup.p)
+                    onTriggered: mediaPopup.p.positionChanged()
+                }
+
+                Connections {
+                    target: root
+                    function onPlayerChanged() {
+                        if (!root.player) mediaPopup.visible = false;
+                    }
+                }
+
+                Rectangle {
+                    anchors.fill: parent
+                    radius: 14
+                    color: root.popupBg
+                    border.color: root.overlay
+                    border.width: 1
+
+                    ColumnLayout {
+                        id: content
+                        anchors.fill: parent
+                        anchors.margins: 12
+                        spacing: 10
+
+                        // Cover art + title
+                        RowLayout {
+                            spacing: 12
+
+                            Rectangle {
+                                Layout.preferredWidth: 60
+                                Layout.preferredHeight: 60
+                                radius: 8
+                                color: root.overlay
+                                clip: true
+
+                                Image {
+                                    anchors.fill: parent
+                                    source: mediaPopup.p ? mediaPopup.p.trackArtUrl : ""
+                                    fillMode: Image.PreserveAspectCrop
+                                    visible: status === Image.Ready
+                                }
+
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: "♪"
+                                    color: root.muted
+                                    font.pixelSize: 24
+                                }
+                            }
+
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 2
+
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: mediaPopup.p ? (mediaPopup.p.trackTitle || "Unknown title") : ""
+                                    color: root.fg
+                                    font.pixelSize: 14
+                                    font.bold: true
+                                    elide: Text.ElideRight
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: mediaPopup.p ? mediaPopup.p.trackArtist : ""
+                                    color: root.muted
+                                    font.pixelSize: 12
+                                    elide: Text.ElideRight
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: mediaPopup.p ? mediaPopup.p.identity : ""
+                                    color: root.muted
+                                    font.pixelSize: 11
+                                    elide: Text.ElideRight
+                                }
+                            }
+                        }
+
+                        // Seek bar
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 2
+
+                            ValueBar {
+                                Layout.fillWidth: true
+                                value: mediaPopup.p && mediaPopup.p.length > 0
+                                    ? mediaPopup.p.position / mediaPopup.p.length : 0
+                                onMoved: v => {
+                                    const p = mediaPopup.p;
+                                    if (p && p.canSeek && p.length > 0) p.position = v * p.length;
+                                }
+                            }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Text {
+                                    text: root.fmt(mediaPopup.p ? mediaPopup.p.position : 0)
+                                    color: root.muted
+                                    font.pixelSize: 11
+                                }
+                                Item { Layout.fillWidth: true }
+                                Text {
+                                    text: root.fmt(mediaPopup.p ? mediaPopup.p.length : 0)
+                                    color: root.muted
+                                    font.pixelSize: 11
+                                }
+                            }
+                        }
+
+                        // Transport controls
+                        RowLayout {
+                            Layout.alignment: Qt.AlignHCenter
+                            spacing: 8
+
+                            IconButton {
+                                label: "|◀"
+                                dim: !(mediaPopup.p && mediaPopup.p.canGoPrevious)
+                                onClicked: if (mediaPopup.p && mediaPopup.p.canGoPrevious) mediaPopup.p.previous()
+                            }
+                            IconButton {
+                                implicitWidth: 56
+                                label: root.playing(mediaPopup.p) ? "❚❚" : "▶"
+                                dim: !(mediaPopup.p && mediaPopup.p.canTogglePlaying)
+                                onClicked: if (mediaPopup.p && mediaPopup.p.canTogglePlaying) mediaPopup.p.togglePlaying()
+                            }
+                            IconButton {
+                                label: "▶|"
+                                dim: !(mediaPopup.p && mediaPopup.p.canGoNext)
+                                onClicked: if (mediaPopup.p && mediaPopup.p.canGoNext) mediaPopup.p.next()
+                            }
+                        }
+
+                        // Player's own volume (not every player supports this)
+                        RowLayout {
+                            Layout.fillWidth: true
+                            visible: mediaPopup.p && mediaPopup.p.volumeSupported
+                            spacing: 8
+
+                            Text {
+                                Layout.preferredWidth: 52
+                                text: "Player"
+                                color: root.muted
+                                font.pixelSize: 12
+                            }
+                            ValueBar {
+                                Layout.fillWidth: true
+                                value: mediaPopup.p ? mediaPopup.p.volume : 0
+                                onMoved: v => {
+                                    if (mediaPopup.p && mediaPopup.p.volumeSupported) mediaPopup.p.volume = v;
+                                }
+                            }
+                            Item { Layout.preferredWidth: 60 }
+                        }
+
+                        // System volume (works for any app, including browser video)
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            Text {
+                                Layout.preferredWidth: 52
+                                text: "System"
+                                color: root.muted
+                                font.pixelSize: 12
+                            }
+                            ValueBar {
+                                Layout.fillWidth: true
+                                value: root.sink && root.sink.audio ? root.sink.audio.volume : 0
+                                onMoved: v => {
+                                    if (root.sink && root.sink.audio) root.sink.audio.volume = v;
+                                }
+                            }
+                            IconButton {
+                                implicitWidth: 60
+                                implicitHeight: 28
+                                label: root.sink && root.sink.audio && root.sink.audio.muted ? "Unmute" : "Mute"
+                                onClicked: {
+                                    if (root.sink && root.sink.audio) root.sink.audio.muted = !root.sink.audio.muted;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            HyprlandFocusGrab {
+                windows: [mediaPopup]
+                active: mediaPopup.visible
+                onCleared: {
+                    mediaPopup.visible = false;
+                    panel.mediaClosedAt = Date.now();
+                }
+            }
+
+            // ===== Wallpaper popup =====
+            PopupWindow {
+                id: wallPopup
+                anchor.window: panel
+                anchor.edges: Edges.Top
+                anchor.gravity: Edges.Top
+                implicitWidth: 540
+                implicitHeight: 380
+                color: "transparent"
+                visible: false
+
+                Rectangle {
+                    anchors.fill: parent
+                    radius: 14
+                    color: root.popupBg
+                    border.color: root.overlay
+                    border.width: 1
+
+                    ColumnLayout {
+                        anchors.fill: parent
+                        anchors.margins: 12
+                        spacing: 10
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Wallpapers"
+                                color: root.fg
+                                font.pixelSize: 14
+                                font.bold: true
+                            }
+                            IconButton {
+                                implicitWidth: 80
+                                implicitHeight: 28
+                                label: "Random"
+                                onClicked: root.randomWallpaper()
+                            }
+                            IconButton {
+                                implicitWidth: 80
+                                implicitHeight: 28
+                                label: "Clear"
+                                onClicked: root.setWallpaper("")
+                            }
+                        }
+
+                        Text {
+                            visible: wallpapers.count === 0
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            text: "No images found. Put .jpg / .png / .webp files in ~/Pictures/Wallpapers"
+                            color: root.muted
+                            font.pixelSize: 12
+                        }
+
+                        GridView {
+                            id: wallGrid
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            visible: wallpapers.count > 0
+                            clip: true
+                            cellWidth: 172
+                            cellHeight: 102
+                            model: wallpapers
+
+                            delegate: Item {
+                                id: thumb
+                                required property url fileUrl
+                                width: wallGrid.cellWidth
+                                height: wallGrid.cellHeight
+
+                                Rectangle {
+                                    anchors.fill: parent
+                                    anchors.margins: 4
+                                    radius: 8
+                                    color: root.overlay
+                                    border.width: thumb.fileUrl.toString() === pins.adapter.wallpaper ? 2 : 0
+                                    border.color: root.accent
+
+                                    Image {
+                                        anchors.fill: parent
+                                        anchors.margins: 3
+                                        source: thumb.fileUrl
+                                        asynchronous: true
+                                        fillMode: Image.PreserveAspectCrop
+                                        sourceSize.width: 320
+                                    }
+
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        onClicked: root.setWallpaper(thumb.fileUrl.toString())
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            HyprlandFocusGrab {
+                windows: [wallPopup]
+                active: wallPopup.visible
+                onCleared: {
+                    wallPopup.visible = false;
+                    panel.wallClosedAt = Date.now();
+                }
+            }
+
+            // ===== The bar itself =====
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 8
+                anchors.rightMargin: 12
+                spacing: 10
+
+                // ---- Workspaces ----
+                Row {
+                    spacing: 4
+                    Layout.alignment: Qt.AlignVCenter
+
+                    Repeater {
+                        model: Hyprland.workspaces.values
+
+                        Rectangle {
+                            id: ws
+                            required property var modelData
+                            visible: modelData.id > 0
+                            width: visible ? 28 : 0
+                            height: 28
+                            radius: 6
+                            color: modelData.focused ? root.accent : root.surface
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: ws.modelData.id
+                                color: ws.modelData.focused ? root.bg : root.fg
+                                font.pixelSize: 13
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                onClicked: ws.modelData.activate()
+                            }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    Layout.preferredWidth: 1
+                    Layout.preferredHeight: 22
+                    Layout.alignment: Qt.AlignVCenter
+                    color: root.overlay
+                }
+
+                // ---- Pinned apps ----
+                Row {
+                    spacing: 4
+                    Layout.alignment: Qt.AlignVCenter
+
+                    Repeater {
+                        model: pins.adapter.pinned
+
+                        delegate: Item {
+                            id: pin
+                            required property string modelData
+
+                            // Reading .values makes this re-run once apps finish loading
+                            readonly property var entry: {
+                                DesktopEntries.applications.values;
+                                return DesktopEntries.heuristicLookup(modelData);
+                            }
+                            readonly property var wins: root.windowsFor(modelData)
+                            readonly property bool running: wins.length > 0
+                            readonly property bool isActive: {
+                                for (let i = 0; i < wins.length; i++)
+                                    if (wins[i].activated) return true;
+                                return false;
+                            }
+
+                            visible: !!entry
+                            width: visible ? 38 : 0
+                            height: 34
+
+                            function focusNext() {
+                                let next = 0;
+                                for (let i = 0; i < wins.length; i++) {
+                                    if (wins[i].activated) { next = (i + 1) % wins.length; break; }
+                                }
+                                wins[next].activate();
+                            }
+
+                            function menuEntries() {
+                                const out = [];
+                                out.push({ text: "Open new window", action: () => pin.entry.execute() });
+
+                                const acts = pin.entry.actions;
+                                for (let i = 0; i < acts.length && i < 4; i++) {
+                                    const a = acts[i];
+                                    out.push({ text: a.name, action: () => a.execute() });
+                                }
+
+                                if (pin.running) {
+                                    out.push({
+                                        text: pin.wins.length > 1 ? "Close all windows" : "Close window",
+                                        danger: true,
+                                        action: () => { for (const w of pin.wins) w.close(); }
+                                    });
+                                }
+                                out.push({ text: "Unpin", action: () => root.unpin(pin.modelData) });
+                                return out;
+                            }
+
+                            Rectangle {
+                                anchors.fill: parent
+                                radius: 8
+                                color: pinMouse.containsMouse ? root.overlay
+                                     : (pin.isActive ? root.surface : "transparent")
+                            }
+
+                            IconImage {
+                                anchors.centerIn: parent
+                                implicitSize: 22
+                                source: pin.entry
+                                    ? Quickshell.iconPath(pin.entry.icon, "application-x-executable") : ""
+                            }
+
+                            // Dot under running apps (longer for the focused one)
+                            Rectangle {
+                                visible: pin.running
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                anchors.bottom: parent.bottom
+                                anchors.bottomMargin: 1
+                                width: pin.isActive ? 14 : 5
+                                height: 3
+                                radius: 2
+                                color: root.accent
+                            }
+
+                            MouseArea {
+                                id: pinMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
+                                onClicked: mouse => {
+                                    if (mouse.button === Qt.RightButton) {
+                                        panel.openMenu(pin, pin.menuEntries());
+                                    } else if (mouse.button === Qt.MiddleButton) {
+                                        pin.entry.execute();
+                                    } else if (pin.running) {
+                                        pin.focusNext();
+                                    } else {
+                                        pin.entry.execute();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ---- Other open windows (not pinned) ----
+                Row {
+                    spacing: 4
+                    Layout.fillWidth: true
+                    Layout.alignment: Qt.AlignVCenter
+                    clip: true
+
+                    Repeater {
+                        model: ToplevelManager.toplevels
+
+                        delegate: Rectangle {
+                            id: win
+                            required property var modelData
+                            visible: !root.isPinned(modelData.appId)
+                            width: visible ? 150 : 0
+                            height: 32
+                            radius: 8
+                            color: modelData.activated ? root.overlay : root.surface
+
+                            Row {
+                                anchors.fill: parent
+                                anchors.leftMargin: 8
+                                anchors.rightMargin: 8
+                                spacing: 6
+
+                                IconImage {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    implicitSize: 18
+                                    source: Quickshell.iconPath(win.modelData.appId, "application-x-executable")
+                                }
+
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: parent.width - 24
+                                    text: win.modelData.title
+                                    color: root.fg
+                                    font.pixelSize: 12
+                                    elide: Text.ElideRight
+                                }
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
+                                onClicked: mouse => {
+                                    if (mouse.button === Qt.RightButton) {
+                                        const out = [];
+                                        out.push({ text: "Close window", danger: true, action: () => win.modelData.close() });
+                                        if (win.modelData.appId)
+                                            out.push({ text: "Pin to taskbar", action: () => root.pin(win.modelData.appId) });
+                                        panel.openMenu(win, out);
+                                    } else if (mouse.button === Qt.MiddleButton) {
+                                        win.modelData.close();
+                                    } else {
+                                        win.modelData.activate();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ---- System tray ----
+                Row {
+                    spacing: 8
+                    Layout.alignment: Qt.AlignVCenter
+
+                    Repeater {
+                        model: SystemTray.items
+
+                        delegate: Item {
+                            id: trayItem
+                            required property var modelData
+                            width: 22
+                            height: 22
+
+                            IconImage {
+                                anchors.fill: parent
+                                source: trayItem.modelData.icon
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
+                                onClicked: mouse => {
+                                    const p = trayItem.mapToItem(null, 0, 0);
+                                    if (mouse.button === Qt.LeftButton && !trayItem.modelData.onlyMenu) {
+                                        trayItem.modelData.activate();
+                                    } else if (mouse.button === Qt.MiddleButton) {
+                                        trayItem.modelData.secondaryActivate();
+                                    } else if (trayItem.modelData.hasMenu) {
+                                        trayItem.modelData.display(panel, p.x, p.y);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ---- Media button (only shows when something is playing/paused) ----
+                Rectangle {
+                    id: mediaBtn
+                    visible: root.player !== null
+                    Layout.alignment: Qt.AlignVCenter
+                    implicitWidth: Math.min(260, mediaLabel.implicitWidth + 24)
+                    implicitHeight: 30
+                    radius: 8
+                    color: mediaPopup.visible ? root.overlay : root.surface
+
+                    Text {
+                        id: mediaLabel
+                        anchors.centerIn: parent
+                        width: Math.min(implicitWidth, 236)
+                        elide: Text.ElideRight
+                        color: root.fg
+                        font.pixelSize: 12
+                        text: root.player
+                            ? (root.playing(root.player) ? "▶  " : "❚❚  ")
+                              + (root.player.trackTitle || root.player.identity)
+                              + (root.player.trackArtist ? " – " + root.player.trackArtist : "")
+                            : ""
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        acceptedButtons: Qt.LeftButton | Qt.MiddleButton
+                        onClicked: mouse => {
+                            if (mouse.button === Qt.MiddleButton) {
+                                if (root.player && root.player.canTogglePlaying) root.player.togglePlaying();
+                                return;
+                            }
+                            // Clicking the button also dismisses the popup; don't instantly reopen it
+                            if (Date.now() - panel.mediaClosedAt < 250) return;
+                            if (mediaPopup.visible) {
+                                mediaPopup.visible = false;
+                                return;
+                            }
+                            const p = mediaBtn.mapToItem(null, 0, 0);
+                            mediaPopup.anchor.rect = Qt.rect(p.x, p.y, mediaBtn.width, mediaBtn.height);
+                            mediaPopup.visible = true;
+                        }
+                    }
+                }
+
+                // ---- Wallpaper button (middle click = random) ----
+                Rectangle {
+                    id: wallBtn
+                    Layout.alignment: Qt.AlignVCenter
+                    implicitWidth: 34
+                    implicitHeight: 30
+                    radius: 8
+                    color: (wallPopup.visible || wallMouse.containsMouse) ? root.overlay : root.surface
+
+                    Text {
+                        anchors.centerIn: parent
+                        text: "▣"
+                        color: root.fg
+                        font.pixelSize: 15
+                    }
+
+                    MouseArea {
+                        id: wallMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        acceptedButtons: Qt.LeftButton | Qt.MiddleButton
+                        onClicked: mouse => {
+                            if (mouse.button === Qt.MiddleButton) {
+                                root.randomWallpaper();
+                                return;
+                            }
+                            if (Date.now() - panel.wallClosedAt < 250) return;
+                            if (wallPopup.visible) {
+                                wallPopup.visible = false;
+                                return;
+                            }
+                            const p = wallBtn.mapToItem(null, 0, 0);
+                            wallPopup.anchor.rect = Qt.rect(p.x, p.y, wallBtn.width, wallBtn.height);
+                            wallPopup.visible = true;
+                        }
+                    }
+                }
+
+                // ---- Clock ----
+                Text {
+                    Layout.alignment: Qt.AlignVCenter
+                    text: Qt.formatDateTime(clock.date, "ddd MMM d  hh:mm")
+                    color: root.fg
+                    font.pixelSize: 13
+                }
+            }
+        }
+    }
+
+    // ---------- Top bar ----------
+    Variants {
+        model: Quickshell.screens
+
+        PanelWindow {
+            id: panel
+            required property var modelData
+            screen: modelData
+
+            anchors {
+                top: true
+                left: true
+                right: true
+            }
+            implicitHeight: 44
+            color: "transparent"
+            WlrLayershell.namespace: "quickshell-topbar"
+
+            property double mediaClosedAt: 0
+            property double volClosedAt: 0
+            property double sysClosedAt: 0
+
+            // ===== Media popup =====
+            PopupWindow {
+                id: mediaPopup
+                readonly property var p: root.player
+                anchor.window: panel
+                anchor.edges: Edges.Bottom
+                anchor.gravity: Edges.Bottom
+                implicitWidth: 340
+                implicitHeight: content.implicitHeight + 24
+                color: "transparent"
+                visible: false
+
+                // Position only updates when asked, so poll while it's open
+                Timer {
+                    interval: 1000
+                    repeat: true
+                    running: mediaPopup.visible && root.playing(mediaPopup.p)
+                    onTriggered: mediaPopup.p.positionChanged()
+                }
+
+                Connections {
+                    target: root
+                    function onPlayerChanged() {
+                        if (!root.player) mediaPopup.visible = false;
+                    }
+                }
+
+                Rectangle {
+                    anchors.fill: parent
+                    radius: 14
+                    color: root.popupBg
+                    border.color: root.overlay
+                    border.width: 1
+
+                    ColumnLayout {
+                        id: content
+                        anchors.fill: parent
+                        anchors.margins: 12
+                        spacing: 10
+
+                        // Cover art + title
+                        RowLayout {
+                            spacing: 12
+
+                            Rectangle {
+                                Layout.preferredWidth: 60
+                                Layout.preferredHeight: 60
+                                radius: 8
+                                color: root.overlay
+                                clip: true
+
+                                Image {
+                                    anchors.fill: parent
+                                    source: mediaPopup.p ? mediaPopup.p.trackArtUrl : ""
+                                    fillMode: Image.PreserveAspectCrop
+                                    visible: status === Image.Ready
+                                }
+
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: "♪"
+                                    color: root.muted
+                                    font.pixelSize: 24
+                                }
+                            }
+
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 2
+
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: mediaPopup.p ? (mediaPopup.p.trackTitle || "Unknown title") : ""
+                                    color: root.fg
+                                    font.pixelSize: 14
+                                    font.bold: true
+                                    elide: Text.ElideRight
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: mediaPopup.p ? mediaPopup.p.trackArtist : ""
+                                    color: root.muted
+                                    font.pixelSize: 12
+                                    elide: Text.ElideRight
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: mediaPopup.p ? mediaPopup.p.identity : ""
+                                    color: root.muted
+                                    font.pixelSize: 11
+                                    elide: Text.ElideRight
+                                }
+                            }
+                        }
+
+                        // Seek bar
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 2
+
+                            ValueBar {
+                                Layout.fillWidth: true
+                                value: mediaPopup.p && mediaPopup.p.length > 0
+                                    ? mediaPopup.p.position / mediaPopup.p.length : 0
+                                onMoved: v => {
+                                    const p = mediaPopup.p;
+                                    if (p && p.canSeek && p.length > 0) p.position = v * p.length;
+                                }
+                            }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Text {
+                                    text: root.fmt(mediaPopup.p ? mediaPopup.p.position : 0)
+                                    color: root.muted
+                                    font.pixelSize: 11
+                                }
+                                Item { Layout.fillWidth: true }
+                                Text {
+                                    text: root.fmt(mediaPopup.p ? mediaPopup.p.length : 0)
+                                    color: root.muted
+                                    font.pixelSize: 11
+                                }
+                            }
+                        }
+
+                        // Transport controls
+                        RowLayout {
+                            Layout.alignment: Qt.AlignHCenter
+                            spacing: 8
+
+                            IconButton {
+                                label: "|◀"
+                                dim: !(mediaPopup.p && mediaPopup.p.canGoPrevious)
+                                onClicked: if (mediaPopup.p && mediaPopup.p.canGoPrevious) mediaPopup.p.previous()
+                            }
+                            IconButton {
+                                implicitWidth: 56
+                                label: root.playing(mediaPopup.p) ? "❚❚" : "▶"
+                                dim: !(mediaPopup.p && mediaPopup.p.canTogglePlaying)
+                                onClicked: if (mediaPopup.p && mediaPopup.p.canTogglePlaying) mediaPopup.p.togglePlaying()
+                            }
+                            IconButton {
+                                label: "▶|"
+                                dim: !(mediaPopup.p && mediaPopup.p.canGoNext)
+                                onClicked: if (mediaPopup.p && mediaPopup.p.canGoNext) mediaPopup.p.next()
+                            }
+                        }
+
+                        // Player's own volume (not every player supports this)
+                        RowLayout {
+                            Layout.fillWidth: true
+                            visible: mediaPopup.p && mediaPopup.p.volumeSupported
+                            spacing: 8
+
+                            Text {
+                                Layout.preferredWidth: 52
+                                text: "Player"
+                                color: root.muted
+                                font.pixelSize: 12
+                            }
+                            ValueBar {
+                                Layout.fillWidth: true
+                                value: mediaPopup.p ? mediaPopup.p.volume : 0
+                                onMoved: v => {
+                                    if (mediaPopup.p && mediaPopup.p.volumeSupported) mediaPopup.p.volume = v;
+                                }
+                            }
+                            Item { Layout.preferredWidth: 60 }
+                        }
+
+                        // System volume (works for any app, including browser video)
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            Text {
+                                Layout.preferredWidth: 52
+                                text: "System"
+                                color: root.muted
+                                font.pixelSize: 12
+                            }
+                            ValueBar {
+                                Layout.fillWidth: true
+                                value: root.sink && root.sink.audio ? root.sink.audio.volume : 0
+                                onMoved: v => {
+                                    if (root.sink && root.sink.audio) root.sink.audio.volume = v;
+                                }
+                            }
+                            IconButton {
+                                implicitWidth: 60
+                                implicitHeight: 28
+                                label: root.sink && root.sink.audio && root.sink.audio.muted ? "Unmute" : "Mute"
+                                onClicked: {
+                                    if (root.sink && root.sink.audio) root.sink.audio.muted = !root.sink.audio.muted;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            HyprlandFocusGrab {
+                windows: [mediaPopup]
+                active: mediaPopup.visible
+                onCleared: {
+                    mediaPopup.visible = false;
+                    panel.mediaClosedAt = Date.now();
+                }
+            }
+
+            // ===== Volume popup =====
+            PopupWindow {
+                id: volPopup
+                readonly property var audio: root.sink ? root.sink.audio : null
+                anchor.window: panel
+                anchor.edges: Edges.Bottom
+                anchor.gravity: Edges.Bottom
+                implicitWidth: 280
+                implicitHeight: volCol.implicitHeight + 24
+                color: "transparent"
+                visible: false
+
+                Rectangle {
+                    anchors.fill: parent
+                    radius: 14
+                    color: root.popupBg
+                    border.color: root.overlay
+                    border.width: 1
+
+                    ColumnLayout {
+                        id: volCol
+                        anchors.fill: parent
+                        anchors.margins: 12
+                        spacing: 10
+
+                        RowLayout {
+                            Layout.fillWidth: true
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Volume"
+                                color: root.fg
+                                font.pixelSize: 14
+                                font.bold: true
+                            }
+                            Text {
+                                text: volPopup.audio ? Math.round(volPopup.audio.volume * 100) + "%" : "--"
+                                color: root.muted
+                                font.pixelSize: 13
+                            }
+                        }
+
+                        ValueBar {
+                            Layout.fillWidth: true
+                            value: volPopup.audio ? volPopup.audio.volume : 0
+                            onMoved: v => {
+                                if (volPopup.audio) volPopup.audio.volume = v;
+                            }
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: root.sink ? (root.sink.description || root.sink.name) : "No output device"
+                            color: root.muted
+                            font.pixelSize: 11
+                            elide: Text.ElideRight
+                        }
+
+                        IconButton {
+                            Layout.fillWidth: true
+                            label: volPopup.audio && volPopup.audio.muted ? "Unmute" : "Mute"
+                            onClicked: {
+                                if (volPopup.audio) volPopup.audio.muted = !volPopup.audio.muted;
+                            }
+                        }
+                    }
+                }
+            }
+
+            HyprlandFocusGrab {
+                windows: [volPopup]
+                active: volPopup.visible
+                onCleared: {
+                    volPopup.visible = false;
+                    panel.volClosedAt = Date.now();
+                }
+            }
+
+            // ===== System popup =====
+            PopupWindow {
+                id: sysPopup
+                anchor.window: panel
+                anchor.edges: Edges.Bottom
+                anchor.gravity: Edges.Bottom
+                implicitWidth: 340
+                implicitHeight: sysCol.implicitHeight + 24
+                color: "transparent"
+                visible: false
+
+                Rectangle {
+                    anchors.fill: parent
+                    radius: 14
+                    color: root.popupBg
+                    border.color: root.overlay
+                    border.width: 1
+
+                    ColumnLayout {
+                        id: sysCol
+                        anchors.fill: parent
+                        anchors.margins: 12
+                        spacing: 10
+
+                        Text {
+                            text: "System"
+                            color: root.fg
+                            font.pixelSize: 14
+                            font.bold: true
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            IconButton {
+                                Layout.fillWidth: true
+                                label: "Reload Hyprland"
+                                onClicked: {
+                                    sysPopup.visible = false;
+                                    Quickshell.execDetached(["hyprctl", "reload"]);
+                                }
+                            }
+                            IconButton {
+                                Layout.fillWidth: true
+                                label: "Restart bar"
+                                onClicked: {
+                                    sysPopup.visible = false;
+                                    Quickshell.reload(true);
+                                }
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            IconButton {
+                                Layout.fillWidth: true
+                                label: "Lock"
+                                onClicked: {
+                                    sysPopup.visible = false;
+                                    Quickshell.execDetached(["sh", "-c", "hyprlock || loginctl lock-session"]);
+                                }
+                            }
+                            IconButton {
+                                Layout.fillWidth: true
+                                label: "Sleep"
+                                onClicked: {
+                                    sysPopup.visible = false;
+                                    Quickshell.execDetached(["systemctl", "suspend"]);
+                                }
+                            }
+                            IconButton {
+                                Layout.fillWidth: true
+                                label: "Config folder"
+                                onClicked: {
+                                    sysPopup.visible = false;
+                                    Quickshell.execDetached(["xdg-open", Quickshell.env("HOME") + "/.config"]);
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 1
+                            color: root.overlay
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            ConfirmButton {
+                                Layout.fillWidth: true
+                                label: "Log out"
+                                onConfirmed: {
+                                    sysPopup.visible = false;
+                                    Quickshell.execDetached(["hyprctl", "dispatch", "exit"]);
+                                }
+                            }
+                            ConfirmButton {
+                                Layout.fillWidth: true
+                                label: "Reboot"
+                                onConfirmed: {
+                                    sysPopup.visible = false;
+                                    Quickshell.execDetached(["systemctl", "reboot"]);
+                                }
+                            }
+                            ConfirmButton {
+                                Layout.fillWidth: true
+                                label: "Shut down"
+                                onConfirmed: {
+                                    sysPopup.visible = false;
+                                    Quickshell.execDetached(["systemctl", "poweroff"]);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            HyprlandFocusGrab {
+                windows: [sysPopup]
+                active: sysPopup.visible
+                onCleared: {
+                    sysPopup.visible = false;
+                    panel.sysClosedAt = Date.now();
+                }
+            }
+
+            // ===== Top bar contents =====
+            Item {
+                anchors.fill: parent
+                anchors.leftMargin: 8
+                anchors.rightMargin: 12
+
+                // ---- Left: system tab ----
+                RowLayout {
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 8
+
+                    Rectangle {
+                        id: sysBtn
+                        Layout.alignment: Qt.AlignVCenter
+                        implicitWidth: sysLabel.implicitWidth + 24
+                        implicitHeight: 30
+                        radius: 8
+                        color: (sysPopup.visible || sysMouse.containsMouse) ? root.overlay : root.surface
+
+                        Text {
+                            id: sysLabel
+                            anchors.centerIn: parent
+                            text: "System"
+                            color: root.fg
+                            font.pixelSize: 12
+                        }
+
+                        MouseArea {
+                            id: sysMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            onClicked: {
+                                if (Date.now() - panel.sysClosedAt < 250) return;
+                                if (sysPopup.visible) {
+                                    sysPopup.visible = false;
+                                    return;
+                                }
+                                const p = sysBtn.mapToItem(null, 0, 0);
+                                sysPopup.anchor.rect = Qt.rect(p.x, p.y, sysBtn.width, sysBtn.height);
+                                sysPopup.visible = true;
+                            }
+                        }
+                    }
+                }
+
+                // ---- Center: date and time ----
+                Rectangle {
+                    anchors.centerIn: parent
+                    implicitWidth: topClock.implicitWidth + 28
+                    implicitHeight: 30
+                    radius: 8
+                    color: root.surface
+
+                    Text {
+                        id: topClock
+                        anchors.centerIn: parent
+                        text: Qt.formatDateTime(clock.date, "dddd, MMM d    hh:mm")
+                        color: root.fg
+                        font.pixelSize: 13
+                    }
+                }
+
+                // ---- Right: media + volume ----
+                RowLayout {
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 8
+
+                // ---- Media button (only shows when something is playing/paused) ----
+                Rectangle {
+                    id: mediaBtn
+                    visible: root.player !== null
+                    Layout.alignment: Qt.AlignVCenter
+                    implicitWidth: Math.min(260, mediaLabel.implicitWidth + 24)
+                    implicitHeight: 30
+                    radius: 8
+                    color: mediaPopup.visible ? root.overlay : root.surface
+
+                    Text {
+                        id: mediaLabel
+                        anchors.centerIn: parent
+                        width: Math.min(implicitWidth, 236)
+                        elide: Text.ElideRight
+                        color: root.fg
+                        font.pixelSize: 12
+                        text: root.player
+                            ? (root.playing(root.player) ? "▶  " : "❚❚  ")
+                              + (root.player.trackTitle || root.player.identity)
+                              + (root.player.trackArtist ? " – " + root.player.trackArtist : "")
+                            : ""
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        acceptedButtons: Qt.LeftButton | Qt.MiddleButton
+                        onClicked: mouse => {
+                            if (mouse.button === Qt.MiddleButton) {
+                                if (root.player && root.player.canTogglePlaying) root.player.togglePlaying();
+                                return;
+                            }
+                            // Clicking the button also dismisses the popup; don't instantly reopen it
+                            if (Date.now() - panel.mediaClosedAt < 250) return;
+                            if (mediaPopup.visible) {
+                                mediaPopup.visible = false;
+                                return;
+                            }
+                            const p = mediaBtn.mapToItem(null, 0, 0);
+                            mediaPopup.anchor.rect = Qt.rect(p.x, p.y, mediaBtn.width, mediaBtn.height);
+                            mediaPopup.visible = true;
+                        }
+                    }
+                }
+
+                    // ---- Volume (scroll to change, middle click to mute) ----
+                    Rectangle {
+                        id: volBtn
+                        Layout.alignment: Qt.AlignVCenter
+                        implicitWidth: volLabel.implicitWidth + 24
+                        implicitHeight: 30
+                        radius: 8
+                        color: (volPopup.visible || volMouse.containsMouse) ? root.overlay : root.surface
+
+                        Text {
+                            id: volLabel
+                            anchors.centerIn: parent
+                            color: root.fg
+                            font.pixelSize: 12
+                            text: !volPopup.audio ? "Vol --"
+                                : (volPopup.audio.muted ? "Vol muted"
+                                : "Vol " + Math.round(volPopup.audio.volume * 100) + "%")
+                        }
+
+                        MouseArea {
+                            id: volMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            acceptedButtons: Qt.LeftButton | Qt.MiddleButton
+                            onClicked: mouse => {
+                                if (mouse.button === Qt.MiddleButton) {
+                                    if (volPopup.audio) volPopup.audio.muted = !volPopup.audio.muted;
+                                    return;
+                                }
+                                if (Date.now() - panel.volClosedAt < 250) return;
+                                if (volPopup.visible) {
+                                    volPopup.visible = false;
+                                    return;
+                                }
+                                const p = volBtn.mapToItem(null, 0, 0);
+                                volPopup.anchor.rect = Qt.rect(p.x, p.y, volBtn.width, volBtn.height);
+                                volPopup.visible = true;
+                            }
+                            onWheel: wheel => {
+                                const a = volPopup.audio;
+                                if (!a) return;
+                                const step = wheel.angleDelta.y > 0 ? 0.05 : -0.05;
+                                a.volume = Math.max(0, Math.min(1, a.volume + step));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ---------- Wallpaper (drawn on the background layer) ----------
+    Variants {
+        model: Quickshell.screens
+
+        PanelWindow {
+            required property var modelData
+            screen: modelData
+            WlrLayershell.layer: WlrLayer.Background
+            WlrLayershell.namespace: "quickshell-wallpaper"
+            exclusionMode: ExclusionMode.Ignore
+            anchors {
+                top: true
+                bottom: true
+                left: true
+                right: true
+            }
+            color: root.bg
+
+            Image {
+                anchors.fill: parent
+                source: pins.adapter.wallpaper
+                asynchronous: true
+                fillMode: Image.PreserveAspectCrop
+            }
+        }
+    }
+}
