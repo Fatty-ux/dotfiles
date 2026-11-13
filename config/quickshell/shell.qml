@@ -106,6 +106,7 @@ ShellRoot {
         adapter: JsonAdapter {
             property list<string> pinned: ["firefox", "kitty"]
             property string wallpaper: ""
+            property string liveWallpaper: ""   // a video from ~/Videos/Wallpapers ("" = none)
             property string themeMode: "auto"
             property string autoHide: "windows"
             property string desktopsJson: ""
@@ -175,7 +176,50 @@ ShellRoot {
     }
 
     function setWallpaper(url) {
+        pins.adapter.liveWallpaper = "";          // a picture replaces any live wallpaper
         pins.adapter.wallpaper = url;
+    }
+
+    // ---------- Live wallpapers (videos in ~/Videos/Wallpapers) ----------
+    // The video plays behind everything (LiveWallpaper.qml). A still frame of it becomes the
+    // normal wallpaper too, so the bar colours, terminal colours and lock screen all match it.
+    readonly property string liveThumbDir: Quickshell.env("HOME") + "/.cache/joeos/live-thumbs"
+    property bool liveThumbsReady: false
+    property bool liveNoFfmpeg: false
+    property bool liveUnavailable: false      // Qt video support missing
+    property bool livePaused: false
+
+    function liveThumbFor(fileName) {
+        return "file://" + liveThumbDir + "/" + fileName + ".jpg";
+    }
+
+    function setLiveWallpaper(videoUrl, fileName) {
+        pins.adapter.wallpaper = liveThumbFor(fileName);
+        pins.adapter.liveWallpaper = videoUrl;
+    }
+
+    FolderListModel {
+        id: liveVideos
+        folder: "file://" + Quickshell.env("HOME") + "/Videos/Wallpapers"
+        nameFilters: ["*.mp4", "*.webm", "*.mkv", "*.mov", "*.MP4", "*.WEBM", "*.MKV", "*.MOV"]
+        showDirs: false
+    }
+
+    Process {
+        id: liveThumbProc
+        command: ["bash", Quickshell.env("HOME") + "/.config/quickshell/scripts/livethumbs.sh"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                root.liveNoFfmpeg = text.indexOf("NOFFMPEG") >= 0;
+                root.liveThumbsReady = true;
+            }
+        }
+    }
+
+    function refreshLiveThumbs() {
+        if (liveThumbProc.running) return;
+        liveThumbsReady = false;
+        liveThumbProc.running = true;
     }
 
     // ---------- Lock screen follows the desktop wallpaper ----------
@@ -572,6 +616,7 @@ ShellRoot {
         wallPickerOpen = false;
         hubOpen = false;
         switcherOpen = false;
+        sideOpen = false;
         closeAllRequested();
     }
 
@@ -1093,7 +1138,8 @@ ShellRoot {
         const col = (hh, sa, li) => Qt.hsla(((hh % 1) + 1) % 1, sa, li, 1).toString();
         const accentHex = col(h, s, d ? 0.72 : 0.38);
         const bgc = d ? col(h, s * 0.35, 0.09) : col(h, s * 0.30, 0.97);
-        const fgc = d ? col(h, s * 0.25, 0.90) : col(h, s * 0.40, 0.15);
+        // text: clearly tinted with the wallpaper colour, still easy to read
+        const fgc = d ? col(h, s * 0.45, 0.88) : col(h, s * 0.55, 0.18);
         const lo = d ? 0.62 : 0.38;                // normal ANSI colors
         const hi = d ? 0.74 : 0.30;                // bright ANSI colors
         const hues = [0.0, 0.33, 0.12, 0.60, 0.80, 0.50];   // red green yellow blue magenta cyan
@@ -1113,14 +1159,14 @@ ShellRoot {
             "inactive_tab_foreground " + fgc,
             "inactive_tab_background " + col(h, s * 0.3, d ? 0.16 : 0.88),
             "color0 " + col(h, s * 0.25, d ? 0.16 : 0.85),
-            "color7 " + col(h, s * 0.15, d ? 0.80 : 0.30),
-            "color8 " + col(h, s * 0.25, d ? 0.28 : 0.70),
-            "color15 " + col(h, s * 0.12, d ? 0.95 : 0.15)
+            "color7 " + col(h, s * 0.35, d ? 0.80 : 0.30),
+            "color8 " + col(h, s * 0.40, d ? 0.48 : 0.62),
+            "color15 " + col(h, s * 0.30, d ? 0.95 : 0.12)
         ];
-        // Every colour leans 20% of the way toward the wallpaper's hue, so red stays reddish,
+        // Every colour leans 25% of the way toward the wallpaper's hue, so red stays reddish,
         // green stays greenish, but they all look like they belong to the wallpaper.
         // Blue (color4) is the wallpaper accent itself; fastfetch uses it for its labels.
-        const lean = 0.2;
+        const lean = 0.25;
         const tint = base => base + ((((h - base) % 1) + 1.5) % 1 - 0.5) * lean;
         const sLo = Math.max(0.35, Math.min(0.75, s * 0.9));
         const sHi = Math.max(0.45, Math.min(0.85, s));
@@ -1711,21 +1757,23 @@ ShellRoot {
                     Behavior on y { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutCubic } }
                 }
                 anchors.fill: parent
-                anchors.leftMargin: 8
-                anchors.rightMargin: 12
+                anchors.leftMargin: 16
+                anchors.rightMargin: 16
 
                 // ---- Left: search bar (opens the app launcher) ----
                 Rectangle {
                     id: searchBar
                     anchors.left: parent.left
                     anchors.verticalCenter: parent.verticalCenter
-                    width: 260
-                    height: 44
-                    radius: 22
-                    color: searchMouse.containsMouse ? root.overlay : root.surface
+                    width: 230
+                    height: 48
+                    radius: 24
+                    color: searchMouse.containsMouse ? root.overlay : root.popupBg
                     border.width: 1
                     border.color: root.glassEdge
                     Behavior on color { ColorAnimation { duration: root.animMs } }
+
+                    GlassShine { radius: parent.radius; dark: root.dark }
 
                     // little magnifying glass drawn from two shapes
                     Item {
@@ -1775,8 +1823,12 @@ ShellRoot {
                 Rectangle {
                     id: dock
                     anchors.centerIn: parent
-                    implicitWidth: dockRow.implicitWidth + 20
+                    implicitWidth: dockRow.implicitWidth + 28
                     implicitHeight: root.dockIconSize + 26
+                    // with lots of apps the whole dock shrinks a little instead of running into the sides
+                    readonly property real room: barContent.width - 2 * Math.max(searchBar.width, rightIsland.width) - 48
+                    scale: room > 0 && implicitWidth > room ? Math.max(0.55, room / implicitWidth) : 1
+                    Behavior on scale { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutCubic } }
                     radius: 24
                     color: root.popupBg
                     border.width: 1
@@ -1788,11 +1840,11 @@ ShellRoot {
                     RowLayout {
                         id: dockRow
                         anchors.centerIn: parent
-                        spacing: 6
+                        spacing: 12
 
                         // ---- Pinned apps ----
                         Row {
-                            spacing: 4
+                            spacing: 8
                             Layout.alignment: Qt.AlignVCenter
 
                             Repeater {
@@ -1900,7 +1952,7 @@ ShellRoot {
 
                         // ---- Other open windows (not pinned), shown as icons ----
                         Row {
-                            spacing: 4
+                            spacing: 8
                             Layout.alignment: Qt.AlignVCenter
 
                             Repeater {
@@ -1965,12 +2017,27 @@ ShellRoot {
                     }
                 }
 
-                // ---- Right: desktops, tray, media, wallpaper, clock ----
+                // ---- Right: desktops, tray, media, wallpaper, clock (on one glass island) ----
+                Rectangle {
+                    id: rightIsland
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: rightGroup.implicitWidth + 32
+                    height: 52
+                    radius: 26
+                    color: root.popupBg
+                    border.width: 1
+                    border.color: root.glassEdge
+
+                    GlassShine { radius: parent.radius; dark: root.dark }
+                }
+
                 RowLayout {
                     id: rightGroup
                     anchors.right: parent.right
+                    anchors.rightMargin: 16
                     anchors.verticalCenter: parent.verticalCenter
-                    spacing: 10
+                    spacing: 18
 
                     // ---- Desktops (this monitor's own set: click to switch, + to add, right-click to delete) ----
                     Row {
@@ -2163,7 +2230,7 @@ ShellRoot {
                         id: mediaBtn
                         visible: root.bottomShowMedia && root.player !== null
                         Layout.alignment: Qt.AlignVCenter
-                        implicitWidth: Math.min(260, mediaLabel.implicitWidth + 24)
+                        implicitWidth: Math.min(190, mediaLabel.implicitWidth + 24)
                         implicitHeight: 30
                         radius: 8
                         color: mediaPopup.visible ? root.overlay : root.surface
@@ -2174,7 +2241,7 @@ ShellRoot {
                         Text {
                             id: mediaLabel
                             anchors.centerIn: parent
-                            width: Math.min(implicitWidth, 236)
+                            width: Math.min(implicitWidth, 166)
                             elide: Text.ElideRight
                             color: root.fg
                             font.pixelSize: 12
@@ -2511,6 +2578,146 @@ ShellRoot {
         }
     }
 
+    // ---------- Stickers ----------
+    // Drop .png / .webp images into ~/Pictures/Stickers and they show up in the little sticker
+    // spots around the setup. With the folder empty, the spots show the droplet buddy instead.
+    FolderListModel {
+        id: stickerModel
+        folder: "file://" + Quickshell.env("HOME") + "/Pictures/Stickers"
+        nameFilters: ["*.png", "*.webp", "*.jpg", "*.jpeg"]
+        showDirs: false
+        sortField: FolderListModel.Name
+    }
+
+    function stickerFor(slot) {
+        const n = stickerModel.count;
+        return n > 0 ? stickerModel.get(slot % n, "fileUrl").toString() : "";
+    }
+
+    // A sticker spot: one of your sticker images, or the droplet buddy if you have none.
+    // It bobs gently, blinks now and then and hops when you hover it.
+    component Buddy: Item {
+        id: bud
+        property var theme: null
+        property int slot: 0
+        property real size: 26
+        readonly property string img: bud.theme ? bud.theme.stickerFor(bud.slot) : ""
+        property real bob: 0
+        implicitWidth: bud.size
+        implicitHeight: bud.size
+        width: bud.size
+        height: bud.size
+        scale: budHover.hovered ? 1.18 : 1
+        Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutBack } }
+
+        HoverHandler { id: budHover }
+
+        SequentialAnimation on bob {
+            loops: Animation.Infinite
+            NumberAnimation { from: 0; to: -2; duration: 1300 + bud.slot * 90; easing.type: Easing.InOutSine }
+            NumberAnimation { from: -2; to: 0; duration: 1300 + bud.slot * 90; easing.type: Easing.InOutSine }
+        }
+
+        Image {
+            visible: bud.img !== ""
+            anchors.fill: parent
+            source: bud.img
+            fillMode: Image.PreserveAspectFit
+            smooth: true
+            mipmap: true
+            sourceSize.width: bud.size * 2
+            sourceSize.height: bud.size * 2
+            transform: Translate { y: bud.bob }
+        }
+
+        Canvas {
+            id: drop
+            visible: bud.img === ""
+            anchors.fill: parent
+            transform: Translate { y: bud.bob }
+            property bool blink: false
+            onBlinkChanged: requestPaint()
+            onWidthChanged: requestPaint()
+
+            Timer {
+                interval: 3100 + bud.slot * 430
+                running: drop.visible
+                repeat: true
+                onTriggered: {
+                    drop.blink = true;
+                    blinkOff.restart();
+                }
+            }
+            Timer {
+                id: blinkOff
+                interval: 140
+                onTriggered: drop.blink = false
+            }
+
+            onPaint: {
+                const c = getContext("2d");
+                const w = width, h = height;
+                c.reset();
+                // body: a round water droplet
+                c.beginPath();
+                c.moveTo(w * 0.5, h * 0.04);
+                c.bezierCurveTo(w * 0.62, h * 0.24, w * 0.92, h * 0.44, w * 0.92, h * 0.64);
+                c.bezierCurveTo(w * 0.92, h * 0.86, w * 0.73, h * 0.97, w * 0.5, h * 0.97);
+                c.bezierCurveTo(w * 0.27, h * 0.97, w * 0.08, h * 0.86, w * 0.08, h * 0.64);
+                c.bezierCurveTo(w * 0.08, h * 0.44, w * 0.38, h * 0.24, w * 0.5, h * 0.04);
+                c.closePath();
+                const g = c.createLinearGradient(0, 0, 0, h);
+                g.addColorStop(0, "rgba(186, 230, 253, 0.95)");
+                g.addColorStop(1, "rgba(56, 152, 236, 0.95)");
+                c.fillStyle = g;
+                c.fill();
+                c.lineWidth = Math.max(1, w * 0.04);
+                c.strokeStyle = "rgba(255, 255, 255, 0.75)";
+                c.stroke();
+                // shine
+                c.beginPath();
+                c.ellipse(w * 0.26, h * 0.38, w * 0.14, h * 0.18);
+                c.fillStyle = "rgba(255, 255, 255, 0.55)";
+                c.fill();
+                // eyes (or a blink)
+                c.fillStyle = "#1b2330";
+                c.strokeStyle = "#1b2330";
+                c.lineWidth = Math.max(1, w * 0.05);
+                const ey = h * 0.62, er = w * 0.065;
+                [0.37, 0.63].forEach(x => {
+                    if (drop.blink) {
+                        c.beginPath();
+                        c.moveTo(w * x - er, ey);
+                        c.lineTo(w * x + er, ey);
+                        c.stroke();
+                    } else {
+                        c.beginPath();
+                        c.arc(w * x, ey, er, 0, Math.PI * 2);
+                        c.fill();
+                        c.beginPath();
+                        c.arc(w * x + er * 0.35, ey - er * 0.35, er * 0.38, 0, Math.PI * 2);
+                        c.fillStyle = "white";
+                        c.fill();
+                        c.fillStyle = "#1b2330";
+                    }
+                });
+                // rosy cheeks
+                c.fillStyle = "rgba(255, 140, 170, 0.55)";
+                [0.25, 0.75].forEach(x => {
+                    c.beginPath();
+                    c.ellipse(w * x - w * 0.06, h * 0.72 - h * 0.035, w * 0.12, h * 0.07);
+                    c.fill();
+                });
+                // little smile
+                c.beginPath();
+                c.arc(w * 0.5, h * 0.70, w * 0.075, Math.PI * 0.15, Math.PI * 0.85);
+                c.strokeStyle = "#1b2330";
+                c.lineWidth = Math.max(1, w * 0.045);
+                c.stroke();
+            }
+        }
+    }
+
     // Small glossy card used all over the hub
     component HubCard: Rectangle {
         id: hc
@@ -2677,7 +2884,7 @@ ShellRoot {
                 left: true
                 right: true
             }
-            implicitHeight: 52
+            implicitHeight: 78           // pill (52) + room for the tab under it
             color: "transparent"
             WlrLayershell.namespace: "quickshell-topbar"
 
@@ -2685,51 +2892,67 @@ ShellRoot {
             readonly property bool hubHere: root.hubOpen && focusedHere
             onHubHereChanged: if (hubHere) hubKeys.forceActiveFocus()
 
-            // ----- Auto-hide -----
-            // Touch the top edge and the pill slides down; windows shrink to make room.
-            // Move away and it slides back up; windows stretch back to full size.
+            // ----- Pull tab -----
+            // With auto-hide on, the pill stays tucked away until you click the little tab at the
+            // top of the screen (no more popping out when the mouse brushes the edge). Click the
+            // tab again to tuck it away. Windows make room while it's out.
             readonly property bool wantHide: root.autoHideOn
             readonly property bool popupOpen: hubHere
-            readonly property bool keepOpen: !wantHide || barHover.hovered || popupOpen
-                || root.topBarOpen     // Super+T (if bound) pins it open
-            property bool barShown: true
+            readonly property bool keepOpen: !wantHide || popupOpen || root.topBarOpen
+            readonly property bool barShown: keepOpen
 
-            onKeepOpenChanged: {
-                if (keepOpen) {
-                    hideTimer.stop();
-                    barShown = true;
-                } else {
-                    hideTimer.restart();
-                }
-            }
-            Component.onCompleted: if (!keepOpen) hideTimer.start()
-
-            Timer {
-                id: hideTimer
-                interval: root.hideDelayMs
-                onTriggered: panel.barShown = panel.keepOpen
-            }
-
-            // Windows only make room while the pill is out
             exclusionMode: ExclusionMode.Normal
-            exclusiveZone: barShown ? implicitHeight : 0
+            exclusiveZone: barShown ? 52 : 0
 
-            // While hidden, only a thin strip at the top edge listens for the mouse
-            mask: barShown ? null : edgeMask
-            Region { id: edgeMask; item: hotStrip }
-
-            Item {
-                id: hotStrip
-                anchors.top: parent.top
-                anchors.left: parent.left
-                anchors.right: parent.right
-                height: root.hotZoneSize
+            // only the pill and the tab catch clicks; the rest passes through to windows
+            mask: barShown ? topShownMask : topTabMask
+            Region { id: topTabMask; item: topTab }
+            Region {
+                id: topShownMask
+                item: pill
+                Region { item: topTab }
             }
 
-            Item {
-                anchors.fill: parent
-                z: 1000
-                HoverHandler { id: barHover }
+            // Pulled out with the tab? Clicking anywhere else (a window, the desktop) tucks it away again
+            HyprlandFocusGrab {
+                windows: [panel, hubWin]
+                active: panel.wantHide && root.topBarOpen && panel.focusedHere
+                onCleared: root.topBarOpen = false
+            }
+
+            // the tab: hangs from the top edge, rides down under the pill when it's out
+            Rectangle {
+                id: topTab
+                visible: panel.wantHide && !panel.hubHere
+                anchors.horizontalCenter: parent.horizontalCenter
+                y: panel.barShown ? 50 : -10
+                width: topTabMouse.containsMouse ? 74 : 60
+                height: 24
+                radius: 12
+                color: root.popupBg
+                border.width: 1
+                border.color: root.glassEdge
+                Behavior on y { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutCubic } }
+                Behavior on width { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+
+                GlassShine { radius: parent.radius; dark: root.dark }
+
+                Text {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    y: panel.barShown ? 3 : 10
+                    text: panel.barShown ? "\uf077" : "\uf078"
+                    color: root.fg
+                    font.family: root.iconFont
+                    font.pixelSize: 11
+                }
+
+                MouseArea {
+                    id: topTabMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.topBarOpen = !root.topBarOpen
+                }
             }
 
             // Desktops on this monitor, the focused app, and today's calendar
@@ -2785,6 +3008,9 @@ ShellRoot {
                     id: pillRow
                     anchors.centerIn: parent
                     spacing: 16
+
+                    // sticker spot
+                    Buddy { theme: root; slot: 0; size: 26; anchors.verticalCenter: parent.verticalCenter }
 
                     // ---- Desktop dots ----
                     Row {
@@ -2902,13 +3128,13 @@ ShellRoot {
                                     text: chip.modelData.icon
                                     color: root.accent
                                     font.family: root.iconFont
-                                    font.pixelSize: 12
+                                    font.pixelSize: 13
                                 }
                                 Text {
                                     anchors.verticalCenter: parent.verticalCenter
                                     text: Math.round(chip.modelData.value * 100) + "%"
                                     color: root.fg
-                                    font.pixelSize: 12
+                                    font.pixelSize: 13
                                 }
                             }
                         }
@@ -2917,7 +3143,7 @@ ShellRoot {
                     // ---- Status icons ----
                     Row {
                         anchors.verticalCenter: parent.verticalCenter
-                        spacing: 12
+                        spacing: 15
 
                         // recording: red dot + time, click to stop
                         Rectangle {
@@ -2969,7 +3195,7 @@ ShellRoot {
                             text: ""
                             color: root.accent
                             font.family: root.iconFont
-                            font.pixelSize: 13
+                            font.pixelSize: 17
                             SequentialAnimation on opacity {
                                 running: root.playing(root.player)
                                 loops: Animation.Infinite
@@ -2984,7 +3210,7 @@ ShellRoot {
                             text: root.netIcon()
                             color: root.netKind === "" ? root.muted : root.fg
                             font.family: root.iconFont
-                            font.pixelSize: 13
+                            font.pixelSize: 17
                         }
 
                         // volume: scroll to change, click to mute
@@ -2993,7 +3219,7 @@ ShellRoot {
                             text: root.volIcon(root.sink ? root.sink.audio : null)
                             color: root.fg
                             font.family: root.iconFont
-                            font.pixelSize: 14
+                            font.pixelSize: 18
                             MouseArea {
                                 anchors.fill: parent
                                 anchors.margins: -5
@@ -3015,7 +3241,7 @@ ShellRoot {
                             text: root.source && root.source.audio && !root.source.audio.muted ? "\uf130" : "\uf131"
                             color: root.source && root.source.audio && root.source.audio.muted ? root.danger : root.fg
                             font.family: root.iconFont
-                            font.pixelSize: 14
+                            font.pixelSize: 18
                             MouseArea {
                                 anchors.fill: parent
                                 anchors.margins: -5
@@ -3042,7 +3268,7 @@ ShellRoot {
                                 text: ""
                                 color: root.dnd ? root.muted : root.fg
                                 font.family: root.iconFont
-                                font.pixelSize: 13
+                                font.pixelSize: 17
                             }
                             Rectangle {
                                 id: badge
@@ -3281,6 +3507,8 @@ ShellRoot {
                             RowLayout {
                                 Layout.fillWidth: true
                                 spacing: 14
+
+                                Buddy { theme: root; slot: 2; size: 46 }
 
                                 Column {
                                     spacing: 0
@@ -4843,12 +5071,22 @@ ShellRoot {
                             font.pixelSize: 17
                         }
 
+                        Buddy {
+                            id: searchBuddy
+                            theme: root
+                            slot: 5
+                            size: 34
+                            anchors.right: parent.right
+                            anchors.rightMargin: 12
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+
                         TextInput {
                             id: searchInput
                             anchors.left: searchIcon.right
                             anchors.leftMargin: 14
                             anchors.right: parent.right
-                            anchors.rightMargin: 18
+                            anchors.rightMargin: 56      // room for the sticker spot
                             anchors.top: parent.top
                             anchors.bottom: parent.bottom
                             verticalAlignment: TextInput.AlignVCenter
@@ -5661,66 +5899,136 @@ ShellRoot {
             Repeater {
                 model: toastModel
 
-                delegate: Rectangle {
+                delegate: Item {
                     id: toast
                     required property int tid
                     required property string summary
                     required property string body
                     required property string appName
                     required property bool critical
+                    readonly property string icon: root.findIcon([toast.appName, toast.appName.toLowerCase(), toast.appName.toLowerCase().replace(/ /g, "-")])
                     width: toastCol.width
-                    height: toastText.implicitHeight + 24
-                    radius: 14
-                    color: root.popupBg
-                    border.width: 1
-                    border.color: toast.critical ? root.danger : root.glassEdge
+                    height: toastCard.height
 
-                    GlassShine { radius: parent.radius; dark: root.dark }
-                    opacity: 0
+                    // slides in from the right with a little bounce
+                    Rectangle {
+                        id: toastCard
+                        width: parent.width
+                        height: toastRow.implicitHeight + 30
+                        radius: 22
+                        color: root.popupBg
+                        border.width: 1
+                        border.color: toast.critical ? root.danger : root.glassEdge
+                        opacity: 0
+                        x: 40
+                        scale: toastHover.hovered ? 1.02 : 1
+                        NumberAnimation on opacity { running: true; from: 0; to: 1; duration: root.animMs * 2 }
+                        NumberAnimation on x { running: true; from: 40; to: 0; duration: root.animMs * 3; easing.type: Easing.OutBack }
+                        Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
 
-                    NumberAnimation on opacity { running: true; from: 0; to: 1; duration: root.animMs * 2 }
+                        GlassShine { radius: parent.radius; dark: root.dark }
+
+                        HoverHandler { id: toastHover }
+
+                        // time left: a thin bright line along the bottom that shrinks
+                        // (hovering the pop-up pauses it)
+                        Rectangle {
+                            id: toastLife
+                            anchors.bottom: parent.bottom
+                            anchors.bottomMargin: 6
+                            x: 22
+                            height: 2
+                            radius: 1
+                            width: (parent.width - 44) * toast.timeLeft
+                            color: toast.critical ? root.danger : Qt.rgba(1, 1, 1, root.dark ? 0.45 : 0.8)
+                        }
+
+                        RowLayout {
+                            id: toastRow
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            anchors.margins: 14
+                            spacing: 12
+
+                            // app icon in a little glass bubble
+                            Rectangle {
+                                Layout.preferredWidth: 40
+                                Layout.preferredHeight: 40
+                                Layout.alignment: Qt.AlignTop
+                                radius: 14
+                                color: root.overlay
+                                border.width: 1
+                                border.color: root.glassEdge
+                                GlassShine { radius: parent.radius; dark: root.dark; strength: 0.7 }
+                                IconImage {
+                                    anchors.centerIn: parent
+                                    visible: toast.icon !== ""
+                                    implicitSize: 26
+                                    source: toast.icon
+                                }
+                                Text {
+                                    anchors.centerIn: parent
+                                    visible: toast.icon === ""
+                                    text: "\uf0f3"
+                                    color: toast.critical ? root.danger : root.accent
+                                    font.family: root.iconFont
+                                    font.pixelSize: 16
+                                }
+                            }
+
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 2
+
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: toast.appName
+                                    color: root.muted
+                                    font.pixelSize: 11
+                                    elide: Text.ElideRight
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: toast.summary
+                                    color: root.fg
+                                    font.pixelSize: 14
+                                    font.bold: true
+                                    wrapMode: Text.Wrap
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    visible: text !== ""
+                                    text: toast.body
+                                    color: root.muted
+                                    font.pixelSize: 12
+                                    wrapMode: Text.Wrap
+                                    maximumLineCount: 3
+                                    elide: Text.ElideRight
+                                }
+                            }
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.removeToast(toast.tid)
+                        }
+                    }
+
+                    // 6 seconds on screen, paused while hovered
+                    property real timeLeft: 1
                     Timer {
-                        interval: 6000
-                        running: true
-                        onTriggered: root.removeToast(toast.tid)
-                    }
-
-                    ColumnLayout {
-                        id: toastText
-                        anchors.fill: parent
-                        anchors.margins: 12
-                        spacing: 2
-
-                        Text {
-                            Layout.fillWidth: true
-                            text: toast.appName
-                            color: root.muted
-                            font.pixelSize: 11
-                            elide: Text.ElideRight
+                        interval: 50
+                        repeat: true
+                        running: !toastHover.hovered
+                        onTriggered: {
+                            toast.timeLeft -= 50 / 6000;
+                            if (toast.timeLeft <= 0) {
+                                running = false;
+                                root.removeToast(toast.tid);
+                            }
                         }
-                        Text {
-                            Layout.fillWidth: true
-                            text: toast.summary
-                            color: root.fg
-                            font.pixelSize: 13
-                            font.bold: true
-                            wrapMode: Text.Wrap
-                        }
-                        Text {
-                            Layout.fillWidth: true
-                            visible: text !== ""
-                            text: toast.body
-                            color: root.muted
-                            font.pixelSize: 12
-                            wrapMode: Text.Wrap
-                            maximumLineCount: 3
-                            elide: Text.ElideRight
-                        }
-                    }
-
-                    MouseArea {
-                        anchors.fill: parent
-                        onClicked: root.removeToast(toast.tid)
                     }
                 }
             }
@@ -6228,6 +6536,7 @@ ShellRoot {
                             font.pixelSize: 17
                             font.bold: true
                         }
+                        Buddy { theme: root; slot: 3; size: 30; anchors.verticalCenter: parent.verticalCenter }
                     }
 
                     // ---- One card per desktop, plus "+" ----
@@ -6462,6 +6771,2318 @@ ShellRoot {
         }
     }
 
+    // ---------- Right side bar: brightness, Spotify, Discord ----------
+    // A glass pill on the right edge (auto-hides like the other bars): brightness, Spotify, Vesktop. Click it and it grows
+    // into a panel. Brightness uses scripts/brightness.sh (ddcutil for desktop monitors).
+    property bool sideOpen: false
+    property bool sideBarOpen: false      // right pill pulled out with its tab
+
+    // Optional keybind:  hl.bind(mainMod .. " + B", hl.dsp.exec_cmd("qs ipc call sidebar toggle"))
+    IpcHandler {
+        target: "sidebar"
+        function toggle(): void {
+            root.sideOpen = !root.sideOpen;
+        }
+    }
+
+    // ----- Brightness -----
+    readonly property string brightScript: Quickshell.env("HOME") + "/.config/quickshell/scripts/brightness.sh"
+    property var brightDisplays: []       // [{ id, conn, name, value }]   value is 0-100
+    property bool brightNoDdc: false
+    property bool brightLoading: false
+    property var brightPending: ({})
+
+    Process {
+        id: brightProc
+        command: ["bash", root.brightScript, "list"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                const out = [];
+                let noDdc = false;
+                const lines = text.split("\n");
+                for (let i = 0; i < lines.length; i++) {
+                    const l = lines[i].trim();
+                    if (l === "NODDC") { noDdc = true; continue; }
+                    const p = l.split("|");
+                    if (p.length < 5) continue;
+                    const max = Math.max(1, parseInt(p[4]) || 100);
+                    out.push({ id: p[0], conn: p[1], name: p[2], value: Math.round((parseInt(p[3]) || 0) * 100 / max) });
+                }
+                root.brightDisplays = out;
+                root.brightNoDdc = noDdc;
+                root.brightLoading = false;
+            }
+        }
+    }
+
+    function refreshBrightness() {
+        if (brightProc.running) return;
+        brightLoading = true;
+        brightProc.running = true;
+    }
+
+    onSideOpenChanged: {
+        if (sideOpen) refreshBrightness();
+        else sideView = "main";
+    }
+
+    // ----- Lyrics (right panel, from LRCLIB: https://lrclib.net) -----
+    property string sideView: "main"      // "main" or "lyrics"
+    property var lyricsLines: []          // [{ t: seconds (or -1), text }]
+    property bool lyricsSynced: false
+    property string lyricsStatus: ""      // "loading", "ok", "none", "error"
+    property string lyricsKey: ""
+
+    readonly property string spotifyKey: spotify ? (spotify.trackArtist || "") + "|" + (spotify.trackTitle || "") : ""
+    onSpotifyKeyChanged: if (sideView === "lyrics") fetchLyrics()
+    onSideViewChanged: {
+        if (sideView === "lyrics") fetchLyrics();
+        if (sideView === "signalChat") sigMarkRead(sigCurrent);
+    }
+
+    function showLyrics() {
+        sideView = "lyrics";
+        sideOpen = true;
+    }
+
+    // "[01:23.45] some words" -> one entry per time stamp
+    function parseLrc(text) {
+        const out = [];
+        const lines = text.split("\n");
+        for (let i = 0; i < lines.length; i++) {
+            const stamps = [];
+            let rest = lines[i];
+            let m;
+            while ((m = /^\s*\[(\d+):(\d+(?:\.\d+)?)\]/.exec(rest)) !== null) {
+                stamps.push(parseInt(m[1]) * 60 + parseFloat(m[2]));
+                rest = rest.slice(m[0].length);
+            }
+            for (let j = 0; j < stamps.length; j++) out.push({ t: stamps[j], text: rest.trim() });
+        }
+        out.sort((a, b) => a.t - b.t);
+        return out;
+    }
+
+    function useLyrics(item) {
+        if (item && item.syncedLyrics) {
+            lyricsLines = parseLrc(item.syncedLyrics);
+            lyricsSynced = true;
+            lyricsStatus = lyricsLines.length > 0 ? "ok" : "none";
+        } else if (item && item.plainLyrics) {
+            lyricsLines = item.plainLyrics.split("\n").map(l => ({ t: -1, text: l.trim() }));
+            lyricsSynced = false;
+            lyricsStatus = "ok";
+        } else if (item && item.instrumental) {
+            lyricsLines = [{ t: -1, text: "♪  Instrumental  ♪" }];
+            lyricsSynced = false;
+            lyricsStatus = "ok";
+        } else {
+            lyricsLines = [];
+            lyricsStatus = "none";
+        }
+    }
+
+    function lrclibGet(url, done) {
+        const xhr = new XMLHttpRequest();
+        xhr.onreadystatechange = () => {
+            if (xhr.readyState !== XMLHttpRequest.DONE) return;
+            let data = null;
+            try {
+                data = xhr.status === 200 ? JSON.parse(xhr.responseText) : null;
+            } catch (e) {
+                data = null;
+            }
+            done(xhr.status, data);
+        };
+        xhr.open("GET", url);
+        xhr.setRequestHeader("Lrclib-Client", "JoeOS Quickshell bar");
+        xhr.send();
+    }
+
+    function fetchLyrics() {
+        const p = spotify;
+        if (!p || !p.trackTitle) {
+            lyricsLines = [];
+            lyricsStatus = "none";
+            lyricsKey = "";
+            return;
+        }
+        const key = spotifyKey;
+        if (key === lyricsKey && (lyricsStatus === "ok" || lyricsStatus === "loading")) return;
+        lyricsKey = key;
+        lyricsStatus = "loading";
+        lyricsLines = [];
+        const artist = (p.trackArtist || "").split(",")[0].trim();
+        const enc = encodeURIComponent;
+        let url = "https://lrclib.net/api/get?track_name=" + enc(p.trackTitle) + "&artist_name=" + enc(artist);
+        if (p.trackAlbum) url += "&album_name=" + enc(p.trackAlbum);
+        if (p.length > 0) url += "&duration=" + Math.round(p.length);
+        lrclibGet(url, (status, data) => {
+            if (root.lyricsKey !== key) return;          // song changed while loading
+            if (data) {
+                root.useLyrics(data);
+                return;
+            }
+            // not an exact match: search, and prefer a result with timed lyrics
+            const surl = "https://lrclib.net/api/search?track_name=" + enc(p.trackTitle) + "&artist_name=" + enc(artist);
+            root.lrclibGet(surl, (st2, list) => {
+                if (root.lyricsKey !== key) return;
+                if (st2 === 0) { root.lyricsStatus = "error"; return; }
+                if (!list || list.length === 0) { root.useLyrics(null); return; }
+                let pick = list[0];
+                for (let i = 0; i < list.length; i++)
+                    if (list[i].syncedLyrics) { pick = list[i]; break; }
+                root.useLyrics(pick);
+            });
+        });
+    }
+
+    // Which line is being sung right now
+    readonly property int lyricsIndex: {
+        if (!lyricsSynced || !spotify) return -1;
+        const pos = spotify.position + 0.2;
+        let idx = -1;
+        for (let i = 0; i < lyricsLines.length; i++) {
+            if (lyricsLines[i].t <= pos) idx = i;
+            else break;
+        }
+        return idx;
+    }
+
+    // read it once a few seconds after start, so the pill can show a number
+    Timer {
+        interval: 5000
+        running: true
+        onTriggered: root.refreshBrightness()
+    }
+
+    // The slider moves straight away; the monitor is told a moment later (DDC is slow)
+    function setBrightness(id, pct) {
+        pct = Math.max(0, Math.min(100, Math.round(pct)));
+        const list = brightDisplays.map(d => d.id === id ? { id: d.id, conn: d.conn, name: d.name, value: pct } : d);
+        brightDisplays = list;
+        const pend = {};
+        for (const k in brightPending) pend[k] = brightPending[k];
+        pend[id] = pct;
+        brightPending = pend;
+        brightSetTimer.restart();
+    }
+
+    function setAllBrightness(pct) {
+        for (let i = 0; i < brightDisplays.length; i++) setBrightness(brightDisplays[i].id, pct);
+    }
+
+    Timer {
+        id: brightSetTimer
+        interval: 250
+        onTriggered: {
+            const pend = root.brightPending;
+            root.brightPending = {};
+            for (const id in pend)
+                Quickshell.execDetached(["bash", root.brightScript, "set", id, String(pend[id])]);
+        }
+    }
+
+    readonly property int brightAvg: {
+        if (brightDisplays.length === 0) return -1;
+        let t = 0;
+        for (let i = 0; i < brightDisplays.length; i++) t += brightDisplays[i].value;
+        return Math.round(t / brightDisplays.length);
+    }
+
+    // ----- Spotify -----
+    readonly property var spotify: {
+        const list = Mpris.players.values;
+        for (let i = 0; i < list.length; i++) {
+            const p = list[i];
+            const name = ((p.identity || "") + " " + (p.desktopEntry || "")).toLowerCase();
+            if (name.indexOf("spotify") >= 0) return p;
+        }
+        return null;
+    }
+    // Spotify can be a Flatpak (com.spotify.Client), the AUR package or spotify-launcher
+    readonly property var spotifyEntry: {
+        const ids = ["com.spotify.Client", "spotify", "spotify-launcher"];
+        for (let i = 0; i < ids.length; i++) {
+            const e = DesktopEntries.heuristicLookup(ids[i]);
+            if (e && /spotify/i.test(e.id + " " + e.name)) return e;
+        }
+        return null;
+    }
+
+    function openSpotify() {
+        sideOpen = false;
+        if (spotifyEntry) launchApp(spotifyEntry);
+        else Quickshell.execDetached(["sh", "-c", "flatpak run com.spotify.Client || spotify || spotify-launcher"]);
+    }
+
+    // Spotify's own audio stream in PipeWire (for its volume buttons)
+    readonly property var spotifyStream: {
+        const list = audioStreams;
+        for (let i = 0; i < list.length; i++) {
+            const pr = list[i].properties || {};
+            const name = (pr["application.name"] || "") + " " + (pr["application.process.binary"] || "") + " " + (list[i].name || "");
+            if (/spotify/i.test(name)) return list[i];
+        }
+        return null;
+    }
+
+    // Music volume, 0 to 1 (-1 = not available yet, e.g. nothing playing)
+    readonly property real spotifyVolume: spotifyStream && spotifyStream.audio ? spotifyStream.audio.volume
+        : (spotify && spotify.volumeSupported ? spotify.volume : -1)
+
+    function setSpotifyVolume(v) {
+        v = Math.max(0, Math.min(1, v));
+        if (spotifyStream && spotifyStream.audio) spotifyStream.audio.volume = v;
+        else if (spotify && spotify.volumeSupported) spotify.volume = v;
+    }
+
+    function spotifyVolumeStep(d) {
+        if (spotifyVolume >= 0) setSpotifyVolume(spotifyVolume + d);
+    }
+
+    // Repeat: "playlist" = repeat all, "track" = repeat one. Clicking the lit one turns repeat off.
+    function spotifyRepeat(kind) {
+        const p = spotify;
+        if (!p || !p.loopSupported) return;
+        const want = kind === "track" ? MprisLoopState.Track : MprisLoopState.Playlist;
+        p.loopState = p.loopState === want ? MprisLoopState.None : want;
+    }
+
+    function spotifyShuffle() {
+        if (spotify && spotify.shuffleSupported) spotify.shuffle = !spotify.shuffle;
+    }
+
+    // ----- Vesktop (Discord). Falls back to the official Discord app if Vesktop isn't installed -----
+    readonly property var discordEntry: {
+        const ids = ["vesktop", "dev.vencord.Vesktop", "discord", "com.discordapp.Discord", "webcord"];
+        for (let i = 0; i < ids.length; i++) {
+            const e = DesktopEntries.heuristicLookup(ids[i]);
+            if (e) return e;
+        }
+        return null;
+    }
+
+    function isDiscord(s) {
+        return /discord|vesktop|webcord|vencord/i.test(s || "");
+    }
+
+    readonly property bool discordRunning: {
+        const list = ToplevelManager.toplevels.values;
+        for (let i = 0; i < list.length; i++)
+            if (isDiscord(list[i].appId)) return true;
+        return false;
+    }
+
+    readonly property var discordNotifs: {
+        const list = notifServer.trackedNotifications.values, out = [];
+        for (let i = list.length - 1; i >= 0; i--)
+            if (isDiscord(list[i].appName) || isDiscord(list[i].desktopEntry)) out.push(list[i]);
+        return out;
+    }
+
+    // ----- Signal (signal-desktop package or the Flatpak) -----
+    readonly property var signalEntry: {
+        const ids = ["signal-desktop", "org.signal.Signal", "signal"];
+        for (let i = 0; i < ids.length; i++) {
+            const e = DesktopEntries.heuristicLookup(ids[i]);
+            if (e && /signal/i.test(e.id + " " + e.name)) return e;
+        }
+        return null;
+    }
+
+    function isSignal(s) {
+        return /signal/i.test(s || "");
+    }
+
+    readonly property bool signalRunning: {
+        const list = ToplevelManager.toplevels.values;
+        for (let i = 0; i < list.length; i++)
+            if (isSignal(list[i].appId)) return true;
+        return false;
+    }
+
+    readonly property var signalNotifs: {
+        const list = notifServer.trackedNotifications.values, out = [];
+        for (let i = list.length - 1; i >= 0; i--)
+            if (isSignal(list[i].appName) || isSignal(list[i].desktopEntry)) out.push(list[i]);
+        return out;
+    }
+
+    // ---------- Signal messaging (through signal-cli, linked like Signal Desktop) ----------
+    // Set up once with scripts/signal-setup.sh. The bar then runs signal-cli in the background,
+    // talks to it over a local socket, and keeps the last messages of each chat in
+    // ~/.local/share/joeos/signal-chats.json (only on this PC).
+    property string sigAccount: ""
+    property bool sigCliMissing: false
+    property bool sigReady: false              // connected to signal-cli
+    property var sigChats: ({})                // key -> { key, name, group, id, msgs: [{ me, from, text, ts }], unread, last }
+    property var sigNames: ({})                // phone number -> contact name
+    property var sigGroupNames: ({})           // group id -> group name
+    property var sigContacts: []               // [{ key, name, id }]
+    property string sigCurrent: ""             // chat open in the panel
+    property int sigReqId: 1
+    property var sigPending: ({})
+    property bool sigLoaded: false
+    readonly property string sigSocketPath: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/joeos-signal.socket"
+
+    // which phone number is linked (written by signal-setup.sh)
+    FileView {
+        path: Quickshell.env("HOME") + "/.config/joeos/signal-account"
+        watchChanges: true
+        printErrors: false
+        onFileChanged: reload()
+        onLoaded: root.sigAccount = text().trim()
+    }
+
+    // saved chat history
+    FileView {
+        id: sigStore
+        path: Quickshell.env("HOME") + "/.local/share/joeos/signal-chats.json"
+        printErrors: false
+        onAdapterUpdated: writeAdapter()
+        onLoaded: root.sigLoadStore()
+        onLoadFailed: error => root.sigLoadStore()
+        adapter: JsonAdapter {
+            property string chats: "{}"
+        }
+    }
+
+    function sigLoadStore() {
+        if (sigLoaded) return;
+        sigLoaded = true;
+        try {
+            sigChats = JSON.parse(sigStore.adapter.chats || "{}");
+        } catch (e) {
+            sigChats = {};
+        }
+    }
+
+    Timer {
+        id: sigSaveTimer
+        interval: 1500
+        onTriggered: {
+            Quickshell.execDetached(["mkdir", "-p", Quickshell.env("HOME") + "/.local/share/joeos"]);
+            sigStore.adapter.chats = JSON.stringify(root.sigChats);
+        }
+    }
+
+    Process {
+        command: ["sh", "-c", "command -v signal-cli >/dev/null 2>&1 && echo yes || echo no"]
+        running: true
+        stdout: StdioCollector {
+            onStreamFinished: root.sigCliMissing = text.trim() !== "yes"
+        }
+    }
+
+    // signal-cli running in the background while an account is linked
+    Process {
+        id: sigDaemon
+        running: root.sigAccount !== "" && !root.sigCliMissing
+        command: ["sh", "-c", 'rm -f "$1"; exec signal-cli -a "$2" daemon --socket="$1" --receive-mode=on-connection',
+            "sh", root.sigSocketPath, root.sigAccount]
+        onRunningChanged: if (!running && root.sigAccount !== "") sigRestart.restart()
+    }
+
+    Timer {
+        id: sigRestart
+        interval: 15000
+        onTriggered: if (!sigDaemon.running && root.sigAccount !== "" && !root.sigCliMissing) sigDaemon.running = true
+    }
+
+    Socket {
+        id: sigSock
+        path: root.sigSocketPath
+        parser: SplitParser {
+            onRead: data => root.sigHandle(data)
+        }
+        onConnectedChanged: {
+            root.sigReady = connected;
+            if (connected) {
+                root.sigCall("listContacts", {});
+                root.sigCall("listGroups", {});
+            }
+        }
+    }
+
+    // keep trying to connect while signal-cli is starting up (it takes a few seconds)
+    Timer {
+        interval: 3000
+        repeat: true
+        running: sigDaemon.running && !sigSock.connected
+        onTriggered: sigSock.connected = true
+    }
+
+    function sigCall(method, params) {
+        if (!sigSock.connected) return;
+        const id = sigReqId++;
+        const pend = {};
+        for (const k in sigPending) pend[k] = sigPending[k];
+        pend[id] = method;
+        sigPending = pend;
+        sigSock.write(JSON.stringify({ jsonrpc: "2.0", method: method, params: params, id: id }) + "\n");
+        sigSock.flush();
+    }
+
+    function sigContactName(c) {
+        if (!c) return "";
+        if (c.name) return c.name;
+        if (c.nickName) return c.nickName;
+        const p = c.profile || {};
+        const prof = ((p.givenName || "") + " " + (p.familyName || "")).trim();
+        if (prof) return prof;
+        const given = ((c.givenName || "") + " " + (c.familyName || "")).trim();
+        return given || c.number || c.username || "";
+    }
+
+    function sigHandle(line) {
+        let msg;
+        try {
+            msg = JSON.parse(line);
+        } catch (e) {
+            return;
+        }
+        // answers to listContacts / listGroups
+        if (msg.id !== undefined && msg.result !== undefined) {
+            const what = sigPending[msg.id];
+            if (what === "listContacts" && Array.isArray(msg.result)) {
+                const names = {}, list = [];
+                for (let i = 0; i < msg.result.length; i++) {
+                    const c = msg.result[i];
+                    const id = c.number || c.uuid;
+                    if (!id) continue;
+                    const name = sigContactName(c);
+                    names[id] = name;
+                    if (name && name !== id) list.push({ key: "u:" + id, name: name, id: id });
+                }
+                list.sort((a, b) => a.name.localeCompare(b.name));
+                sigNames = names;
+                sigContacts = list;
+            } else if (what === "listGroups" && Array.isArray(msg.result)) {
+                const g = {};
+                for (let i = 0; i < msg.result.length; i++)
+                    if (msg.result[i].id) g[msg.result[i].id] = msg.result[i].name || "Group";
+                sigGroupNames = g;
+            }
+            return;
+        }
+        // new messages
+        if (msg.method !== "receive" || !msg.params) return;
+        const env = msg.params.envelope || (msg.params.result && msg.params.result.envelope);
+        if (!env) return;
+        const ts = env.timestamp || Date.now();
+        const dm = env.dataMessage;
+        if (dm && dm.message) {
+            const gid = dm.groupInfo && dm.groupInfo.groupId;
+            const who = env.sourceNumber || env.source || env.sourceUuid || "";
+            const from = env.sourceName || sigNames[who] || who;
+            if (gid) sigAdd("g:" + gid, sigGroupNames[gid] || dm.groupInfo.groupName || "Group", true, gid, { me: false, from: from, text: dm.message, ts: ts });
+            else sigAdd("u:" + who, from, false, who, { me: false, from: from, text: dm.message, ts: ts });
+            return;
+        }
+        // something you sent from your phone or Signal Desktop
+        const sm = env.syncMessage && env.syncMessage.sentMessage;
+        if (sm && sm.message) {
+            const gid = sm.groupInfo && sm.groupInfo.groupId;
+            const to = sm.destinationNumber || sm.destination || sm.destinationUuid || "";
+            if (gid) sigAdd("g:" + gid, sigGroupNames[gid] || "Group", true, gid, { me: true, from: "You", text: sm.message, ts: sm.timestamp || ts });
+            else if (to) sigAdd("u:" + to, sigNames[to] || to, false, to, { me: true, from: "You", text: sm.message, ts: sm.timestamp || ts });
+        }
+    }
+
+    // add a message to a chat (making the chat if it's new) and save
+    function sigAdd(key, name, group, id, m) {
+        const all = {};
+        for (const k in sigChats) all[k] = sigChats[k];
+        const old = all[key];
+        const msgs = old ? old.msgs.slice() : [];
+        msgs.push(m);
+        while (msgs.length > 80) msgs.shift();
+        const viewing = sideOpen && sideView === "signalChat" && sigCurrent === key;
+        all[key] = {
+            key: key,
+            name: (old && old.name && old.name !== old.id) ? old.name : name,
+            group: group,
+            id: id,
+            msgs: msgs,
+            unread: (old ? old.unread : 0) + (m.me || viewing ? 0 : 1),
+            last: m.ts
+        };
+        sigChats = all;
+        sigSaveTimer.restart();
+    }
+
+    function sigOpen(key, name, group, id) {
+        if (!sigChats[key]) {
+            const all = {};
+            for (const k in sigChats) all[k] = sigChats[k];
+            all[key] = { key: key, name: name, group: group, id: id, msgs: [], unread: 0, last: 0 };
+            sigChats = all;
+        }
+        sigCurrent = key;
+        sigMarkRead(key);
+        sideView = "signalChat";
+    }
+
+    function sigMarkRead(key) {
+        const c = sigChats[key];
+        if (!c || c.unread === 0) return;
+        const all = {};
+        for (const k in sigChats) all[k] = sigChats[k];
+        all[key] = Object.assign({}, c, { unread: 0 });
+        sigChats = all;
+        sigSaveTimer.restart();
+    }
+
+    function sigSend(key, text) {
+        text = text.trim();
+        const c = sigChats[key];
+        if (!c || text === "" || !sigReady) return false;
+        sigCall("send", c.group ? { groupId: c.id, message: text } : { recipient: [c.id], message: text });
+        sigAdd(key, c.name, c.group, c.id, { me: true, from: "You", text: text, ts: Date.now() });
+        return true;
+    }
+
+    readonly property var sigChatList: {
+        const out = [];
+        for (const k in sigChats) out.push(sigChats[k]);
+        out.sort((a, b) => b.last - a.last);
+        return out;
+    }
+
+    readonly property int sigUnreadTotal: {
+        let n = 0;
+        for (const k in sigChats) n += sigChats[k].unread || 0;
+        return n;
+    }
+
+    function sigTime(ts) {
+        if (!ts) return "";
+        const d = new Date(ts), now = new Date();
+        return d.toDateString() === now.toDateString() ? Qt.formatTime(d, "hh:mm") : Qt.formatDate(d, "MMM d");
+    }
+
+    function openSignal() {
+        sideOpen = false;
+        if (signalEntry) launchApp(signalEntry);
+        else Quickshell.execDetached(["sh", "-c", "signal-desktop || flatpak run org.signal.Signal"]);
+    }
+
+    // ----- Icons for Spotify / Vesktop -----
+    // Different installs (package, AUR, Flatpak) name the icon differently, so try them all and
+    // keep the first one that really exists. Empty means none was found (a symbol is shown instead).
+    function findIcon(names) {
+        for (let i = 0; i < names.length; i++) {
+            if (!names[i]) continue;
+            const path = Quickshell.iconPath(names[i], true);
+            if (path !== "") return path;
+        }
+        return "";
+    }
+
+    function runningAppId(test) {
+        const list = ToplevelManager.toplevels.values;
+        for (let i = 0; i < list.length; i++)
+            if (test(list[i].appId)) return list[i].appId;
+        return "";
+    }
+
+    readonly property string spotifyIcon: findIcon([
+        spotifyEntry ? spotifyEntry.icon : "",
+        spotify && spotify.desktopEntry ? spotify.desktopEntry : "",
+        runningAppId(a => /spotify/i.test(a || "")),
+        "spotify-client", "spotify", "com.spotify.Client", "spotify-launcher"
+    ])
+
+    readonly property string signalIcon: findIcon([
+        signalEntry ? signalEntry.icon : "",
+        runningAppId(a => isSignal(a)),
+        "signal-desktop", "org.signal.Signal", "signal"
+    ])
+
+    readonly property string vesktopIcon: findIcon([
+        discordEntry ? discordEntry.icon : "",
+        runningAppId(a => isDiscord(a)),
+        "vesktop", "dev.vencord.Vesktop", "discord", "com.discordapp.Discord", "webcord"
+    ])
+
+    function openDiscord() {
+        sideOpen = false;
+        if (discordEntry) launchApp(discordEntry);
+        else Quickshell.execDetached(["sh", "-c", "vesktop || flatpak run dev.vencord.Vesktop || discord"]);
+    }
+
+    Variants {
+        model: Quickshell.screens
+
+        PanelWindow {
+            id: side
+            required property var modelData
+            screen: modelData
+
+            anchors {
+                top: true
+                bottom: true
+                right: true
+            }
+            implicitWidth: 96            // pill (70) + room for the tab beside it
+            color: "transparent"
+            WlrLayershell.namespace: "quickshell-side"
+
+            readonly property bool focusedHere: !Hyprland.focusedMonitor || Hyprland.focusedMonitor.name === modelData.name
+            readonly property bool openHere: root.sideOpen && focusedHere
+
+            // ----- Pull tab -----
+            // With auto-hide on, the pill stays tucked away until you click the little tab on the
+            // right edge. Click it again to tuck it away. Windows make room while it's out.
+            readonly property bool wantHide: root.autoHideOn
+            readonly property bool keepOpen: !wantHide || openHere || root.sideBarOpen
+            readonly property bool barShown: keepOpen
+
+            exclusionMode: ExclusionMode.Normal
+            exclusiveZone: barShown ? 70 : 0
+
+            mask: barShown ? sideShownMask : sideTabMask
+            Region { id: sideTabMask; item: sideTab }
+            Region {
+                id: sideShownMask
+                item: sidePill
+                Region { item: sideTab }
+            }
+
+            // Pulled out with the tab? Clicking anywhere else tucks it away again
+            HyprlandFocusGrab {
+                windows: [side, sideWin]
+                active: side.wantHide && root.sideBarOpen && side.focusedHere
+                onCleared: root.sideBarOpen = false
+            }
+
+            // the tab: sticks out from the right edge, rides left of the pill when it's out
+            Rectangle {
+                id: sideTab
+                visible: side.wantHide && !side.openHere
+                anchors.verticalCenter: parent.verticalCenter
+                x: side.barShown ? sidePill.x - width - 4 : parent.width - width + 10
+                width: 24
+                height: sideTabMouse.containsMouse ? 74 : 60
+                radius: 12
+                color: root.popupBg
+                border.width: 1
+                border.color: root.glassEdge
+                Behavior on x { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutCubic } }
+                Behavior on height { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+
+                GlassShine { radius: parent.radius; dark: root.dark }
+
+                Text {
+                    x: side.barShown ? 8 : 3
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: side.barShown ? "\uf054" : "\uf053"
+                    color: root.fg
+                    font.family: root.iconFont
+                    font.pixelSize: 11
+                }
+
+                MouseArea {
+                    id: sideTabMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.sideBarOpen = !root.sideBarOpen
+                }
+            }
+
+            // ===================== The pill =====================
+            Rectangle {
+                id: sidePill
+                anchors.verticalCenter: parent.verticalCenter
+                x: side.barShown ? parent.width - width - 8 : parent.width + 8
+                width: 54
+                height: sideCol.implicitHeight + 28
+                radius: 27
+                color: root.popupBg
+                border.width: 1
+                border.color: root.glassEdge
+                opacity: side.openHere ? 0 : 1
+                scale: sideMouse.pressed ? 0.96 : (sidePillHover.hovered ? 1.04 : 1)
+                Behavior on x { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutCubic } }
+                Behavior on opacity { NumberAnimation { duration: root.animMs } }
+                Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+
+                HoverHandler { id: sidePillHover }
+
+                GlassShine { radius: parent.radius; dark: root.dark }
+
+                MouseArea {
+                    id: sideMouse
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.sideOpen = true
+                }
+
+                Column {
+                    id: sideCol
+                    anchors.centerIn: parent
+                    spacing: 14
+
+                    // sticker spot
+                    Buddy { theme: root; slot: 1; size: 30; anchors.horizontalCenter: parent.horizontalCenter }
+
+                    // brightness: scroll to change every monitor
+                    Item {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        width: 40
+                        height: brightCol2.implicitHeight
+
+                        Column {
+                            id: brightCol2
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            spacing: 2
+
+                            Text {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                text: ""
+                                color: root.accent
+                                font.family: root.iconFont
+                                font.pixelSize: 17
+                            }
+                            Text {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                text: root.brightAvg >= 0 ? root.brightAvg : "--"
+                                color: root.muted
+                                font.pixelSize: 10
+                                font.bold: true
+                            }
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            anchors.margins: -6
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.sideOpen = true
+                            onWheel: wheel => {
+                                if (root.brightAvg < 0) return;
+                                root.setAllBrightness(root.brightAvg + (wheel.angleDelta.y > 0 ? 5 : -5));
+                            }
+                        }
+                    }
+
+                    Rectangle { anchors.horizontalCenter: parent.horizontalCenter; width: 4; height: 4; radius: 2; color: root.muted }
+
+                    // Spotify (dimmed when closed, pulses while playing). Click: lyrics
+                    Item {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        width: 26
+                        height: 26
+                        MouseArea {
+                            anchors.fill: parent
+                            anchors.margins: -6
+                            z: 5
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.showLyrics()
+                        }
+                        IconImage {
+                            anchors.fill: parent
+                            visible: root.spotifyIcon !== ""
+                            source: root.spotifyIcon
+                            opacity: root.spotify ? 1 : 0.45
+                        }
+                        Text {
+                            anchors.centerIn: parent
+                            visible: root.spotifyIcon === ""
+                            text: "\uf1bc"
+                            color: root.spotify ? "#1ed760" : root.muted
+                            font.family: root.iconFont
+                            font.pixelSize: 20
+                        }
+                        Rectangle {
+                            visible: root.playing(root.spotify)
+                            anchors.right: parent.right
+                            anchors.bottom: parent.bottom
+                            anchors.margins: -2
+                            width: 9
+                            height: 9
+                            radius: 4.5
+                            color: root.accent
+                            border.width: 1
+                            border.color: root.bg
+                            SequentialAnimation on opacity {
+                                running: root.playing(root.spotify)
+                                loops: Animation.Infinite
+                                NumberAnimation { to: 0.35; duration: 700 }
+                                NumberAnimation { to: 1; duration: 700 }
+                            }
+                        }
+                    }
+
+                    // Music controls: play/pause, next, volume up/down (dim when Spotify is closed)
+                    Column {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        spacing: 6
+                        opacity: root.spotify ? 1 : 0.35
+
+                        Repeater {
+                            model: [
+                                { icon: root.playing(root.spotify) ? "\uf04c" : "\uf04b", act: () => { if (root.spotify && root.spotify.canTogglePlaying) root.spotify.togglePlaying(); } },
+                                { icon: "\uf051", act: () => { if (root.spotify && root.spotify.canGoNext) root.spotify.next(); } },
+                                // repeat: off -> all -> one -> off
+                                {
+                                    icon: "\uf01e",
+                                    lit: !!(root.spotify && root.spotify.loopState !== MprisLoopState.None),
+                                    one: !!(root.spotify && root.spotify.loopState === MprisLoopState.Track),
+                                    act: () => {
+                                        const p = root.spotify;
+                                        if (!p || !p.loopSupported) return;
+                                        p.loopState = p.loopState === MprisLoopState.None ? MprisLoopState.Playlist
+                                            : (p.loopState === MprisLoopState.Playlist ? MprisLoopState.Track : MprisLoopState.None);
+                                    }
+                                },
+                                { icon: "\uf067", act: () => root.spotifyVolumeStep(0.05) },
+                                { icon: "\uf068", act: () => root.spotifyVolumeStep(-0.05) }
+                            ]
+                            delegate: Rectangle {
+                                id: sBtn
+                                required property var modelData
+                                width: 42
+                                height: 42
+                                radius: 21
+                                color: sBtn.modelData.lit ? root.accent : (sBtnMouse.containsMouse ? root.overlay : "transparent")
+                                scale: sBtnMouse.pressed ? 0.88 : 1
+                                Behavior on color { ColorAnimation { duration: root.animMs } }
+                                Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: sBtn.modelData.icon
+                                    color: sBtn.modelData.lit ? root.bg : root.fg
+                                    font.family: root.iconFont
+                                    font.pixelSize: 18
+                                }
+                                // "1" when repeating one song
+                                Rectangle {
+                                    visible: !!sBtn.modelData.one
+                                    anchors.right: parent.right
+                                    anchors.top: parent.top
+                                    width: 14
+                                    height: 14
+                                    radius: 7
+                                    color: root.bg
+                                    Text { anchors.centerIn: parent; text: "1"; color: root.accent; font.pixelSize: 9; font.bold: true }
+                                }
+                                MouseArea {
+                                    id: sBtnMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: sBtn.modelData.act()
+                                }
+                            }
+                        }
+
+                        // music volume number
+                        Text {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            visible: root.spotifyVolume >= 0
+                            text: Math.round(root.spotifyVolume * 100)
+                            color: root.muted
+                            font.pixelSize: 12
+                            font.bold: true
+                        }
+                    }
+
+                    Rectangle { anchors.horizontalCenter: parent.horizontalCenter; width: 4; height: 4; radius: 2; color: root.muted }
+
+                    // Vesktop (badge = new messages)
+                    Item {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        width: 26
+                        height: 26
+                        IconImage {
+                            anchors.fill: parent
+                            visible: root.vesktopIcon !== ""
+                            source: root.vesktopIcon
+                            opacity: root.discordRunning ? 1 : 0.45
+                        }
+                        Text {
+                            anchors.centerIn: parent
+                            visible: root.vesktopIcon === ""
+                            text: "\uf086"
+                            color: root.discordRunning ? "#5865f2" : root.muted
+                            font.family: root.iconFont
+                            font.pixelSize: 19
+                        }
+                        Rectangle {
+                            visible: root.discordNotifs.length > 0
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            anchors.margins: -5
+                            width: Math.max(15, dBadge.implicitWidth + 6)
+                            height: 15
+                            radius: 7.5
+                            color: root.danger
+                            Text {
+                                id: dBadge
+                                anchors.centerIn: parent
+                                text: root.discordNotifs.length
+                                color: "white"
+                                font.pixelSize: 9
+                                font.bold: true
+                            }
+                        }
+                    }
+
+                    Rectangle { anchors.horizontalCenter: parent.horizontalCenter; width: 4; height: 4; radius: 2; color: root.muted }
+
+                    // Signal (badge = new messages). Click: chats
+                    Item {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        width: 26
+                        height: 26
+                        MouseArea {
+                            anchors.fill: parent
+                            anchors.margins: -6
+                            z: 5
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                root.sideView = root.sigAccount !== "" ? "signal" : "main";
+                                root.sideOpen = true;
+                            }
+                        }
+                        IconImage {
+                            anchors.fill: parent
+                            visible: root.signalIcon !== ""
+                            source: root.signalIcon
+                            opacity: root.signalRunning ? 1 : 0.45
+                        }
+                        Text {
+                            anchors.centerIn: parent
+                            visible: root.signalIcon === ""
+                            text: "\uf075"
+                            color: root.signalRunning ? "#3a76f0" : root.muted
+                            font.family: root.iconFont
+                            font.pixelSize: 19
+                        }
+                        Rectangle {
+                            visible: root.sigUnreadTotal > 0 || root.signalNotifs.length > 0
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            anchors.margins: -5
+                            width: Math.max(15, sigBadge.implicitWidth + 6)
+                            height: 15
+                            radius: 7.5
+                            color: root.danger
+                            Text {
+                                id: sigBadge
+                                anchors.centerIn: parent
+                                text: root.sigUnreadTotal > 0 ? root.sigUnreadTotal : root.signalNotifs.length
+                                color: "white"
+                                font.pixelSize: 9
+                                font.bold: true
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ===================== The expanded panel =====================
+            // Created once and kept (invisible + click-through when closed), like the hub.
+            PanelWindow {
+                id: sideWin
+                screen: side.screen
+                visible: true
+                anchors.right: true
+                implicitWidth: 420
+                implicitHeight: Math.max(600, side.height - 40)
+                exclusionMode: ExclusionMode.Ignore
+                color: "transparent"
+                WlrLayershell.layer: WlrLayer.Overlay
+                WlrLayershell.namespace: "quickshell-sidepanel"
+                WlrLayershell.keyboardFocus: WlrKeyboardFocus.OnDemand
+
+                readonly property bool showing: side.openHere || sideCard.width > sidePill.width + 2
+                mask: showing ? sideCardMask : sideOffMask
+                Region { id: sideCardMask; item: sideCard }
+                Region { id: sideOffMask }
+
+                HyprlandFocusGrab {
+                    windows: [sideWin]
+                    active: side.openHere
+                    onCleared: root.sideOpen = false
+                }
+
+                Item {
+                    id: sideKeys
+                    focus: true
+                    Keys.onEscapePressed: root.sideOpen = false
+                }
+                Connections {
+                    target: side
+                    function onOpenHereChanged() {
+                        if (side.openHere) sideKeys.forceActiveFocus();
+                    }
+                }
+
+                // smoother updates while the lyrics are on screen
+                Timer {
+                    interval: 250
+                    repeat: true
+                    running: side.openHere && root.playing(root.spotify) && root.sideView === "lyrics"
+                    onTriggered: root.spotify.positionChanged()
+                }
+
+                // Spotify's position only updates when asked
+                Timer {
+                    interval: 1000
+                    repeat: true
+                    running: side.openHere && root.playing(root.spotify) && root.sideView !== "lyrics"
+                    onTriggered: root.spotify.positionChanged()
+                }
+
+                Rectangle {
+                    id: sideCard
+                    visible: sideWin.showing
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.right: parent.right
+                    anchors.rightMargin: 8
+                    width: side.openHere ? 380 : sidePill.width
+                    height: side.openHere ? Math.min(sideContent.implicitHeight + 36, sideWin.height - 20) : sidePill.height
+                    radius: side.openHere ? 30 : 23
+                    color: root.popupBg
+                    border.width: 1
+                    border.color: root.glassEdge
+                    clip: true
+                    Behavior on width { NumberAnimation { duration: root.animMs * 2.6; easing.type: Easing.OutBack; easing.overshoot: 0.8 } }
+                    Behavior on height { NumberAnimation { duration: root.animMs * 2.6; easing.type: Easing.OutBack; easing.overshoot: 0.8 } }
+                    Behavior on radius { NumberAnimation { duration: root.animMs * 2 } }
+
+                    GlassShine { radius: parent.radius; dark: root.dark }
+
+                    MouseArea { anchors.fill: parent }   // clicks inside don't fall through
+
+                    ColumnLayout {
+                        id: sideContent
+                        width: 344
+                        anchors.right: parent.right
+                        anchors.rightMargin: 18
+                        y: 18
+                        spacing: 12
+                        opacity: side.openHere ? 1 : 0
+                        Behavior on opacity { NumberAnimation { duration: side.openHere ? root.animMs * 3 : root.animMs; easing.type: Easing.OutCubic } }
+
+                        // ---- Header ----
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Text {
+                                Layout.fillWidth: true
+                                text: root.sideView === "lyrics" ? "Lyrics"
+                                    : (root.sideView === "signal" || root.sideView === "signalChat") ? "Signal" : "Quick controls"
+                                color: root.fg
+                                font.pixelSize: 16
+                                font.bold: true
+                            }
+                            Text {
+                                text: ""
+                                color: root.muted
+                                font.family: root.iconFont
+                                font.pixelSize: 14
+                                MouseArea { anchors.fill: parent; anchors.margins: -8; cursorShape: Qt.PointingHandCursor; onClicked: root.sideOpen = false }
+                            }
+                        }
+
+                        // ---- Lyrics view ----
+                        ColumnLayout {
+                            visible: root.sideView === "lyrics"
+                            Layout.fillWidth: true
+                            spacing: 10
+
+                            // back + song
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 10
+
+                                BarButton {
+                                    theme: root
+                                    icon: "\uf053"
+                                    label: "Back"
+                                    onClicked: mouse => { root.sideView = "main"; }
+                                }
+                                Rectangle {
+                                    Layout.preferredWidth: 40
+                                    Layout.preferredHeight: 40
+                                    radius: 10
+                                    color: root.overlay
+                                    clip: true
+                                    Image {
+                                        anchors.fill: parent
+                                        source: root.spotify ? root.spotify.trackArtUrl : ""
+                                        fillMode: Image.PreserveAspectCrop
+                                        visible: status === Image.Ready
+                                    }
+                                }
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 0
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: root.spotify ? (root.spotify.trackTitle || "") : "Nothing playing"
+                                        color: root.fg
+                                        font.pixelSize: 13
+                                        font.bold: true
+                                        elide: Text.ElideRight
+                                    }
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: root.spotify ? (root.spotify.trackArtist || "") : ""
+                                        color: root.muted
+                                        font.pixelSize: 11
+                                        elide: Text.ElideRight
+                                    }
+                                }
+                            }
+
+                            HubCard {
+                                theme: root
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 470
+
+                                ListView {
+                                    id: lyricView
+                                    anchors.fill: parent
+                                    anchors.margins: 14
+                                    clip: true
+                                    spacing: 10
+                                    model: root.lyricsLines
+                                    currentIndex: root.lyricsIndex
+                                    // keep the line being sung a little above the middle
+                                    highlightRangeMode: root.lyricsSynced && root.lyricsIndex >= 0 ? ListView.ApplyRange : ListView.NoHighlightRange
+                                    preferredHighlightBegin: height * 0.35
+                                    preferredHighlightEnd: height * 0.45
+                                    highlightMoveDuration: 450
+                                    boundsBehavior: Flickable.StopAtBounds
+
+                                    delegate: Text {
+                                        id: lyr
+                                        required property var modelData
+                                        required property int index
+                                        readonly property bool now: root.lyricsSynced && lyr.index === root.lyricsIndex
+                                        readonly property bool past: root.lyricsSynced && lyr.index < root.lyricsIndex
+                                        width: lyricView.width
+                                        text: lyr.modelData.text === "" ? "♪" : lyr.modelData.text
+                                        wrapMode: Text.Wrap
+                                        color: lyr.now ? root.fg : root.muted
+                                        opacity: !root.lyricsSynced ? 0.9 : (lyr.now ? 1 : (lyr.past ? 0.35 : 0.6))
+                                        font.pixelSize: lyr.now ? 19 : 15
+                                        font.bold: lyr.now || !root.lyricsSynced
+                                        Behavior on font.pixelSize { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+                                        Behavior on opacity { NumberAnimation { duration: 250 } }
+
+                                        // click a line to jump the song there
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            enabled: root.lyricsSynced && lyr.modelData.t >= 0
+                                            cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                            onClicked: {
+                                                const p = root.spotify;
+                                                if (p && p.canSeek) p.position = lyr.modelData.t;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // loading / nothing found
+                                Column {
+                                    anchors.centerIn: parent
+                                    visible: root.lyricsStatus !== "ok"
+                                    spacing: 8
+                                    Text {
+                                        anchors.horizontalCenter: parent.horizontalCenter
+                                        text: root.lyricsStatus === "loading" ? "\uf110" : "\uf001"
+                                        color: root.muted
+                                        font.family: root.iconFont
+                                        font.pixelSize: 30
+                                        RotationAnimation on rotation {
+                                            running: root.lyricsStatus === "loading"
+                                            loops: Animation.Infinite
+                                            from: 0
+                                            to: 360
+                                            duration: 1200
+                                        }
+                                    }
+                                    Text {
+                                        anchors.horizontalCenter: parent.horizontalCenter
+                                        horizontalAlignment: Text.AlignHCenter
+                                        text: !root.spotify ? "Play something on Spotify"
+                                            : root.lyricsStatus === "loading" ? "Finding lyrics…"
+                                            : root.lyricsStatus === "error" ? "Couldn't reach the lyrics service.\nCheck your internet."
+                                            : "No lyrics found for this song"
+                                        color: root.muted
+                                        font.pixelSize: 13
+                                    }
+                                }
+                            }
+
+                            Text {
+                                Layout.alignment: Qt.AlignHCenter
+                                text: root.lyricsSynced ? "Synced lyrics from LRCLIB · click a line to jump to it" : "Lyrics from LRCLIB"
+                                color: root.muted
+                                font.pixelSize: 10
+                                opacity: 0.8
+                            }
+                        }
+
+                        // ---- Signal: chat list ----
+                        ColumnLayout {
+                            visible: root.sideView === "signal"
+                            Layout.fillWidth: true
+                            spacing: 10
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 10
+                                BarButton {
+                                    theme: root
+                                    icon: ""
+                                    label: "Back"
+                                    onClicked: mouse => { root.sideView = "main"; }
+                                }
+                                Item { Layout.fillWidth: true }
+                                Rectangle {
+                                    width: 8
+                                    height: 8
+                                    radius: 4
+                                    color: root.sigReady ? "#4ade80" : "#fbbf24"
+                                }
+                                Text {
+                                    text: root.sigReady ? "Connected" : "Connecting…"
+                                    color: root.muted
+                                    font.pixelSize: 11
+                                }
+                            }
+
+                            HubCard {
+                                theme: root
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: sideWin.height - 150
+
+                                ListView {
+                                    id: chatList
+                                    anchors.fill: parent
+                                    anchors.margins: 8
+                                    clip: true
+                                    spacing: 4
+                                    boundsBehavior: Flickable.StopAtBounds
+                                    // chats first (newest on top), then contacts you haven't messaged here yet
+                                    model: {
+                                        const out = root.sigChatList.slice();
+                                        const have = {};
+                                        for (let i = 0; i < out.length; i++) have[out[i].key] = true;
+                                        for (let i = 0; i < root.sigContacts.length; i++) {
+                                            const c = root.sigContacts[i];
+                                            if (!have[c.key]) out.push({ key: c.key, name: c.name, group: false, id: c.id, msgs: [], unread: 0, last: 0, contact: true });
+                                        }
+                                        return out;
+                                    }
+
+                                    delegate: Rectangle {
+                                        id: chatRow
+                                        required property var modelData
+                                        readonly property var lastMsg: chatRow.modelData.msgs.length > 0
+                                            ? chatRow.modelData.msgs[chatRow.modelData.msgs.length - 1] : null
+                                        width: chatList.width
+                                        height: 58
+                                        radius: 14
+                                        color: chatMouse.containsMouse ? root.overlay : "transparent"
+                                        Behavior on color { ColorAnimation { duration: root.animMs } }
+
+                                        RowLayout {
+                                            anchors.fill: parent
+                                            anchors.leftMargin: 8
+                                            anchors.rightMargin: 10
+                                            spacing: 10
+
+                                            // round avatar with the first letter
+                                            Rectangle {
+                                                Layout.preferredWidth: 40
+                                                Layout.preferredHeight: 40
+                                                radius: 20
+                                                color: chatRow.modelData.group ? Qt.rgba(0.23, 0.46, 0.94, 0.35) : root.overlay
+                                                border.width: 1
+                                                border.color: root.glassEdge
+                                                Text {
+                                                    anchors.centerIn: parent
+                                                    text: chatRow.modelData.group ? "" : (chatRow.modelData.name || "?").charAt(0).toUpperCase()
+                                                    font.family: chatRow.modelData.group ? root.iconFont : ""
+                                                    color: root.fg
+                                                    font.pixelSize: chatRow.modelData.group ? 14 : 16
+                                                    font.bold: true
+                                                }
+                                            }
+
+                                            ColumnLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 1
+                                                Text {
+                                                    Layout.fillWidth: true
+                                                    text: chatRow.modelData.name || chatRow.modelData.id
+                                                    color: root.fg
+                                                    font.pixelSize: 13
+                                                    font.bold: chatRow.modelData.unread > 0
+                                                    elide: Text.ElideRight
+                                                }
+                                                Text {
+                                                    Layout.fillWidth: true
+                                                    text: chatRow.lastMsg
+                                                        ? (chatRow.lastMsg.me ? "You: " : (chatRow.modelData.group ? chatRow.lastMsg.from + ": " : "")) + chatRow.lastMsg.text
+                                                        : (chatRow.modelData.contact ? "Start a chat" : "No messages yet")
+                                                    color: chatRow.modelData.unread > 0 ? root.fg : root.muted
+                                                    font.pixelSize: 11
+                                                    elide: Text.ElideRight
+                                                }
+                                            }
+
+                                            ColumnLayout {
+                                                spacing: 3
+                                                Text {
+                                                    Layout.alignment: Qt.AlignRight
+                                                    text: root.sigTime(chatRow.modelData.last)
+                                                    color: root.muted
+                                                    font.pixelSize: 10
+                                                }
+                                                Rectangle {
+                                                    Layout.alignment: Qt.AlignRight
+                                                    visible: chatRow.modelData.unread > 0
+                                                    implicitWidth: Math.max(18, unreadText.implicitWidth + 8)
+                                                    implicitHeight: 18
+                                                    radius: 9
+                                                    color: "#3a76f0"
+                                                    Text {
+                                                        id: unreadText
+                                                        anchors.centerIn: parent
+                                                        text: chatRow.modelData.unread
+                                                        color: "white"
+                                                        font.pixelSize: 10
+                                                        font.bold: true
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        MouseArea {
+                                            id: chatMouse
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: root.sigOpen(chatRow.modelData.key, chatRow.modelData.name, chatRow.modelData.group, chatRow.modelData.id)
+                                        }
+                                    }
+                                }
+
+                                Column {
+                                    anchors.centerIn: parent
+                                    visible: chatList.count === 0
+                                    spacing: 8
+                                    Text {
+                                        anchors.horizontalCenter: parent.horizontalCenter
+                                        text: ""
+                                        color: root.muted
+                                        font.family: root.iconFont
+                                        font.pixelSize: 32
+                                    }
+                                    Text {
+                                        anchors.horizontalCenter: parent.horizontalCenter
+                                        horizontalAlignment: Text.AlignHCenter
+                                        text: root.sigReady ? "No chats yet.\nNew messages will show up here." : "Starting Signal…"
+                                        color: root.muted
+                                        font.pixelSize: 12
+                                    }
+                                }
+                            }
+                        }
+
+                        // ---- Signal: one chat ----
+                        ColumnLayout {
+                            id: chatView
+                            visible: root.sideView === "signalChat"
+                            Layout.fillWidth: true
+                            spacing: 10
+                            readonly property var chat: root.sigChats[root.sigCurrent] || null
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 10
+                                BarButton {
+                                    theme: root
+                                    icon: ""
+                                    label: "Chats"
+                                    onClicked: mouse => { root.sideView = "signal"; }
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: chatView.chat ? (chatView.chat.name || chatView.chat.id) : ""
+                                    color: root.fg
+                                    font.pixelSize: 14
+                                    font.bold: true
+                                    elide: Text.ElideRight
+                                }
+                            }
+
+                            HubCard {
+                                theme: root
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: sideWin.height - 210
+
+                                ListView {
+                                    id: msgList
+                                    anchors.fill: parent
+                                    anchors.margins: 10
+                                    clip: true
+                                    spacing: 6
+                                    boundsBehavior: Flickable.StopAtBounds
+                                    model: chatView.chat ? chatView.chat.msgs : []
+                                    onCountChanged: Qt.callLater(() => msgList.positionViewAtEnd())
+                                    onVisibleChanged: if (visible) Qt.callLater(() => msgList.positionViewAtEnd())
+
+                                    delegate: Item {
+                                        id: bub
+                                        required property var modelData
+                                        width: msgList.width
+                                        height: bubble.height + (bubName.visible ? bubName.implicitHeight + 2 : 0)
+
+                                        Text {
+                                            id: bubName
+                                            visible: !bub.modelData.me && !!chatView.chat && chatView.chat.group
+                                            x: 6
+                                            text: bub.modelData.from
+                                            color: root.accent
+                                            font.pixelSize: 10
+                                            font.bold: true
+                                        }
+
+                                        Rectangle {
+                                            id: bubble
+                                            y: bubName.visible ? bubName.implicitHeight + 2 : 0
+                                            anchors.right: bub.modelData.me ? parent.right : undefined
+                                            anchors.left: bub.modelData.me ? undefined : parent.left
+                                            width: Math.min(bubText.implicitWidth + 24, msgList.width * 0.8)
+                                            height: bubText.implicitHeight + bubTime.implicitHeight + 16
+                                            radius: 16
+                                            color: bub.modelData.me ? Qt.rgba(0.23, 0.46, 0.94, 0.85) : root.overlay
+                                            border.width: 1
+                                            border.color: root.glassEdge
+
+                                            Text {
+                                                id: bubText
+                                                x: 12
+                                                y: 7
+                                                width: Math.min(implicitWidth, msgList.width * 0.8 - 24)
+                                                text: bub.modelData.text
+                                                wrapMode: Text.Wrap
+                                                color: bub.modelData.me ? "white" : root.fg
+                                                font.pixelSize: 13
+                                            }
+                                            Text {
+                                                id: bubTime
+                                                anchors.right: parent.right
+                                                anchors.rightMargin: 10
+                                                anchors.bottom: parent.bottom
+                                                anchors.bottomMargin: 4
+                                                text: root.sigTime(bub.modelData.ts)
+                                                color: bub.modelData.me ? Qt.rgba(1, 1, 1, 0.75) : root.muted
+                                                font.pixelSize: 9
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Text {
+                                    anchors.centerIn: parent
+                                    visible: msgList.count === 0
+                                    text: "Say hi 👋"
+                                    color: root.muted
+                                    font.pixelSize: 13
+                                }
+                            }
+
+                            // ---- type + send ----
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 8
+
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: 44
+                                    radius: 22
+                                    color: root.surface
+                                    border.width: 1
+                                    border.color: sigInput.activeFocus ? root.accent : root.glassEdge
+
+                                    TextInput {
+                                        id: sigInput
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 16
+                                        anchors.rightMargin: 16
+                                        verticalAlignment: TextInput.AlignVCenter
+                                        color: root.fg
+                                        font.pixelSize: 13
+                                        clip: true
+                                        selectByMouse: true
+                                        Keys.onReturnPressed: sendBtn.send()
+                                        Keys.onEnterPressed: sendBtn.send()
+                                        Keys.onEscapePressed: root.sideView = "signal"
+
+                                        Text {
+                                            anchors.fill: parent
+                                            verticalAlignment: Text.AlignVCenter
+                                            visible: sigInput.text === ""
+                                            text: root.sigReady ? "Message" : "Connecting to Signal…"
+                                            color: root.muted
+                                            font.pixelSize: 13
+                                        }
+                                    }
+
+                                    Connections {
+                                        target: root
+                                        function onSigCurrentChanged() {
+                                            sigInput.text = "";
+                                            sigInput.forceActiveFocus();
+                                        }
+                                    }
+                                }
+
+                                Rectangle {
+                                    id: sendBtn
+                                    Layout.preferredWidth: 44
+                                    Layout.preferredHeight: 44
+                                    radius: 22
+                                    readonly property bool ok: root.sigReady && sigInput.text.trim() !== ""
+                                    color: sendBtn.ok ? "#3a76f0" : root.overlay
+                                    scale: sendMouse.pressed ? 0.9 : 1
+                                    Behavior on color { ColorAnimation { duration: root.animMs } }
+                                    Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+
+                                    function send() {
+                                        if (root.sigSend(root.sigCurrent, sigInput.text)) sigInput.text = "";
+                                    }
+
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: ""
+                                        color: "white"
+                                        font.family: root.iconFont
+                                        font.pixelSize: 15
+                                    }
+                                    MouseArea {
+                                        id: sendMouse
+                                        anchors.fill: parent
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: sendBtn.send()
+                                    }
+                                }
+                            }
+                        }
+
+                        // ---- Main view: brightness, Spotify, Vesktop, Signal (scrolls if it gets tall) ----
+                        Flickable {
+                            id: sideScroll
+                            visible: root.sideView === "main"
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: Math.min(sideMain.implicitHeight, sideWin.height - 130)
+                            contentHeight: sideMain.implicitHeight
+                            clip: true
+                            boundsBehavior: Flickable.StopAtBounds
+
+                            ColumnLayout {
+                                id: sideMain
+                                width: sideScroll.width
+                                spacing: 12
+
+                                // ---- Brightness ----
+                                HubCard {
+                                    theme: root
+                                    visible: root.sideView === "main"
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: brightCol.implicitHeight + 28
+
+                                    ColumnLayout {
+                                        id: brightCol
+                                        anchors.left: parent.left
+                                        anchors.right: parent.right
+                                        anchors.top: parent.top
+                                        anchors.margins: 14
+                                        spacing: 10
+
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 8
+                                            Text { text: ""; color: root.accent; font.family: root.iconFont; font.pixelSize: 15 }
+                                            Text { Layout.fillWidth: true; text: "Brightness"; color: root.fg; font.pixelSize: 14; font.bold: true }
+                                            Text {
+                                                visible: root.brightLoading
+                                                text: "Checking…"
+                                                color: root.muted
+                                                font.pixelSize: 11
+                                            }
+                                        }
+
+                                        // all monitors at once (only with more than one)
+                                        RowLayout {
+                                            visible: root.brightDisplays.length > 1
+                                            Layout.fillWidth: true
+                                            spacing: 10
+                                            Text { Layout.preferredWidth: 84; text: "All screens"; color: root.fg; font.pixelSize: 12; font.bold: true }
+                                            ValueBar {
+                                                theme: root
+                                                Layout.fillWidth: true
+                                                value: Math.max(0, root.brightAvg) / 100
+                                                onMoved: v => root.setAllBrightness(v * 100)
+                                            }
+                                            Text { Layout.preferredWidth: 36; horizontalAlignment: Text.AlignRight; text: root.brightAvg + "%"; color: root.fg; font.pixelSize: 12 }
+                                        }
+
+                                        Repeater {
+                                            model: root.brightDisplays
+                                            delegate: RowLayout {
+                                                id: bRow
+                                                required property var modelData
+                                                Layout.fillWidth: true
+                                                spacing: 10
+                                                Text {
+                                                    Layout.preferredWidth: 84
+                                                    text: bRow.modelData.name
+                                                    color: root.muted
+                                                    font.pixelSize: 12
+                                                    elide: Text.ElideRight
+                                                }
+                                                ValueBar {
+                                                    theme: root
+                                                    Layout.fillWidth: true
+                                                    value: bRow.modelData.value / 100
+                                                    onMoved: v => root.setBrightness(bRow.modelData.id, v * 100)
+                                                }
+                                                Text {
+                                                    Layout.preferredWidth: 36
+                                                    horizontalAlignment: Text.AlignRight
+                                                    text: bRow.modelData.value + "%"
+                                                    color: root.fg
+                                                    font.pixelSize: 12
+                                                }
+                                            }
+                                        }
+
+                                        // nothing found
+                                        Text {
+                                            visible: !root.brightLoading && root.brightDisplays.length === 0
+                                            Layout.fillWidth: true
+                                            wrapMode: Text.Wrap
+                                            text: root.brightNoDdc
+                                                ? "Monitor brightness needs ddcutil. In a terminal:\nsudo pacman -S ddcutil"
+                                                : "No monitors answered. Make sure DDC/CI is turned on in your monitor's own menu."
+                                            color: root.muted
+                                            font.pixelSize: 12
+                                        }
+                                    }
+                                }
+
+                                // ---- Spotify ----
+                                HubCard {
+                                    theme: root
+                                    visible: root.sideView === "main"
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: spCol.implicitHeight + 28
+
+                                    // click the Spotify section to see the lyrics
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        enabled: root.spotify !== null
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: root.showLyrics()
+                                    }
+
+                                    ColumnLayout {
+                                        id: spCol
+                                        anchors.left: parent.left
+                                        anchors.right: parent.right
+                                        anchors.top: parent.top
+                                        anchors.margins: 14
+                                        spacing: 10
+
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 8
+                                            IconImage {
+                                                visible: root.spotifyIcon !== ""
+                                                implicitSize: 18
+                                                source: root.spotifyIcon
+                                            }
+                                            Text {
+                                                visible: root.spotifyIcon === ""
+                                                text: "\uf1bc"
+                                                color: "#1ed760"
+                                                font.family: root.iconFont
+                                                font.pixelSize: 16
+                                            }
+                                            Text { Layout.fillWidth: true; text: "Spotify"; color: root.fg; font.pixelSize: 14; font.bold: true }
+                                            Text {
+                                                visible: root.spotify !== null
+                                                text: root.playing(root.spotify) ? "Playing" : "Paused"
+                                                color: root.playing(root.spotify) ? root.accent : root.muted
+                                                font.pixelSize: 11
+                                            }
+                                            BarButton {
+                                                visible: root.spotify !== null
+                                                theme: root
+                                                icon: "\uf130"
+                                                label: "Lyrics"
+                                                onClicked: mouse => root.showLyrics()
+                                            }
+                                        }
+
+                                        // now playing
+                                        RowLayout {
+                                            visible: root.spotify !== null
+                                            Layout.fillWidth: true
+                                            spacing: 12
+
+                                            Rectangle {
+                                                Layout.preferredWidth: 76
+                                                Layout.preferredHeight: 76
+                                                radius: 14
+                                                color: root.overlay
+                                                clip: true
+                                                Image {
+                                                    anchors.fill: parent
+                                                    source: root.spotify ? root.spotify.trackArtUrl : ""
+                                                    fillMode: Image.PreserveAspectCrop
+                                                    visible: status === Image.Ready
+                                                }
+                                                GlassShine { radius: parent.radius; dark: root.dark; strength: 0.7 }
+                                            }
+
+                                            ColumnLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 2
+                                                Text {
+                                                    Layout.fillWidth: true
+                                                    text: root.spotify ? (root.spotify.trackTitle || "Unknown song") : ""
+                                                    color: root.fg
+                                                    font.pixelSize: 14
+                                                    font.bold: true
+                                                    elide: Text.ElideRight
+                                                }
+                                                Text {
+                                                    Layout.fillWidth: true
+                                                    text: root.spotify ? root.spotify.trackArtist : ""
+                                                    color: root.muted
+                                                    font.pixelSize: 12
+                                                    elide: Text.ElideRight
+                                                }
+                                                Item { Layout.preferredHeight: 4 }
+                                                RowLayout {
+                                                    spacing: 6
+                                                    IconButton {
+                                                        theme: root
+                                                        label: "|◀"
+                                                        dim: !(root.spotify && root.spotify.canGoPrevious)
+                                                        onClicked: if (root.spotify && root.spotify.canGoPrevious) root.spotify.previous()
+                                                    }
+                                                    IconButton {
+                                                        theme: root
+                                                        implicitWidth: 54
+                                                        label: root.playing(root.spotify) ? "❚❚" : "▶"
+                                                        dim: !(root.spotify && root.spotify.canTogglePlaying)
+                                                        onClicked: if (root.spotify && root.spotify.canTogglePlaying) root.spotify.togglePlaying()
+                                                    }
+                                                    IconButton {
+                                                        theme: root
+                                                        label: "▶|"
+                                                        dim: !(root.spotify && root.spotify.canGoNext)
+                                                        onClicked: if (root.spotify && root.spotify.canGoNext) root.spotify.next()
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        ValueBar {
+                                            visible: root.spotify !== null
+                                            theme: root
+                                            Layout.fillWidth: true
+                                            value: root.spotify && root.spotify.length > 0 ? root.spotify.position / root.spotify.length : 0
+                                            onMoved: v => {
+                                                const p = root.spotify;
+                                                if (p && p.canSeek && p.length > 0) p.position = v * p.length;
+                                            }
+                                        }
+                                        RowLayout {
+                                            visible: root.spotify !== null
+                                            Layout.fillWidth: true
+                                            Text { text: root.fmt(root.spotify ? root.spotify.position : 0); color: root.muted; font.pixelSize: 10 }
+                                            Item { Layout.fillWidth: true }
+                                            Text { text: root.fmt(root.spotify ? root.spotify.length : 0); color: root.muted; font.pixelSize: 10 }
+                                        }
+
+                                        // shuffle, repeat all, repeat one
+                                        RowLayout {
+                                            visible: root.spotify !== null
+                                            Layout.fillWidth: true
+                                            spacing: 8
+
+                                            Repeater {
+                                                model: [
+                                                    {
+                                                        icon: "\uf074", name: "Shuffle",
+                                                        on: !!(root.spotify && root.spotify.shuffle),
+                                                        ok: !!(root.spotify && root.spotify.shuffleSupported),
+                                                        act: () => root.spotifyShuffle()
+                                                    },
+                                                    {
+                                                        icon: "\uf01e", name: "Repeat all",
+                                                        on: !!(root.spotify && root.spotify.loopState === MprisLoopState.Playlist),
+                                                        ok: !!(root.spotify && root.spotify.loopSupported),
+                                                        act: () => root.spotifyRepeat("playlist")
+                                                    },
+                                                    {
+                                                        icon: "\uf01e", name: "Repeat one",
+                                                        on: !!(root.spotify && root.spotify.loopState === MprisLoopState.Track),
+                                                        ok: !!(root.spotify && root.spotify.loopSupported),
+                                                        act: () => root.spotifyRepeat("track")
+                                                    }
+                                                ]
+                                                delegate: Rectangle {
+                                                    id: rpt
+                                                    required property var modelData
+                                                    Layout.fillWidth: true
+                                                    Layout.preferredHeight: 34
+                                                    radius: 12
+                                                    opacity: rpt.modelData.ok ? 1 : 0.4
+                                                    color: rpt.modelData.on ? root.accent : (rptMouse.containsMouse ? root.overlay : root.surface)
+                                                    border.width: 1
+                                                    border.color: root.glassEdge
+                                                    scale: rptMouse.pressed ? 0.94 : 1
+                                                    Behavior on color { ColorAnimation { duration: root.animMs } }
+                                                    Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+                                                    Row {
+                                                        anchors.centerIn: parent
+                                                        spacing: 6
+                                                        Text {
+                                                            anchors.verticalCenter: parent.verticalCenter
+                                                            text: rpt.modelData.icon
+                                                            color: rpt.modelData.on ? root.bg : root.accent
+                                                            font.family: root.iconFont
+                                                            font.pixelSize: 11
+                                                        }
+                                                        Text {
+                                                            anchors.verticalCenter: parent.verticalCenter
+                                                            text: rpt.modelData.name
+                                                            color: rpt.modelData.on ? root.bg : root.fg
+                                                            font.pixelSize: 11
+                                                            font.bold: rpt.modelData.on
+                                                        }
+                                                    }
+                                                    // a little "1" on the repeat-one button
+                                                    Rectangle {
+                                                        visible: rpt.modelData.name === "Repeat one"
+                                                        anchors.top: parent.top
+                                                        anchors.right: parent.right
+                                                        anchors.margins: 4
+                                                        width: 12
+                                                        height: 12
+                                                        radius: 6
+                                                        color: rpt.modelData.on ? root.bg : root.accent
+                                                        Text {
+                                                            anchors.centerIn: parent
+                                                            text: "1"
+                                                            color: rpt.modelData.on ? root.accent : root.bg
+                                                            font.pixelSize: 8
+                                                            font.bold: true
+                                                        }
+                                                    }
+                                                    MouseArea {
+                                                        id: rptMouse
+                                                        anchors.fill: parent
+                                                        hoverEnabled: true
+                                                        cursorShape: rpt.modelData.ok ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                                        onClicked: if (rpt.modelData.ok) rpt.modelData.act()
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // music volume: - slider +
+                                        RowLayout {
+                                            visible: root.spotify !== null
+                                            Layout.fillWidth: true
+                                            spacing: 8
+                                            IconButton {
+                                                theme: root
+                                                implicitWidth: 34
+                                                implicitHeight: 30
+                                                label: "−"
+                                                dim: root.spotifyVolume < 0
+                                                onClicked: root.spotifyVolumeStep(-0.05)
+                                            }
+                                            ValueBar {
+                                                theme: root
+                                                Layout.fillWidth: true
+                                                value: Math.max(0, root.spotifyVolume)
+                                                onMoved: v => root.setSpotifyVolume(v)
+                                            }
+                                            IconButton {
+                                                theme: root
+                                                implicitWidth: 34
+                                                implicitHeight: 30
+                                                label: "+"
+                                                dim: root.spotifyVolume < 0
+                                                onClicked: root.spotifyVolumeStep(0.05)
+                                            }
+                                            Text {
+                                                Layout.preferredWidth: 34
+                                                horizontalAlignment: Text.AlignRight
+                                                text: root.spotifyVolume >= 0 ? Math.round(root.spotifyVolume * 100) + "%" : "--"
+                                                color: root.fg
+                                                font.pixelSize: 11
+                                            }
+                                        }
+
+                                        // not open
+                                        RowLayout {
+                                            visible: root.spotify === null
+                                            Layout.fillWidth: true
+                                            Text {
+                                                Layout.fillWidth: true
+                                                text: "Spotify isn't open"
+                                                color: root.muted
+                                                font.pixelSize: 12
+                                            }
+                                            BarButton {
+                                                theme: root
+                                                icon: ""
+                                                label: "Open"
+                                                onClicked: mouse => root.openSpotify()
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // ---- Vesktop (Discord) ----
+                                HubCard {
+                                    theme: root
+                                    visible: root.sideView === "main"
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: dcCol.implicitHeight + 28
+
+                                    ColumnLayout {
+                                        id: dcCol
+                                        anchors.left: parent.left
+                                        anchors.right: parent.right
+                                        anchors.top: parent.top
+                                        anchors.margins: 14
+                                        spacing: 10
+
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 8
+                                            IconImage {
+                                                visible: root.vesktopIcon !== ""
+                                                implicitSize: 18
+                                                source: root.vesktopIcon
+                                            }
+                                            Text {
+                                                visible: root.vesktopIcon === ""
+                                                text: "\uf086"
+                                                color: "#5865f2"
+                                                font.family: root.iconFont
+                                                font.pixelSize: 15
+                                            }
+                                            Text { Layout.fillWidth: true; text: "Vesktop"; color: root.fg; font.pixelSize: 14; font.bold: true }
+                                            BarButton {
+                                                theme: root
+                                                icon: root.discordRunning ? "" : ""
+                                                label: root.discordRunning ? "Show" : "Open"
+                                                onClicked: mouse => root.openDiscord()
+                                            }
+                                        }
+
+                                        // quick call controls (whole computer, works in any call)
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 8
+
+                                            Repeater {
+                                                model: [
+                                                    {
+                                                        icon: root.source && root.source.audio && root.source.audio.muted ? "" : "",
+                                                        name: root.source && root.source.audio && root.source.audio.muted ? "Mic muted" : "Mic on",
+                                                        on: !!(root.source && root.source.audio && root.source.audio.muted),
+                                                        act: () => { if (root.source && root.source.audio) root.source.audio.muted = !root.source.audio.muted; }
+                                                    },
+                                                    {
+                                                        icon: root.sink && root.sink.audio && root.sink.audio.muted ? "" : "",
+                                                        name: root.sink && root.sink.audio && root.sink.audio.muted ? "Deafened" : "Sound on",
+                                                        on: !!(root.sink && root.sink.audio && root.sink.audio.muted),
+                                                        act: () => { if (root.sink && root.sink.audio) root.sink.audio.muted = !root.sink.audio.muted; }
+                                                    }
+                                                ]
+                                                delegate: Rectangle {
+                                                    id: callBtn
+                                                    required property var modelData
+                                                    Layout.fillWidth: true
+                                                    Layout.preferredHeight: 40
+                                                    radius: 14
+                                                    color: callBtn.modelData.on ? Qt.rgba(root.danger.r, root.danger.g, root.danger.b, 0.25)
+                                                        : (callMouse.containsMouse ? root.overlay : root.surface)
+                                                    border.width: 1
+                                                    border.color: callBtn.modelData.on ? root.danger : root.glassEdge
+                                                    scale: callMouse.pressed ? 0.95 : 1
+                                                    Behavior on color { ColorAnimation { duration: root.animMs } }
+                                                    Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+                                                    Row {
+                                                        anchors.centerIn: parent
+                                                        spacing: 8
+                                                        Text {
+                                                            anchors.verticalCenter: parent.verticalCenter
+                                                            text: callBtn.modelData.icon
+                                                            color: callBtn.modelData.on ? root.danger : root.accent
+                                                            font.family: root.iconFont
+                                                            font.pixelSize: 14
+                                                        }
+                                                        Text {
+                                                            anchors.verticalCenter: parent.verticalCenter
+                                                            text: callBtn.modelData.name
+                                                            color: root.fg
+                                                            font.pixelSize: 12
+                                                        }
+                                                    }
+                                                    MouseArea {
+                                                        id: callMouse
+                                                        anchors.fill: parent
+                                                        hoverEnabled: true
+                                                        cursorShape: Qt.PointingHandCursor
+                                                        onClicked: callBtn.modelData.act()
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // latest Vesktop messages (from its notifications)
+                                        Text {
+                                            text: root.discordNotifs.length > 0 ? "New messages" : "No new messages"
+                                            color: root.muted
+                                            font.pixelSize: 11
+                                        }
+
+                                        Repeater {
+                                            model: root.discordNotifs.slice(0, 3)
+                                            delegate: Rectangle {
+                                                id: dmsg
+                                                required property var modelData
+                                                Layout.fillWidth: true
+                                                Layout.preferredHeight: dmsgCol.implicitHeight + 18
+                                                radius: 14
+                                                color: dmsgMouse.containsMouse ? root.overlay : root.surface
+                                                border.width: 1
+                                                border.color: root.glassEdge
+
+                                                ColumnLayout {
+                                                    id: dmsgCol
+                                                    anchors.left: parent.left
+                                                    anchors.right: parent.right
+                                                    anchors.top: parent.top
+                                                    anchors.margins: 9
+                                                    anchors.rightMargin: 28
+                                                    spacing: 1
+                                                    Text {
+                                                        Layout.fillWidth: true
+                                                        text: dmsg.modelData.summary
+                                                        color: root.fg
+                                                        font.pixelSize: 12
+                                                        font.bold: true
+                                                        elide: Text.ElideRight
+                                                    }
+                                                    Text {
+                                                        Layout.fillWidth: true
+                                                        visible: text !== ""
+                                                        text: dmsg.modelData.body
+                                                        color: root.muted
+                                                        font.pixelSize: 11
+                                                        wrapMode: Text.Wrap
+                                                        maximumLineCount: 2
+                                                        elide: Text.ElideRight
+                                                    }
+                                                }
+
+                                                // click opens Vesktop, × dismisses
+                                                MouseArea {
+                                                    id: dmsgMouse
+                                                    anchors.fill: parent
+                                                    hoverEnabled: true
+                                                    cursorShape: Qt.PointingHandCursor
+                                                    onClicked: {
+                                                        dmsg.modelData.dismiss();
+                                                        root.openDiscord();
+                                                    }
+                                                }
+                                                Text {
+                                                    anchors.top: parent.top
+                                                    anchors.right: parent.right
+                                                    anchors.margins: 9
+                                                    text: ""
+                                                    color: root.muted
+                                                    font.family: root.iconFont
+                                                    font.pixelSize: 11
+                                                    MouseArea {
+                                                        anchors.fill: parent
+                                                        anchors.margins: -6
+                                                        cursorShape: Qt.PointingHandCursor
+                                                        onClicked: dmsg.modelData.dismiss()
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // ---- Signal ----
+                                HubCard {
+                                    theme: root
+                                    visible: root.sideView === "main"
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: sgCol.implicitHeight + 28
+
+                                    ColumnLayout {
+                                        id: sgCol
+                                        anchors.left: parent.left
+                                        anchors.right: parent.right
+                                        anchors.top: parent.top
+                                        anchors.margins: 14
+                                        spacing: 10
+
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 8
+                                            IconImage {
+                                                visible: root.signalIcon !== ""
+                                                implicitSize: 18
+                                                source: root.signalIcon
+                                            }
+                                            Text {
+                                                visible: root.signalIcon === ""
+                                                text: "\uf075"
+                                                color: "#3a76f0"
+                                                font.family: root.iconFont
+                                                font.pixelSize: 15
+                                            }
+                                            Text { Layout.fillWidth: true; text: "Signal"; color: root.fg; font.pixelSize: 14; font.bold: true }
+                                            BarButton {
+                                                visible: root.sigAccount !== ""
+                                                theme: root
+                                                icon: "\uf086"
+                                                label: root.sigUnreadTotal > 0 ? "Chats (" + root.sigUnreadTotal + ")" : "Chats"
+                                                onClicked: mouse => { root.sideView = "signal"; }
+                                            }
+                                            BarButton {
+                                                theme: root
+                                                icon: root.signalRunning ? "" : ""
+                                                label: root.signalRunning ? "Show" : "Open"
+                                                onClicked: mouse => root.openSignal()
+                                            }
+                                        }
+
+                                                // not set up for reading/replying here yet
+                                        Text {
+                                            visible: root.sigAccount === ""
+                                            Layout.fillWidth: true
+                                            wrapMode: Text.Wrap
+                                            text: root.sigCliMissing
+                                                ? "To read and reply right here, install signal-cli:\nparu -S signal-cli qrencode"
+                                                : "To read and reply right here, run this once in a terminal:\n~/.config/quickshell/scripts/signal-setup.sh"
+                                            color: root.muted
+                                            font.pixelSize: 11
+                                        }
+
+                                        // latest Signal messages (from its notifications)
+                                        Text {
+                                            text: root.signalNotifs.length > 0 ? "New messages" : "No new messages"
+                                            color: root.muted
+                                            font.pixelSize: 11
+                                        }
+
+                                        Repeater {
+                                            model: root.signalNotifs.slice(0, 3)
+                                            delegate: Rectangle {
+                                                id: smsg
+                                                required property var modelData
+                                                Layout.fillWidth: true
+                                                Layout.preferredHeight: smsgCol.implicitHeight + 18
+                                                radius: 14
+                                                color: smsgMouse.containsMouse ? root.overlay : root.surface
+                                                border.width: 1
+                                                border.color: root.glassEdge
+
+                                                ColumnLayout {
+                                                    id: smsgCol
+                                                    anchors.left: parent.left
+                                                    anchors.right: parent.right
+                                                    anchors.top: parent.top
+                                                    anchors.margins: 9
+                                                    anchors.rightMargin: 28
+                                                    spacing: 1
+                                                    Text {
+                                                        Layout.fillWidth: true
+                                                        text: smsg.modelData.summary
+                                                        color: root.fg
+                                                        font.pixelSize: 12
+                                                        font.bold: true
+                                                        elide: Text.ElideRight
+                                                    }
+                                                    Text {
+                                                        Layout.fillWidth: true
+                                                        visible: text !== ""
+                                                        text: smsg.modelData.body
+                                                        color: root.muted
+                                                        font.pixelSize: 11
+                                                        wrapMode: Text.Wrap
+                                                        maximumLineCount: 2
+                                                        elide: Text.ElideRight
+                                                    }
+                                                }
+
+                                                // click opens Signal, × dismisses
+                                                MouseArea {
+                                                    id: smsgMouse
+                                                    anchors.fill: parent
+                                                    hoverEnabled: true
+                                                    cursorShape: Qt.PointingHandCursor
+                                                    onClicked: {
+                                                        smsg.modelData.dismiss();
+                                                        root.openSignal();
+                                                    }
+                                                }
+                                                Text {
+                                                    anchors.top: parent.top
+                                                    anchors.right: parent.right
+                                                    anchors.margins: 9
+                                                    text: ""
+                                                    color: root.muted
+                                                    font.family: root.iconFont
+                                                    font.pixelSize: 11
+                                                    MouseArea {
+                                                        anchors.fill: parent
+                                                        anchors.margins: -6
+                                                        cursorShape: Qt.PointingHandCursor
+                                                        onClicked: smsg.modelData.dismiss()
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // ---------- Wallpaper picker (scroll through, click or Enter to set) ----------
     Variants {
         model: Quickshell.screens
@@ -6487,28 +9108,46 @@ ShellRoot {
             color: "#30000000"
 
             readonly property int thumbW: 340
+            // which list the carousel shows: still pictures or live (video) wallpapers
+            property string mode: "pictures"
+            readonly property bool live: mode === "live"
+            readonly property var src: live ? (root.liveThumbsReady ? liveVideos : emptyModel) : wallpapers
+            ListModel { id: emptyModel }
+
+            function setMode(m) {
+                if (mode === m) return;
+                mode = m;
+                if (m === "live") root.refreshLiveThumbs();
+                const i = currentWallIndex();
+                strip.currentIndex = i >= 0 ? i : 0;
+                strip.positionViewAtIndex(strip.currentIndex, ListView.Center);
+            }
             readonly property int thumbH: 200
             property real wheelAcc: 0
 
             // Index of the wallpaper that's set right now (-1 if none)
             function currentWallIndex() {
-                for (let i = 0; i < wallpapers.count; i++)
-                    if (wallpapers.get(i, "fileUrl").toString() === pins.adapter.wallpaper) return i;
+                for (let i = 0; i < picker.src.count; i++)
+                    if (picker.src.get(i, "fileUrl").toString() === (picker.live ? pins.adapter.liveWallpaper : pins.adapter.wallpaper)) return i;
                 return -1;
             }
 
             function step(n) {
-                if (wallpapers.count === 0) return;
-                strip.currentIndex = Math.max(0, Math.min(wallpapers.count - 1, strip.currentIndex + n));
+                if (picker.src.count === 0) return;
+                strip.currentIndex = Math.max(0, Math.min(picker.src.count - 1, strip.currentIndex + n));
             }
 
             function applyCurrent() {
-                if (strip.currentIndex < 0 || strip.currentIndex >= wallpapers.count) return;
-                root.setWallpaper(wallpapers.get(strip.currentIndex, "fileUrl").toString());
+                if (strip.currentIndex < 0 || strip.currentIndex >= picker.src.count) return;
+                const url = picker.src.get(strip.currentIndex, "fileUrl").toString();
+                if (picker.live) root.setLiveWallpaper(url, picker.src.get(strip.currentIndex, "fileName"));
+                else root.setWallpaper(url);
             }
 
             onVisibleChanged: {
                 if (visible) {
+                    mode = pins.adapter.liveWallpaper !== "" ? "live" : "pictures";
+                    if (live) root.refreshLiveThumbs();
                     const i = currentWallIndex();
                     strip.currentIndex = i >= 0 ? i : 0;
                     strip.positionViewAtIndex(strip.currentIndex, ListView.Center);
@@ -6530,7 +9169,14 @@ ShellRoot {
                     else if (event.key === Qt.Key_Right || event.key === Qt.Key_Down || event.key === Qt.Key_Tab) picker.step(1);
                     else if (event.key === Qt.Key_Left || event.key === Qt.Key_Up || event.key === Qt.Key_Backtab) picker.step(-1);
                     else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) picker.applyCurrent();
-                    else if (event.key === Qt.Key_R) root.randomWallpaper();
+                    else if (event.key === Qt.Key_R) {
+                        if (picker.live) {
+                            if (picker.src.count > 0) {
+                                strip.currentIndex = Math.floor(Math.random() * picker.src.count);
+                                picker.applyCurrent();
+                            }
+                        } else root.randomWallpaper();
+                    }
                     else return;
                     event.accepted = true;
                 }
@@ -6587,18 +9233,94 @@ ShellRoot {
                             font.pixelSize: 17
                             font.bold: true
                         }
+                        Buddy { theme: root; slot: 4; size: 30 }
                         Text {
-                            visible: wallpapers.count > 0
-                            text: (strip.currentIndex + 1) + " / " + wallpapers.count
+                            visible: picker.src.count > 0
+                            text: (strip.currentIndex + 1) + " / " + picker.src.count
                             color: root.muted
                             font.pixelSize: 13
                         }
+
                         Item { Layout.fillWidth: true }
+
+                        // ---- Pictures | Live ----
+                        Rectangle {
+                            implicitWidth: modeRow.implicitWidth + 8
+                            implicitHeight: 38
+                            radius: 13
+                            color: root.surface
+                            border.width: 1
+                            border.color: root.glassEdge
+
+                            Row {
+                                id: modeRow
+                                anchors.centerIn: parent
+                                spacing: 3
+                                Repeater {
+                                    model: [
+                                        { key: "pictures", name: "Pictures", icon: "\uf03e" },
+                                        { key: "live", name: "Live", icon: "\uf03d" }
+                                    ]
+                                    delegate: Rectangle {
+                                        id: modeBtn
+                                        required property var modelData
+                                        readonly property bool on: picker.mode === modeBtn.modelData.key
+                                        width: modeBtnRow.implicitWidth + 22
+                                        height: 30
+                                        radius: 10
+                                        color: modeBtn.on ? root.accent : (modeMouse.containsMouse ? root.overlay : "transparent")
+                                        Behavior on color { ColorAnimation { duration: root.animMs } }
+                                        Row {
+                                            id: modeBtnRow
+                                            anchors.centerIn: parent
+                                            spacing: 6
+                                            Text {
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                text: modeBtn.modelData.icon
+                                                color: modeBtn.on ? root.bg : root.accent
+                                                font.family: root.iconFont
+                                                font.pixelSize: 12
+                                            }
+                                            Text {
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                text: modeBtn.modelData.name
+                                                color: modeBtn.on ? root.bg : root.fg
+                                                font.pixelSize: 12
+                                                font.bold: modeBtn.on
+                                            }
+                                        }
+                                        MouseArea {
+                                            id: modeMouse
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: picker.setMode(modeBtn.modelData.key)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // pause / play the moving wallpaper
+                        BarButton {
+                            visible: picker.live && pins.adapter.liveWallpaper !== ""
+                            theme: root
+                            icon: root.livePaused ? "\uf04b" : "\uf04c"
+                            label: root.livePaused ? "Play" : "Pause"
+                            onClicked: mouse => { root.livePaused = !root.livePaused; }
+                        }
+
                         BarButton {
                             theme: root
-                            icon: ""
+                            icon: "\uf074"
                             label: "Random"
                             onClicked: mouse => {
+                                if (picker.live) {
+                                    if (picker.src.count === 0) return;
+                                    strip.currentIndex = Math.floor(Math.random() * picker.src.count);
+                                    picker.applyCurrent();
+                                    return;
+                                }
                                 root.randomWallpaper();
                                 const i = picker.currentWallIndex();
                                 if (i >= 0) strip.currentIndex = i;
@@ -6621,7 +9343,7 @@ ShellRoot {
                             id: strip
                             anchors.fill: parent
                             orientation: ListView.Horizontal
-                            model: wallpapers
+                            model: picker.src
                             spacing: 18
                             clip: false
                             interactive: true
@@ -6639,7 +9361,7 @@ ShellRoot {
                                 required property string fileName
                                 required property int index
                                 readonly property bool centre: ListView.isCurrentItem
-                                readonly property bool isSet: wthumb.fileUrl.toString() === pins.adapter.wallpaper
+                                readonly property bool isSet: wthumb.fileUrl.toString() === (picker.live ? pins.adapter.liveWallpaper : pins.adapter.wallpaper)
                                 width: picker.thumbW
                                 height: strip.height
                                 z: centre ? 2 : 1
@@ -6661,7 +9383,7 @@ ShellRoot {
                                     Image {
                                         anchors.fill: parent
                                         anchors.margins: 4
-                                        source: wthumb.fileUrl
+                                        source: picker.live ? root.liveThumbFor(wthumb.fileName) : wthumb.fileUrl
                                         asynchronous: true
                                         fillMode: Image.PreserveAspectCrop
                                         sourceSize.width: 640
@@ -6727,9 +9449,13 @@ ShellRoot {
 
                         Text {
                             anchors.centerIn: parent
-                            visible: wallpapers.count === 0
+                            visible: picker.src.count === 0
                             horizontalAlignment: Text.AlignHCenter
-                            text: "No wallpapers yet\nPut .jpg / .png / .webp files in ~/Pictures/Wallpapers"
+                            text: picker.live
+                                ? (!root.liveThumbsReady ? "Getting your live wallpapers ready…"
+                                    : root.liveNoFfmpeg ? "Live wallpapers need ffmpeg:\nsudo pacman -S ffmpeg"
+                                    : "No live wallpapers yet\nPut .mp4 / .webm / .mkv videos in ~/Videos/Wallpapers")
+                                : "No wallpapers yet\nPut .jpg / .png / .webp files in ~/Pictures/Wallpapers"
                             color: root.muted
                             font.pixelSize: 14
                             lineHeight: 1.3
@@ -6740,7 +9466,7 @@ ShellRoot {
                     Text {
                         Layout.alignment: Qt.AlignHCenter
                         Layout.maximumWidth: wcardPick.width - 80
-                        visible: wallpapers.count > 0
+                        visible: picker.src.count > 0
                         elide: Text.ElideMiddle
                         text: strip.currentItem ? strip.currentItem.fileName : ""
                         color: root.fg
@@ -6750,7 +9476,9 @@ ShellRoot {
 
                     Text {
                         Layout.alignment: Qt.AlignHCenter
-                        text: "Scroll or ← →  browse      Click the middle one or Enter  set      R  random      Esc  close"
+                        text: picker.live && root.liveUnavailable
+                            ? "Live wallpapers need Qt's video support:  sudo pacman -S qt6-multimedia-ffmpeg   (then restart the bar)"
+                            : "Scroll or ← →  browse      Click the middle one or Enter  set      R  random      Esc  close"
                         color: root.muted
                         font.pixelSize: 11
                         opacity: 0.8
@@ -6839,6 +9567,19 @@ ShellRoot {
                     fillMode: Image.PreserveAspectCrop
                     opacity: 0
                     onStatusChanged: if (status === Image.Ready) fade.restart()
+                }
+
+                // Live wallpaper (only loaded while one is chosen)
+                Loader {
+                    id: liveLoader
+                    anchors.fill: parent
+                    active: pins.adapter.liveWallpaper !== ""
+                    source: Qt.resolvedUrl("LiveWallpaper.qml")
+                    onLoaded: {
+                        item.source = Qt.binding(() => pins.adapter.liveWallpaper);
+                        item.paused = Qt.binding(() => root.livePaused);
+                    }
+                    onStatusChanged: if (status === Loader.Error) root.liveUnavailable = true
                 }
 
                 NumberAnimation {

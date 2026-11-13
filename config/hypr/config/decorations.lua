@@ -59,7 +59,7 @@ hl.config({
 -- ignore_alpha keeps the light dimming behind full-screen menus from being blurred.
 hl.layer_rule({
     name = "joeos-glass",
-    match = { namespace = "^quickshell-(bar|topbar|hub|launcher|panel|toast|weather|osd|deskswitch|wallpicker)$" },
+    match = { namespace = "^quickshell-(bar|topbar|hub|launcher|panel|toast|weather|osd|deskswitch|wallpicker|side|sidepanel)$" },
     blur = true,
     blur_popups = true,
     ignore_alpha = 0.2,
