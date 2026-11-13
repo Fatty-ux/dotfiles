@@ -235,6 +235,7 @@ vim
 vlc-plugins-all
 vulkan-headers
 vulkan-icd-loader
+wf-recorder
 wget
 which
 wireplumber

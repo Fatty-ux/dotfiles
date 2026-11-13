@@ -2460,6 +2460,7 @@ ShellRoot {
 
             readonly property bool focusedHere: !Hyprland.focusedMonitor || Hyprland.focusedMonitor.name === modelData.name
             readonly property bool hubHere: root.hubOpen && focusedHere
+            onHubHereChanged: if (hubHere) hubKeys.forceActiveFocus()
 
             // ----- Auto-hide -----
             // Touch the top edge and the pill slides down; windows shrink to make room.
@@ -2856,10 +2857,13 @@ ShellRoot {
             }
 
             // ===================== The hub (grows out of the pill) =====================
+            // The hub's window is created once and never destroyed. When the hub is closed it is
+            // invisible and every click passes straight through it. (Creating and destroying it on
+            // every open/close is what made Quickshell crash.)
             PanelWindow {
                 id: hubWin
                 screen: panel.screen
-                visible: panel.hubHere || hubCard.height > pill.height + 2
+                visible: true
                 anchors.top: true
                 implicitWidth: root.hubW + 40
                 implicitHeight: root.hubH + 40
@@ -2867,10 +2871,13 @@ ShellRoot {
                 color: "transparent"
                 WlrLayershell.layer: WlrLayer.Overlay
                 WlrLayershell.namespace: "quickshell-hub"
-                WlrLayershell.keyboardFocus: panel.hubHere ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
-                mask: Region { item: hubCard }
+                WlrLayershell.keyboardFocus: WlrKeyboardFocus.OnDemand
 
-                onVisibleChanged: if (visible) hubKeys.forceActiveFocus()
+                // open, or still shrinking back into the pill
+                readonly property bool showing: panel.hubHere || hubCard.height > pill.height + 2
+                mask: showing ? hubMaskOn : hubMaskOff
+                Region { id: hubMaskOn; item: hubCard }
+                Region { id: hubMaskOff }
 
                 HyprlandFocusGrab {
                     windows: [hubWin]
@@ -2893,6 +2900,7 @@ ShellRoot {
 
                 Rectangle {
                     id: hubCard
+                    visible: hubWin.showing
                     anchors.horizontalCenter: parent.horizontalCenter
                     y: 6
                     width: panel.hubHere ? root.hubW : pill.width
