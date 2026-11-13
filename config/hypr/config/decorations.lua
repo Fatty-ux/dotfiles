@@ -40,13 +40,17 @@ hl.config({
     decoration = {
         dim_special = 0.3,
         rounding = 10,
-        active_opacity = 0.95,
-        inactive_opacity = 0.85,
-        fullscreen_opacity = 1,
+        -- Glossy windows: everything is a little see-through with frosted blur behind it
+        active_opacity = 0.88,
+        inactive_opacity = 0.80,
+        fullscreen_opacity = 1,      -- fullscreen (games, videos) stays fully solid
         blur = {
-            size = 5,
+            size = 6,
             passes = 4,
             special = true,
+            popups = true,           -- menus and right-click popups get the frosted look too
+            vibrancy = 0.25,         -- lets the wallpaper's colours glow through a bit
+            noise = 0.02,            -- tiny grain so it reads as frosted glass, not plain blur
         },
     },
 })

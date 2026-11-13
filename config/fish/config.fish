@@ -5,3 +5,7 @@ source /usr/share/cachyos-fish-config/cachyos-config.fish
 #function fish_greeting
 #    # smth smth
 #end
+
+# JoeOS: no CachyOS welcome, the Pokémon greeting replaces it
+function fish_greeting
+end

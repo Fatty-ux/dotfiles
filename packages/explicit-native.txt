@@ -167,6 +167,7 @@ openssh
 os-prober
 pacman-contrib
 partitionmanager
+paru
 pavucontrol
 perl
 phonon-qt6-vlc
@@ -184,6 +185,7 @@ plasma-thunderbolt
 plocate
 plymouth
 plymouth-kcm
+pokemon-colorscripts-git
 poppler-glib
 power-profiles-daemon
 powerdevil

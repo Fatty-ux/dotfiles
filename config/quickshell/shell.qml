@@ -113,6 +113,7 @@ ShellRoot {
             property string themeMode: "auto"
             property string autoHide: "windows"
             property string desktopsJson: ""
+            property string historyJson: ""     // which apps were opened, how often and when (launcher tabs)
         }
     }
 
@@ -151,6 +152,7 @@ ShellRoot {
 
     // ---------- App launcher state ----------
     property bool launcherOpen: false
+    property int launcherTab: 0       // 0 = all, 1 = recent, 2 = frequent, 3 = pinned
 
     // Bind in hyprland.conf:  bind = SUPER, SPACE, global, quickshell:launcher
     GlobalShortcut {
@@ -166,6 +168,60 @@ ShellRoot {
         function toggle(): void {
             root.launcherOpen = !root.launcherOpen;
         }
+    }
+
+    // ---------- Launch history (for the Recent and Frequent tabs) ----------
+    readonly property var launchHistory: {
+        try {
+            return JSON.parse(pins.adapter.historyJson || "{}");
+        } catch (e) {
+            return {};
+        }
+    }
+
+    function recordLaunch(entry) {
+        if (!entry || !entry.id) return;
+        const src = launchHistory, out = {};
+        for (const k in src) out[k] = { c: src[k].c, t: src[k].t };
+        const old = out[entry.id];
+        out[entry.id] = { c: (old ? old.c : 0) + 1, t: Date.now() };
+        // keep the 60 most recent so the file stays small
+        const keys = Object.keys(out).sort((a, b) => out[b].t - out[a].t);
+        for (let i = 60; i < keys.length; i++) delete out[keys[i]];
+        pins.adapter.historyJson = JSON.stringify(out);
+    }
+
+    // Use this instead of entry.execute() so the launch shows up in Recent / Frequent
+    function launchApp(entry) {
+        if (!entry) return;
+        recordLaunch(entry);
+        entry.execute();
+    }
+
+    function entriesById() {
+        const map = {};
+        const all = DesktopEntries.applications.values;
+        for (let i = 0; i < all.length; i++) map[all[i].id] = all[i];
+        return map;
+    }
+
+    // What a launcher tab shows. Typing always searches every app.
+    function appsForTab(tab, query) {
+        if (query.trim() !== "" || tab === 0) return searchApps(query);
+        if (tab === 3) {
+            const out = [];
+            const list = pins.adapter.pinned;
+            for (let i = 0; i < list.length; i++) {
+                const e = DesktopEntries.heuristicLookup(list[i]);
+                if (e) out.push(e);
+            }
+            return out;
+        }
+        const h = launchHistory, map = entriesById();
+        const keys = Object.keys(h).filter(k => map[k] && !map[k].noDisplay);
+        if (tab === 1) keys.sort((a, b) => h[b].t - h[a].t);
+        else keys.sort((a, b) => (h[b].c - h[a].c) || (h[b].t - h[a].t));
+        return keys.slice(0, 24).map(k => map[k]);
     }
 
     function searchApps(query) {
@@ -847,9 +903,17 @@ ShellRoot {
             "color8 " + col(h, s * 0.25, d ? 0.28 : 0.70),
             "color15 " + col(h, s * 0.12, d ? 0.95 : 0.15)
         ];
+        // Every colour leans 20% of the way toward the wallpaper's hue, so red stays reddish,
+        // green stays greenish, but they all look like they belong to the wallpaper.
+        // Blue (color4) is the wallpaper accent itself; fastfetch uses it for its labels.
+        const lean = 0.2;
+        const tint = base => base + ((((h - base) % 1) + 1.5) % 1 - 0.5) * lean;
+        const sLo = Math.max(0.35, Math.min(0.75, s * 0.9));
+        const sHi = Math.max(0.45, Math.min(0.85, s));
         for (let i = 0; i < 6; i++) {
-            lines.push("color" + (i + 1) + " " + col(hues[i], 0.55, lo));
-            lines.push("color" + (i + 9) + " " + col(hues[i], 0.65, hi));
+            const hh = i === 3 ? h : tint(hues[i]);
+            lines.push("color" + (i + 1) + " " + col(hh, sLo, lo));
+            lines.push("color" + (i + 9) + " " + col(hh, sHi, hi));
         }
         return lines.join("\n");
     }
@@ -1701,7 +1765,7 @@ ShellRoot {
 
                                     function menuEntries() {
                                         const out = [];
-                                        out.push({ text: "Open new window", action: () => pin.entry.execute() });
+                                        out.push({ text: "Open new window", action: () => root.launchApp(pin.entry) });
 
                                         const acts = pin.entry.actions;
                                         for (let i = 0; i < acts.length && i < 4; i++) {
@@ -1758,11 +1822,11 @@ ShellRoot {
                                             if (mouse.button === Qt.RightButton) {
                                                 panel.openMenu(pin, pin.menuEntries());
                                             } else if (mouse.button === Qt.MiddleButton) {
-                                                pin.entry.execute();
+                                                root.launchApp(pin.entry);
                                             } else if (pin.running) {
                                                 pin.focusNext();
                                             } else {
-                                                pin.entry.execute();
+                                                root.launchApp(pin.entry);
                                             }
                                         }
                                     }
@@ -2874,14 +2938,60 @@ ShellRoot {
                 left: true
                 right: true
             }
-            color: "#66000000"
+            color: "#55000000"
+
+            readonly property string query: searchInput.text
+            readonly property bool searching: query.trim() !== ""
+            // while typing, the "All" tab lights up because search covers every app
+            readonly property int shownTab: searching ? 0 : root.launcherTab
+            readonly property var results: {
+                DesktopEntries.applications.values;      // re-run once apps finish loading
+                pins.adapter.pinned;
+                return root.appsForTab(shownTab, query);
+            }
+            readonly property var tabs: [
+                { name: "All", icon: "" },
+                { name: "Recent", icon: "" },
+                { name: "Frequent", icon: "" },
+                { name: "Pinned", icon: "" }
+            ]
 
             onVisibleChanged: {
                 if (visible) {
                     searchInput.text = "";
-                    appList.currentIndex = 0;
+                    grid.currentIndex = 0;
                     searchInput.forceActiveFocus();
                 }
+            }
+            onResultsChanged: grid.currentIndex = 0
+
+            function launchCurrent() {
+                if (grid.currentIndex < 0 || grid.currentIndex >= results.length) return;
+                const e = results[grid.currentIndex];
+                root.launcherOpen = false;
+                root.launchApp(e);
+            }
+
+            function move(step) {
+                if (results.length === 0) return;
+                grid.currentIndex = Math.max(0, Math.min(results.length - 1, grid.currentIndex + step));
+            }
+
+            function switchTab(delta) {
+                searchInput.text = "";
+                root.launcherTab = (root.launcherTab + delta + tabs.length) % tabs.length;
+            }
+
+            // the name the dock uses: the app's window class when it has one, so the running dot works
+            function pinKey(entry) {
+                return entry ? (entry.startupClass || entry.id) : "";
+            }
+
+            function togglePin(entry) {
+                const key = pinKey(entry);
+                if (key === "") return;
+                if (root.isPinned(key)) root.unpin(key);
+                else root.pin(key);
             }
 
             // Click outside the card to close
@@ -2893,25 +3003,47 @@ ShellRoot {
             Rectangle {
                 id: card
                 opacity: 0
-                scale: 0.96
-                NumberAnimation on opacity { running: launcher.visible; from: 0; to: 1; duration: root.animMs; easing.type: Easing.OutCubic }
-                NumberAnimation on scale { running: launcher.visible; from: 0.96; to: 1; duration: root.animMs; easing.type: Easing.OutCubic }
-                property var results: root.searchApps(searchInput.text)
+                scale: 0.94
+                NumberAnimation on opacity { running: launcher.visible; from: 0; to: 1; duration: root.animMs * 1.5; easing.type: Easing.OutCubic }
+                NumberAnimation on scale { running: launcher.visible; from: 0.94; to: 1; duration: root.animMs * 2; easing.type: Easing.OutBack }
 
-                width: 560
-                height: 440
+                width: 760
+                height: 560
                 anchors.centerIn: parent
-                anchors.verticalCenterOffset: -60
-                radius: 16
+                anchors.verticalCenterOffset: -30
+                radius: 26
                 color: root.popupBg
-                border.color: root.overlay
+                border.color: root.glassEdge
                 border.width: 1
+                clip: true
 
-                function launchCurrent() {
-                    if (appList.currentIndex < 0 || appList.currentIndex >= results.length) return;
-                    const e = results[appList.currentIndex];
-                    root.launcherOpen = false;
-                    e.execute();
+                // Glossy sheen: light catching the top of the glass
+                Rectangle {
+                    anchors.fill: parent
+                    radius: parent.radius
+                    gradient: Gradient {
+                        GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, root.dark ? 0.10 : 0.40) }
+                        GradientStop { position: 0.28; color: Qt.rgba(1, 1, 1, root.dark ? 0.03 : 0.10) }
+                        GradientStop { position: 0.6; color: Qt.rgba(1, 1, 1, 0) }
+                    }
+                }
+                // a soft wash of the wallpaper's accent colour from the bottom
+                Rectangle {
+                    anchors.fill: parent
+                    radius: parent.radius
+                    gradient: Gradient {
+                        GradientStop { position: 0.55; color: "transparent" }
+                        GradientStop { position: 1.0; color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, root.dark ? 0.10 : 0.08) }
+                    }
+                }
+                // thin bright edge along the top
+                Rectangle {
+                    anchors.top: parent.top
+                    anchors.topMargin: 1
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    width: parent.width - 60
+                    height: 1
+                    color: Qt.rgba(1, 1, 1, root.dark ? 0.22 : 0.7)
                 }
 
                 // Swallow clicks inside the card
@@ -2919,45 +3051,70 @@ ShellRoot {
 
                 ColumnLayout {
                     anchors.fill: parent
-                    anchors.margins: 14
-                    spacing: 12
+                    anchors.margins: 20
+                    spacing: 14
 
-                    // Search box
+                    // ---- Search box ----
                     Rectangle {
                         Layout.fillWidth: true
-                        implicitHeight: 44
-                        radius: 10
+                        implicitHeight: 54
+                        radius: 18
                         color: root.surface
-                        border.color: root.accent
+                        border.color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.7)
                         border.width: 1
+
+                        Text {
+                            id: searchIcon
+                            anchors.left: parent.left
+                            anchors.leftMargin: 18
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: ""
+                            color: root.accent
+                            font.family: root.iconFont
+                            font.pixelSize: 17
+                        }
 
                         TextInput {
                             id: searchInput
-                            anchors.fill: parent
+                            anchors.left: searchIcon.right
                             anchors.leftMargin: 14
-                            anchors.rightMargin: 14
+                            anchors.right: parent.right
+                            anchors.rightMargin: 18
+                            anchors.top: parent.top
+                            anchors.bottom: parent.bottom
                             verticalAlignment: TextInput.AlignVCenter
                             color: root.fg
-                            font.pixelSize: 16
+                            font.pixelSize: 17
                             clip: true
                             selectByMouse: true
 
-                            onTextChanged: appList.currentIndex = 0
-
                             Keys.onPressed: event => {
+                                const ctrl = event.modifiers & Qt.ControlModifier;
+                                const cols = Math.max(1, Math.floor(grid.width / grid.cellWidth));
                                 if (event.key === Qt.Key_Escape) {
                                     root.launcherOpen = false;
-                                    event.accepted = true;
-                                } else if (event.key === Qt.Key_Down || event.key === Qt.Key_Tab) {
-                                    appList.currentIndex = Math.min(card.results.length - 1, appList.currentIndex + 1);
-                                    event.accepted = true;
-                                } else if (event.key === Qt.Key_Up || event.key === Qt.Key_Backtab) {
-                                    appList.currentIndex = Math.max(0, appList.currentIndex - 1);
-                                    event.accepted = true;
+                                } else if (ctrl && event.key === Qt.Key_Tab) {
+                                    launcher.switchTab(1);
+                                } else if (ctrl && event.key === Qt.Key_Backtab) {
+                                    launcher.switchTab(-1);
+                                } else if (event.key === Qt.Key_Down) {
+                                    launcher.move(cols);
+                                } else if (event.key === Qt.Key_Up) {
+                                    launcher.move(-cols);
+                                } else if (event.key === Qt.Key_Tab) {
+                                    launcher.move(1);
+                                } else if (event.key === Qt.Key_Backtab) {
+                                    launcher.move(-1);
+                                } else if (event.key === Qt.Key_Right && searchInput.text === "") {
+                                    launcher.move(1);
+                                } else if (event.key === Qt.Key_Left && searchInput.text === "") {
+                                    launcher.move(-1);
                                 } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-                                    card.launchCurrent();
-                                    event.accepted = true;
+                                    launcher.launchCurrent();
+                                } else {
+                                    return;
                                 }
+                                event.accepted = true;
                             }
 
                             Text {
@@ -2966,85 +3123,186 @@ ShellRoot {
                                 visible: searchInput.text === ""
                                 text: "Search apps..."
                                 color: root.muted
-                                font.pixelSize: 16
+                                font.pixelSize: 17
                             }
                         }
                     }
 
-                    // Results
-                    ListView {
-                        id: appList
+                    // ---- Tabs ----
+                    Rectangle {
+                        Layout.fillWidth: true
+                        implicitHeight: 44
+                        radius: 14
+                        color: root.surface
+                        border.width: 1
+                        border.color: root.glassEdge
+
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.margins: 4
+                            spacing: 4
+
+                            Repeater {
+                                model: launcher.tabs
+
+                                delegate: Rectangle {
+                                    id: lTab
+                                    required property var modelData
+                                    required property int index
+                                    readonly property bool current: launcher.shownTab === lTab.index
+                                    Layout.fillWidth: true
+                                    Layout.fillHeight: true
+                                    radius: 11
+                                    color: lTab.current ? root.accent : (lTabMouse.containsMouse ? root.overlay : "transparent")
+                                    scale: lTabMouse.pressed ? 0.95 : 1
+                                    Behavior on color { ColorAnimation { duration: root.animMs } }
+                                    Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+
+                                    Row {
+                                        anchors.centerIn: parent
+                                        spacing: 8
+
+                                        Text {
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            text: lTab.modelData.icon
+                                            color: lTab.current ? root.bg : root.accent
+                                            font.family: root.iconFont
+                                            font.pixelSize: 14
+                                        }
+                                        Text {
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            text: lTab.modelData.name
+                                            color: lTab.current ? root.bg : root.fg
+                                            font.pixelSize: 13
+                                            font.bold: lTab.current
+                                        }
+                                    }
+
+                                    MouseArea {
+                                        id: lTabMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            searchInput.text = "";
+                                            root.launcherTab = lTab.index;
+                                            searchInput.forceActiveFocus();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // ---- App grid ----
+                    Item {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        clip: true
-                        spacing: 2
-                        model: card.results
-                        currentIndex: 0
-                        highlightMoveDuration: 0
-                        keyNavigationEnabled: false
 
-                        delegate: Rectangle {
-                            id: row
-                            required property var modelData
-                            required property int index
-                            width: appList.width
-                            height: 48
-                            radius: 10
-                            color: row.ListView.isCurrentItem ? root.overlay
-                                 : (rowMouse.containsMouse ? root.surface : "transparent")
+                        GridView {
+                            id: grid
+                            anchors.fill: parent
+                            clip: true
+                            cellWidth: Math.floor(width / 6)
+                            cellHeight: 112
+                            model: launcher.results
+                            currentIndex: 0
+                            keyNavigationEnabled: false
+                            boundsBehavior: Flickable.StopAtBounds
+                            onCurrentIndexChanged: if (currentIndex >= 0) positionViewAtIndex(currentIndex, GridView.Contain)
 
-                            RowLayout {
-                                anchors.fill: parent
-                                anchors.leftMargin: 10
-                                anchors.rightMargin: 10
-                                spacing: 12
+                            delegate: Item {
+                                id: tileItem
+                                required property var modelData
+                                required property int index
+                                readonly property bool current: GridView.isCurrentItem
+                                readonly property bool pinned: root.isPinned(launcher.pinKey(tileItem.modelData))
+                                width: grid.cellWidth
+                                height: grid.cellHeight
 
-                                IconImage {
-                                    implicitSize: 30
-                                    source: Quickshell.iconPath(row.modelData.icon, "application-x-executable")
-                                }
+                                Rectangle {
+                                    anchors.fill: parent
+                                    anchors.margins: 5
+                                    radius: 18
+                                    color: tileItem.current ? root.overlay : (tileMouse.containsMouse ? root.surface : "transparent")
+                                    border.width: tileItem.current || tileMouse.containsMouse ? 1 : 0
+                                    border.color: root.glassEdge
+                                    scale: tileMouse.pressed ? 0.94 : (tileMouse.containsMouse ? 1.05 : 1)
+                                    Behavior on color { ColorAnimation { duration: root.animMs } }
+                                    Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
 
-                                ColumnLayout {
-                                    Layout.fillWidth: true
-                                    spacing: 0
+                                    Column {
+                                        anchors.centerIn: parent
+                                        spacing: 8
 
-                                    Text {
-                                        Layout.fillWidth: true
-                                        text: row.modelData.name
-                                        color: root.fg
-                                        font.pixelSize: 14
-                                        font.bold: true
-                                        elide: Text.ElideRight
+                                        IconImage {
+                                            anchors.horizontalCenter: parent.horizontalCenter
+                                            implicitSize: 50
+                                            source: Quickshell.iconPath(tileItem.modelData.icon, "application-x-executable")
+                                        }
+                                        Text {
+                                            anchors.horizontalCenter: parent.horizontalCenter
+                                            width: grid.cellWidth - 22
+                                            horizontalAlignment: Text.AlignHCenter
+                                            text: tileItem.modelData.name
+                                            color: root.fg
+                                            font.pixelSize: 12
+                                            elide: Text.ElideRight
+                                        }
                                     }
+
+                                    // pin marker in the corner
                                     Text {
-                                        Layout.fillWidth: true
-                                        visible: text !== ""
-                                        text: row.modelData.comment || row.modelData.genericName || ""
-                                        color: root.muted
+                                        visible: tileItem.pinned
+                                        anchors.top: parent.top
+                                        anchors.right: parent.right
+                                        anchors.margins: 9
+                                        text: ""
+                                        color: root.accent
+                                        font.family: root.iconFont
                                         font.pixelSize: 11
-                                        elide: Text.ElideRight
                                     }
-                                }
-                            }
 
-                            MouseArea {
-                                id: rowMouse
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                onClicked: {
-                                    root.launcherOpen = false;
-                                    row.modelData.execute();
+                                    MouseArea {
+                                        id: tileMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                        onEntered: grid.currentIndex = tileItem.index
+                                        onClicked: mouse => {
+                                            if (mouse.button === Qt.RightButton) {
+                                                launcher.togglePin(tileItem.modelData);
+                                            } else {
+                                                root.launcherOpen = false;
+                                                root.launchApp(tileItem.modelData);
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
+
+                        Text {
+                            anchors.centerIn: parent
+                            visible: launcher.results.length === 0
+                            horizontalAlignment: Text.AlignHCenter
+                            text: launcher.searching ? "No matching apps"
+                                : (launcher.shownTab === 3 ? "Nothing pinned yet\nRight-click any app to pin it to the taskbar"
+                                : "Nothing here yet\nApps you open will show up in this tab")
+                            color: root.muted
+                            font.pixelSize: 13
+                            lineHeight: 1.3
+                        }
                     }
 
+                    // ---- Hints ----
                     Text {
-                        visible: card.results.length === 0
                         Layout.alignment: Qt.AlignHCenter
-                        text: "No matching apps"
+                        text: "Enter  open      ↑ ↓ Tab  move      Right-click  pin / unpin      Ctrl+Tab  switch tab      Esc  close"
                         color: root.muted
-                        font.pixelSize: 13
+                        font.pixelSize: 11
+                        opacity: 0.8
                     }
                 }
             }

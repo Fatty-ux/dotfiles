@@ -1,0 +1,1 @@
+/home/joe/dotfiles/scripts/joeos.fish

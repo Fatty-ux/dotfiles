@@ -1,13 +1,28 @@
 #!/usr/bin/env bash
-# fastfetch with a random Pokémon as the logo.
-# Needs:  fastfetch  and  pokemon-colorscripts  (or krabby). Falls back to the normal logo without them.
+# fastfetch with a random WATER-TYPE Pokémon as the logo.
+# Needs:  fastfetch  and  pokemon-colorscripts. Falls back to the normal logo without them.
+#
+#   pokefetch              random water type
+#   POKE_ANY=1 pokefetch   any Pokémon at all
+#
+# To use a different type, swap the names in the list below.
+WATER="squirtle wartortle blastoise"
+
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
 
 if command -v pokemon-colorscripts >/dev/null 2>&1; then
-    pokemon-colorscripts -r --no-title > "$tmp" 2>/dev/null
-elif command -v krabby >/dev/null 2>&1; then
-    krabby random --no-title > "$tmp" 2>/dev/null
+    if [ -n "${POKE_ANY:-}" ]; then
+        pokemon-colorscripts -r --no-title > "$tmp" 2>/dev/null
+    else
+        # only keep names this version of pokemon-colorscripts actually has
+        pick="$(comm -12 <(pokemon-colorscripts -l 2>/dev/null | sort -u) <(printf '%s\n' $WATER | sort -u) | shuf -n 1)"
+        if [ -n "$pick" ]; then
+            pokemon-colorscripts -n "$pick" --no-title > "$tmp" 2>/dev/null
+        else
+            pokemon-colorscripts -r --no-title > "$tmp" 2>/dev/null
+        fi
+    fi
 fi
 
 if [ -s "$tmp" ]; then
