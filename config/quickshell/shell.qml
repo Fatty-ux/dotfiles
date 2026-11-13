@@ -18,12 +18,16 @@ ShellRoot {
     // 'seed' is the dominant vivid color found in the wallpaper.
     property color seed: "#89b4fa"
     property bool wallIsLight: false
-    // "auto" = light theme on bright wallpapers, dark on dark ones. Change it from the control center.
+    // Theme (change it with the Theme tile in the hub):
+    //   "glass" = the dark liquid glass look, neutral black and white, whatever the wallpaper
+    //   "auto"  = colours from the wallpaper, light or dark to suit it
+    //   "dark" / "light" = colours from the wallpaper, always dark / always light
     readonly property string themeMode: pins.adapter.themeMode
-    readonly property bool dark: themeMode === "dark" || (themeMode !== "light" && !wallIsLight)
+    readonly property bool glassTheme: themeMode === "glass"
+    readonly property bool dark: glassTheme || themeMode === "dark" || (themeMode !== "light" && !wallIsLight)
 
     readonly property real hue: seed.hslHue < 0 ? 0.6 : seed.hslHue
-    readonly property real sat: Math.max(0.35, Math.min(0.85, seed.hslSaturation))
+    readonly property real sat: glassTheme ? 0 : Math.max(0.35, Math.min(0.85, seed.hslSaturation))
 
     property color bg: dark ? Qt.hsla(hue, sat * 0.35, 0.10, 1) : Qt.hsla(hue, sat * 0.30, 0.96, 1)
     // Liquid glass: surfaces are see-through and Hyprland blurs what's behind them
@@ -34,7 +38,8 @@ ShellRoot {
     property color popupBg: dark ? Qt.hsla(hue, sat * 0.35, 0.10, 0.42) : Qt.hsla(hue, sat * 0.25, 0.97, 0.50)
     property color fg: dark ? Qt.hsla(hue, sat * 0.30, 0.93, 1) : Qt.hsla(hue, sat * 0.40, 0.14, 1)
     property color muted: dark ? Qt.hsla(hue, sat * 0.20, 0.72, 1) : Qt.hsla(hue, sat * 0.25, 0.38, 1)
-    property color accent: dark ? Qt.hsla(hue, sat, 0.72, 1) : Qt.hsla(hue, sat, 0.38, 1)
+    property color accent: glassTheme ? Qt.rgba(0.90, 0.92, 0.95, 1)
+        : (dark ? Qt.hsla(hue, sat, 0.72, 1) : Qt.hsla(hue, sat, 0.38, 1))
     property color danger: dark ? "#f38ba8" : "#c0264a"
     property color glassEdge: dark ? Qt.rgba(1, 1, 1, 0.24) : Qt.rgba(1, 1, 1, 0.70)
 
@@ -107,7 +112,8 @@ ShellRoot {
             property list<string> pinned: ["firefox", "kitty"]
             property string wallpaper: ""
             property string liveWallpaper: ""   // a video from ~/Videos/Wallpapers ("" = none)
-            property string themeMode: "auto"
+            property string themeMode: "glass"
+            property bool glassDefaultSet: false    // switched to the glass theme once
             property string autoHide: "windows"
             property string desktopsJson: ""
             property string historyJson: ""     // which apps were opened, how often and when (launcher tabs)
@@ -443,8 +449,20 @@ ShellRoot {
         }
     }
 
+    // existing setups get switched to the glass theme once (after that it's up to you)
+    Timer {
+        interval: 2500
+        running: true
+        onTriggered: {
+            if (!pins.adapter.glassDefaultSet) {
+                pins.adapter.themeMode = "glass";
+                pins.adapter.glassDefaultSet = true;
+            }
+        }
+    }
+
     function cycleTheme() {
-        const order = ["auto", "dark", "light"];
+        const order = ["glass", "auto", "dark", "light"];
         pins.adapter.themeMode = order[(order.indexOf(pins.adapter.themeMode) + 1) % order.length];
     }
 
@@ -1136,7 +1154,7 @@ ShellRoot {
         const h = hue;
         const s = sat;
         const col = (hh, sa, li) => Qt.hsla(((hh % 1) + 1) % 1, sa, li, 1).toString();
-        const accentHex = col(h, s, d ? 0.72 : 0.38);
+        const accentHex = glassTheme ? "#e6eaf2" : col(h, s, d ? 0.72 : 0.38);
         const bgc = d ? col(h, s * 0.35, 0.09) : col(h, s * 0.30, 0.97);
         // text: clearly tinted with the wallpaper colour, still easy to read
         const fgc = d ? col(h, s * 0.45, 0.88) : col(h, s * 0.55, 0.18);
@@ -1166,14 +1184,17 @@ ShellRoot {
         // Every colour leans 25% of the way toward the wallpaper's hue, so red stays reddish,
         // green stays greenish, but they all look like they belong to the wallpaper.
         // Blue (color4) is the wallpaper accent itself; fastfetch uses it for its labels.
-        const lean = 0.25;
+        const lean = glassTheme ? 0 : 0.25;
         const tint = base => base + ((((h - base) % 1) + 1.5) % 1 - 0.5) * lean;
         const sLo = Math.max(0.35, Math.min(0.75, s * 0.9));
         const sHi = Math.max(0.45, Math.min(0.85, s));
         for (let i = 0; i < 6; i++) {
-            const hh = i === 3 ? h : tint(hues[i]);
-            lines.push("color" + (i + 1) + " " + col(hh, sLo, lo));
-            lines.push("color" + (i + 9) + " " + col(hh, sHi, hi));
+            const hh = i === 3 ? (glassTheme ? 0.60 : h) : tint(hues[i]);
+            // glass theme: "blue" (the accent) is a soft silver-blue to match the glass
+            const sl = glassTheme && i === 3 ? 0.22 : sLo, sh = glassTheme && i === 3 ? 0.28 : sHi;
+            const ll = glassTheme && i === 3 ? 0.78 : lo, lh = glassTheme && i === 3 ? 0.86 : hi;
+            lines.push("color" + (i + 1) + " " + col(hh, sl, ll));
+            lines.push("color" + (i + 9) + " " + col(hh, sh, lh));
         }
         return lines.join("\n");
     }
@@ -1193,6 +1214,7 @@ ShellRoot {
     }
     onSeedChanged: kittyTimer.restart()
     onDarkChanged: kittyTimer.restart()
+    onGlassThemeChanged: kittyTimer.restart()
 
     // once at startup, after the wallpaper colors have been picked
     Timer {
@@ -3647,7 +3669,7 @@ ShellRoot {
                                                 },
                                                 {
                                                     icon: "", title: "Theme",
-                                                    sub: root.themeMode === "auto" ? "Auto" : (root.themeMode === "dark" ? "Dark" : "Light"),
+                                                    sub: root.themeMode === "glass" ? "Glass" : root.themeMode === "auto" ? "Auto" : (root.themeMode === "dark" ? "Dark" : "Light"),
                                                     active: false, ok: true,
                                                     run: () => root.cycleTheme()
                                                 },
@@ -5376,7 +5398,7 @@ ShellRoot {
                 readonly property var tiles: [
                     {
                         title: "Theme",
-                        sub: root.themeMode === "auto" ? "Auto (" + (root.dark ? "dark" : "light") + ")"
+                        sub: root.themeMode === "glass" ? "Glass" : root.themeMode === "auto" ? "Auto (" + (root.dark ? "dark" : "light") + ")"
                             : (root.themeMode === "dark" ? "Dark" : "Light"),
                         active: false,
                         run: () => root.cycleTheme()
