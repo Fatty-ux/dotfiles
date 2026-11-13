@@ -114,6 +114,36 @@ ShellRoot {
     PwObjectTracker { objects: [Pipewire.defaultAudioSink] }
     readonly property var sink: Pipewire.defaultAudioSink
 
+    // Microphone (default input) and every sound device, for the switchers in the hub
+    PwObjectTracker { objects: [Pipewire.defaultAudioSource] }
+    readonly property var source: Pipewire.defaultAudioSource
+    property string devPicker: ""     // "out" or "in" while the device list is open
+
+    readonly property var outputDevices: {
+        const out = [], list = Pipewire.nodes.values;
+        for (let i = 0; i < list.length; i++)
+            if (list[i].audio && list[i].isSink && !list[i].isStream) out.push(list[i]);
+        return out;
+    }
+    readonly property var inputDevices: {
+        const out = [], list = Pipewire.nodes.values;
+        for (let i = 0; i < list.length; i++)
+            if (list[i].audio && !list[i].isSink && !list[i].isStream) out.push(list[i]);
+        return out;
+    }
+
+    function devName(n) {
+        return n ? (n.description || n.nickname || n.name) : "None";
+    }
+
+    function setDevice(n) {
+        if (devPicker === "in") Pipewire.preferredDefaultAudioSource = n;
+        else Pipewire.preferredDefaultAudioSink = n;
+        devPicker = "";
+    }
+
+    onHubOpenChanged: if (!hubOpen) devPicker = ""
+
     // Wallpapers: drop images into ~/Pictures/Wallpapers
     FolderListModel {
         id: wallpapers
@@ -2056,9 +2086,9 @@ ShellRoot {
     // A compact pill at the top centre. Click it and it grows into the hub:
     // Home, Media, Apps, Calendar, Alerts and System.
     property bool hubOpen: false
-    property int hubTab: 0           // 0 home, 1 media, 2 apps, 3 calendar, 4 alerts, 5 system
+    property int hubTab: 0           // 0 home, 1 media, 2 apps, 3 calendar, 4 alerts, 5 system, 6 capture
     property int calOffset: 0        // how many months away from this one the calendar shows
-    readonly property int hubW: 800
+    readonly property int hubW: 900
     readonly property int hubH: 560
 
     function openHub(tab) {
@@ -2095,10 +2125,10 @@ ShellRoot {
 
     Process {
         id: statusProc
-        command: ["sh", "-c", 'echo "W=$(nmcli -t -f WIFI g 2>/dev/null)"; echo "N=$(nmcli -t -f TYPE,STATE,CONNECTION d 2>/dev/null | grep -m1 ":connected:")"; if command -v bluetoothctl >/dev/null 2>&1; then echo "B=$(bluetoothctl show 2>/dev/null | grep -m1 -o "Powered: [a-z]*")"; fi; if command -v hyprsunset >/dev/null 2>&1; then if pgrep -x hyprsunset >/dev/null; then echo "S=on"; else echo "S=off"; fi; fi']
+        command: ["sh", "-c", 'echo "W=$(nmcli -t -f WIFI g 2>/dev/null)"; echo "N=$(nmcli -t -f TYPE,STATE,CONNECTION d 2>/dev/null | grep -m1 ":connected:")"; if command -v bluetoothctl >/dev/null 2>&1; then echo "B=$(bluetoothctl show 2>/dev/null | grep -m1 -o "Powered: [a-z]*")"; fi; if command -v hyprsunset >/dev/null 2>&1; then if pgrep -x hyprsunset >/dev/null; then echo "S=on"; else echo "S=off"; fi; fi; if command -v wf-recorder >/dev/null 2>&1; then echo "R=yes"; fi']
         stdout: StdioCollector {
             onStreamFinished: {
-                const v = { W: "", N: "", B: null, S: null };
+                const v = { W: "", N: "", B: null, S: null, R: "" };
                 const lines = text.split("\n");
                 for (let i = 0; i < lines.length; i++) {
                     const at = lines[i].indexOf("=");
@@ -2110,6 +2140,7 @@ ShellRoot {
                 root.netName = n.length >= 3 ? n.slice(2).join(":") : "";
                 root.btState = v.B === null ? "none" : (v.B.indexOf("yes") >= 0 ? "yes" : "no");
                 root.nightState = v.S === null ? "none" : v.S.trim();
+                root.canRecord = (v.R || "").trim() === "yes";
             }
         }
     }
@@ -2166,16 +2197,77 @@ ShellRoot {
         onTriggered: if (!gpuProc.running) gpuProc.running = true
     }
 
-    // ----- Screenshot: closes the hub first so it isn't in the picture -----
+    // ----- Screenshots and screen recording (Capture tab) -----
+    // The work is done by scripts/capture.sh next to this file.
+    readonly property string captureScript: Quickshell.env("HOME") + "/.config/quickshell/scripts/capture.sh"
+    property int shotDelay: 0             // seconds to wait before a screenshot
+    property string recAudio: "none"      // "none", "system" or "mic"
+    property bool canRecord: false        // wf-recorder installed?
+    readonly property bool recording: recProc.running
+    property double recStartedAt: 0
+    property int recSeconds: 0
+    property var pendingCapture: null
+
+    function focusedMonitorName2() {
+        return Hyprland.focusedMonitor ? Hyprland.focusedMonitor.name : "";
+    }
+
+    // Close the hub first so it isn't in the picture, then run the capture
+    function capture(fn) {
+        hubOpen = false;
+        pendingCapture = fn;
+        captureTimer.restart();
+    }
+
     Timer {
-        id: shotTimer
-        interval: 400
-        onTriggered: root.run('d="$HOME/Pictures/Screenshots"; mkdir -p "$d"; f="$d/$(date +%Y-%m-%d_%H-%M-%S).png"; grim -g "$(slurp)" "$f" && { wl-copy < "$f"; notify-send -i "$f" "Screenshot saved" "Also copied to the clipboard"; }')
+        id: captureTimer
+        interval: 450
+        onTriggered: {
+            const fn = root.pendingCapture;
+            root.pendingCapture = null;
+            if (fn) fn();
+        }
+    }
+
+    function shot(mode) {
+        const mon = focusedMonitorName2();
+        const delay = String(shotDelay);
+        capture(() => Quickshell.execDetached(["bash", root.captureScript, "shot", mode, delay, mon]));
+    }
+
+    function record(mode) {
+        if (recording || !canRecord) return;
+        const mon = focusedMonitorName2();
+        const audio = recAudio;
+        capture(() => {
+            recProc.command = ["bash", root.captureScript, "rec", mode, audio, mon];
+            recProc.running = true;
+        });
+    }
+
+    function stopRecording() {
+        Quickshell.execDetached(["bash", root.captureScript, "stop"]);
     }
 
     function takeScreenshot() {
-        hubOpen = false;
-        shotTimer.restart();
+        shot("area");
+    }
+
+    Process {
+        id: recProc
+        onRunningChanged: {
+            if (running) {
+                root.recStartedAt = Date.now();
+                root.recSeconds = 0;
+            }
+        }
+    }
+
+    Timer {
+        interval: 1000
+        repeat: true
+        running: root.recording
+        onTriggered: root.recSeconds = Math.floor((Date.now() - root.recStartedAt) / 1000)
     }
 
     function netIcon() {
@@ -2204,6 +2296,105 @@ ShellRoot {
             gradient: Gradient {
                 GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, hc.theme && hc.theme.dark ? 0.06 : 0.25) }
                 GradientStop { position: 0.5; color: Qt.rgba(1, 1, 1, 0) }
+            }
+        }
+    }
+
+    // Volume row with mute, slider and a device button (output or microphone)
+    component AudioRow: RowLayout {
+        id: ar
+        property var theme: null
+        property bool input: false
+        readonly property var node: ar.theme ? (ar.input ? ar.theme.source : ar.theme.sink) : null
+        readonly property var a: ar.node ? ar.node.audio : null
+        spacing: 10
+
+        // mute button
+        Rectangle {
+            Layout.preferredWidth: 34
+            Layout.preferredHeight: 34
+            radius: 17
+            color: muteMouse.containsMouse && ar.theme ? ar.theme.overlay : (ar.theme ? ar.theme.bg : "#1e1e2e")
+            border.width: 1
+            border.color: ar.theme ? ar.theme.glassEdge : "transparent"
+            scale: muteMouse.pressed ? 0.9 : 1
+            Behavior on scale { NumberAnimation { duration: 120; easing.type: Easing.OutBack } }
+
+            Text {
+                anchors.centerIn: parent
+                text: ar.input ? (!ar.a || ar.a.muted ? "\uf131" : "\uf130") : (ar.theme ? ar.theme.volIcon(ar.a) : "")
+                color: ar.a && ar.a.muted ? (ar.theme ? ar.theme.danger : "red") : (ar.theme ? ar.theme.accent : "#89b4fa")
+                font.family: ar.theme ? ar.theme.iconFont : ""
+                font.pixelSize: 14
+            }
+            MouseArea {
+                id: muteMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: if (ar.a) ar.a.muted = !ar.a.muted
+            }
+        }
+
+        ValueBar {
+            theme: ar.theme
+            Layout.fillWidth: true
+            value: ar.a ? ar.a.volume : 0
+            onMoved: v => {
+                if (ar.a) ar.a.volume = v;
+            }
+        }
+
+        Text {
+            Layout.preferredWidth: 44
+            horizontalAlignment: Text.AlignRight
+            text: !ar.a ? "--" : (ar.a.muted ? "Muted" : Math.round(ar.a.volume * 100) + "%")
+            color: ar.theme ? ar.theme.fg : "white"
+            font.pixelSize: 12
+        }
+
+        // which device: click to pick another
+        Rectangle {
+            Layout.preferredWidth: 200
+            Layout.preferredHeight: 32
+            radius: 11
+            color: devMouse.containsMouse && ar.theme ? ar.theme.overlay : (ar.theme ? ar.theme.bg : "#1e1e2e")
+            border.width: 1
+            border.color: ar.theme ? ar.theme.glassEdge : "transparent"
+            scale: devMouse.pressed ? 0.96 : 1
+            Behavior on scale { NumberAnimation { duration: 120; easing.type: Easing.OutBack } }
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 10
+                anchors.rightMargin: 10
+                spacing: 6
+                Text {
+                    text: ar.input ? "\uf130" : "\uf028"
+                    color: ar.theme ? ar.theme.muted : "grey"
+                    font.family: ar.theme ? ar.theme.iconFont : ""
+                    font.pixelSize: 11
+                }
+                Text {
+                    Layout.fillWidth: true
+                    text: ar.theme ? ar.theme.devName(ar.node) : ""
+                    color: ar.theme ? ar.theme.fg : "white"
+                    font.pixelSize: 12
+                    elide: Text.ElideRight
+                }
+                Text {
+                    text: "\uf107"
+                    color: ar.theme ? ar.theme.muted : "grey"
+                    font.family: ar.theme ? ar.theme.iconFont : ""
+                    font.pixelSize: 12
+                }
+            }
+            MouseArea {
+                id: devMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: if (ar.theme) ar.theme.devPicker = ar.input ? "in" : "out"
             }
         }
     }
@@ -2341,9 +2532,9 @@ ShellRoot {
                 id: pill
                 anchors.horizontalCenter: parent.horizontalCenter
                 y: panel.barShown ? 6 : -height - 6
-                width: pillRow.implicitWidth + 30
-                height: 40
-                radius: 20
+                width: pillRow.implicitWidth + 36
+                height: 42
+                radius: 21
                 color: root.bg
                 border.width: 1
                 border.color: root.glassEdge
@@ -2377,7 +2568,7 @@ ShellRoot {
                 Row {
                     id: pillRow
                     anchors.centerIn: parent
-                    spacing: 14
+                    spacing: 16
 
                     // ---- Desktop dots ----
                     Row {
@@ -2440,28 +2631,33 @@ ShellRoot {
                     Rectangle { anchors.verticalCenter: parent.verticalCenter; width: 4; height: 4; radius: 2; color: root.muted }
 
                     // ---- Clock (opens the calendar) ----
-                    Row {
+                    Item {
                         anchors.verticalCenter: parent.verticalCenter
-                        spacing: 7
+                        width: clockRow.implicitWidth
+                        height: 30
 
-                        Text {
+                        Row {
+                            id: clockRow
                             anchors.verticalCenter: parent.verticalCenter
-                            text: Qt.formatDateTime(clock.date, root.timePattern)
-                            color: root.fg
-                            font.pixelSize: 14
-                            font.bold: true
-                        }
-                        Text {
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: Qt.formatDateTime(clock.date, "ddd d")
-                            color: root.muted
-                            font.pixelSize: 12
+                            spacing: 7
+
+                            Text {
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: Qt.formatDateTime(clock.date, root.timePattern)
+                                color: root.fg
+                                font.pixelSize: 15
+                                font.bold: true
+                            }
+                            Text {
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: Qt.formatDateTime(clock.date, "ddd d")
+                                color: root.muted
+                                font.pixelSize: 13
+                            }
                         }
 
                         MouseArea {
-                            width: parent.width
-                            height: 30
-                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
                             onClicked: root.openHub(3)
                         }
@@ -2507,6 +2703,49 @@ ShellRoot {
                         anchors.verticalCenter: parent.verticalCenter
                         spacing: 12
 
+                        // recording: red dot + time, click to stop
+                        Rectangle {
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: root.recording
+                            width: recRow.implicitWidth + 16
+                            height: 24
+                            radius: 12
+                            color: Qt.rgba(root.danger.r, root.danger.g, root.danger.b, 0.22)
+                            border.width: 1
+                            border.color: root.danger
+
+                            Row {
+                                id: recRow
+                                anchors.centerIn: parent
+                                spacing: 6
+                                Rectangle {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: 9
+                                    height: 9
+                                    radius: 4.5
+                                    color: root.danger
+                                    SequentialAnimation on opacity {
+                                        running: root.recording
+                                        loops: Animation.Infinite
+                                        NumberAnimation { to: 0.25; duration: 600 }
+                                        NumberAnimation { to: 1; duration: 600 }
+                                    }
+                                }
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: root.fmt(root.recSeconds)
+                                    color: root.fg
+                                    font.pixelSize: 12
+                                    font.bold: true
+                                }
+                            }
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.stopRecording()
+                            }
+                        }
+
                         // music note while something plays (opens Media)
                         Text {
                             anchors.verticalCenter: parent.verticalCenter
@@ -2546,6 +2785,28 @@ ShellRoot {
                                 onClicked: if (root.sink && root.sink.audio) root.sink.audio.muted = !root.sink.audio.muted
                                 onWheel: wheel => {
                                     const a = root.sink ? root.sink.audio : null;
+                                    if (!a) return;
+                                    const step = wheel.angleDelta.y > 0 ? root.volumeStep : -root.volumeStep;
+                                    a.volume = Math.max(0, Math.min(1, a.volume + step));
+                                }
+                            }
+                        }
+
+                        // microphone: click to mute, scroll to change
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: !!root.source
+                            text: root.source && root.source.audio && !root.source.audio.muted ? "\uf130" : "\uf131"
+                            color: root.source && root.source.audio && root.source.audio.muted ? root.danger : root.fg
+                            font.family: root.iconFont
+                            font.pixelSize: 14
+                            MouseArea {
+                                anchors.fill: parent
+                                anchors.margins: -5
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: if (root.source && root.source.audio) root.source.audio.muted = !root.source.audio.muted
+                                onWheel: wheel => {
+                                    const a = root.source ? root.source.audio : null;
                                     if (!a) return;
                                     const step = wheel.angleDelta.y > 0 ? root.volumeStep : -root.volumeStep;
                                     a.volume = Math.max(0, Math.min(1, a.volume + step));
@@ -2621,9 +2882,10 @@ ShellRoot {
                     id: hubKeys
                     focus: true
                     Keys.onPressed: event => {
-                        if (event.key === Qt.Key_Escape) root.hubOpen = false;
-                        else if (event.key === Qt.Key_Tab) root.hubTab = (root.hubTab + 1) % 6;
-                        else if (event.key === Qt.Key_Backtab) root.hubTab = (root.hubTab + 5) % 6;
+                        if (event.key === Qt.Key_Escape && root.devPicker !== "") root.devPicker = "";
+                        else if (event.key === Qt.Key_Escape) root.hubOpen = false;
+                        else if (event.key === Qt.Key_Tab) root.hubTab = (root.hubTab + 1) % 7;
+                        else if (event.key === Qt.Key_Backtab) root.hubTab = (root.hubTab + 6) % 7;
                         else return;
                         event.accepted = true;
                     }
@@ -2674,6 +2936,130 @@ ShellRoot {
                     // The contents keep their full size and fade in, so they don't squash while the card grows
                     Item {
                         id: hubContent
+
+                        // ---- Sound device picker (opens over the hub) ----
+                        MouseArea {
+                            anchors.fill: parent
+                            z: 9
+                            visible: root.devPicker !== ""
+                            onClicked: root.devPicker = ""
+                            Rectangle { anchors.fill: parent; radius: 30; color: "#55000000" }
+                        }
+
+                        HubCard {
+                            id: devCard
+                            theme: root
+                            z: 10
+                            visible: root.devPicker !== ""
+                            anchors.centerIn: parent
+                            width: 420
+                            height: Math.min(devCol.implicitHeight + 72, 400)
+                            color: root.popupBg
+                            readonly property var list: root.devPicker === "in" ? root.inputDevices : root.outputDevices
+                            readonly property var current: root.devPicker === "in" ? root.source : root.sink
+
+                            MouseArea { anchors.fill: parent }   // keep clicks inside from closing it
+
+                            ColumnLayout {
+                                anchors.fill: parent
+                                anchors.margins: 16
+                                spacing: 10
+
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 8
+                                    Text {
+                                        text: root.devPicker === "in" ? "\uf130" : "\uf028"
+                                        color: root.accent
+                                        font.family: root.iconFont
+                                        font.pixelSize: 15
+                                    }
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: root.devPicker === "in" ? "Choose microphone" : "Choose sound output"
+                                        color: root.fg
+                                        font.pixelSize: 15
+                                        font.bold: true
+                                    }
+                                    Text {
+                                        text: "\uf00d"
+                                        color: root.muted
+                                        font.family: root.iconFont
+                                        font.pixelSize: 13
+                                        MouseArea { anchors.fill: parent; anchors.margins: -6; cursorShape: Qt.PointingHandCursor; onClicked: root.devPicker = "" }
+                                    }
+                                }
+
+                                Flickable {
+                                    Layout.fillWidth: true
+                                    Layout.fillHeight: true
+                                    contentHeight: devCol.implicitHeight
+                                    clip: true
+                                    boundsBehavior: Flickable.StopAtBounds
+
+                                    Column {
+                                        id: devCol
+                                        width: parent.width
+                                        spacing: 6
+
+                                        Repeater {
+                                            model: devCard.list
+                                            delegate: Rectangle {
+                                                id: devRow
+                                                required property var modelData
+                                                readonly property bool isCurrent: devCard.current && devCard.current.id === devRow.modelData.id
+                                                width: devCol.width
+                                                height: 44
+                                                radius: 12
+                                                color: devRow.isCurrent ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.22)
+                                                    : (devRowMouse.containsMouse ? root.overlay : root.surface)
+                                                border.width: devRow.isCurrent ? 1 : 0
+                                                border.color: root.accent
+                                                Behavior on color { ColorAnimation { duration: root.animMs } }
+
+                                                RowLayout {
+                                                    anchors.fill: parent
+                                                    anchors.leftMargin: 12
+                                                    anchors.rightMargin: 12
+                                                    spacing: 10
+                                                    Text {
+                                                        Layout.preferredWidth: 16
+                                                        text: devRow.isCurrent ? "\uf00c" : ""
+                                                        color: root.accent
+                                                        font.family: root.iconFont
+                                                        font.pixelSize: 13
+                                                    }
+                                                    Text {
+                                                        Layout.fillWidth: true
+                                                        text: root.devName(devRow.modelData)
+                                                        color: root.fg
+                                                        font.pixelSize: 13
+                                                        font.bold: devRow.isCurrent
+                                                        elide: Text.ElideRight
+                                                    }
+                                                }
+                                                MouseArea {
+                                                    id: devRowMouse
+                                                    anchors.fill: parent
+                                                    hoverEnabled: true
+                                                    cursorShape: Qt.PointingHandCursor
+                                                    onClicked: root.setDevice(devRow.modelData)
+                                                }
+                                            }
+                                        }
+
+                                        Text {
+                                            visible: devCard.list.length === 0
+                                            width: devCol.width
+                                            horizontalAlignment: Text.AlignHCenter
+                                            text: "No devices found"
+                                            color: root.muted
+                                            font.pixelSize: 13
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         width: root.hubW
                         height: root.hubH
                         anchors.horizontalCenter: parent.horizontalCenter
@@ -2727,7 +3113,8 @@ ShellRoot {
                                                 { name: "Apps", icon: "" },
                                                 { name: "Calendar", icon: "" },
                                                 { name: "Alerts", icon: "" },
-                                                { name: "System", icon: "" }
+                                                { name: "System", icon: "" },
+                                                { name: "Capture", icon: "" }
                                             ]
 
                                             delegate: Rectangle {
@@ -2820,7 +3207,7 @@ ShellRoot {
                                                     run: () => root.run(root.nightState === "on" ? "pkill -x hyprsunset" : "hyprsunset -t 4000 >/dev/null 2>&1")
                                                 },
                                                 {
-                                                    icon: "", title: "Screenshot", sub: "Select an area",
+                                                    icon: "", title: "Screenshot", sub: "Area · more in Capture",
                                                     active: false, ok: true,
                                                     run: () => root.takeScreenshot()
                                                 },
@@ -2912,7 +3299,7 @@ ShellRoot {
                                     // Now playing + stats
                                     RowLayout {
                                         Layout.fillWidth: true
-                                        Layout.preferredHeight: 150
+                                        Layout.preferredHeight: 138
                                         spacing: 12
 
                                         HubCard {
@@ -3090,46 +3477,21 @@ ShellRoot {
                                         }
                                     }
 
-                                    // Volume
+                                    // Sound output + microphone
                                     HubCard {
                                         theme: root
                                         Layout.fillWidth: true
-                                        Layout.preferredHeight: 52
+                                        Layout.preferredHeight: 100
 
-                                        RowLayout {
+                                        ColumnLayout {
                                             anchors.fill: parent
-                                            anchors.leftMargin: 16
-                                            anchors.rightMargin: 16
-                                            spacing: 12
-
-                                            Text {
-                                                text: root.volIcon(root.sink ? root.sink.audio : null)
-                                                color: root.accent
-                                                font.family: root.iconFont
-                                                font.pixelSize: 16
-                                                MouseArea {
-                                                    anchors.fill: parent
-                                                    anchors.margins: -6
-                                                    cursorShape: Qt.PointingHandCursor
-                                                    onClicked: if (root.sink && root.sink.audio) root.sink.audio.muted = !root.sink.audio.muted
-                                                }
-                                            }
-                                            ValueBar {
-                                                theme: root
-                                                Layout.fillWidth: true
-                                                value: root.sink && root.sink.audio ? root.sink.audio.volume : 0
-                                                onMoved: v => {
-                                                    if (root.sink && root.sink.audio) root.sink.audio.volume = v;
-                                                }
-                                            }
-                                            Text {
-                                                Layout.preferredWidth: 44
-                                                horizontalAlignment: Text.AlignRight
-                                                text: root.sink && root.sink.audio
-                                                    ? (root.sink.audio.muted ? "Muted" : Math.round(root.sink.audio.volume * 100) + "%") : "--"
-                                                color: root.fg
-                                                font.pixelSize: 12
-                                            }
+                                            anchors.leftMargin: 14
+                                            anchors.rightMargin: 14
+                                            anchors.topMargin: 10
+                                            anchors.bottomMargin: 10
+                                            spacing: 8
+                                            AudioRow { theme: root; Layout.fillWidth: true; input: false }
+                                            AudioRow { theme: root; Layout.fillWidth: true; input: true }
                                         }
                                     }
 
@@ -3403,6 +3765,7 @@ ShellRoot {
                                                     delegate: Text {
                                                         required property string modelData
                                                         Layout.fillWidth: true
+                                                        Layout.preferredWidth: 1      // equal columns
                                                         horizontalAlignment: Text.AlignHCenter
                                                         text: modelData
                                                         color: root.muted
@@ -3413,15 +3776,25 @@ ShellRoot {
 
                                                 Repeater {
                                                     model: panel.calInfo.days
-                                                    delegate: Rectangle {
+                                                    delegate: Item {
                                                         id: cday
                                                         required property var modelData
                                                         Layout.fillWidth: true
                                                         Layout.fillHeight: true
-                                                        radius: 12
-                                                        color: cday.modelData.today ? root.accent : (cdayHover.hovered ? root.overlay : "transparent")
+                                                        Layout.preferredWidth: 1      // equal columns
+                                                        Layout.preferredHeight: 1     // equal rows
 
                                                         HoverHandler { id: cdayHover }
+
+                                                        // round highlight for today (and a soft one on hover)
+                                                        Rectangle {
+                                                            anchors.centerIn: parent
+                                                            width: Math.min(parent.width, parent.height, 38)
+                                                            height: width
+                                                            radius: width / 2
+                                                            color: cday.modelData.today ? root.accent : (cdayHover.hovered ? root.overlay : "transparent")
+                                                            Behavior on color { ColorAnimation { duration: root.animMs } }
+                                                        }
 
                                                         Text {
                                                             anchors.centerIn: parent
@@ -3439,6 +3812,8 @@ ShellRoot {
 
                                     ColumnLayout {
                                         Layout.preferredWidth: 230
+                                        Layout.maximumWidth: 230
+                                        Layout.fillWidth: false
                                         Layout.fillHeight: true
                                         spacing: 12
 
@@ -3656,40 +4031,14 @@ ShellRoot {
                                             anchors.margins: 16
                                             spacing: 10
 
-                                            RowLayout {
-                                                Layout.fillWidth: true
-                                                spacing: 10
-                                                Text {
-                                                    Layout.preferredWidth: 110
-                                                    text: "Output"
-                                                    color: root.fg
-                                                    font.pixelSize: 13
-                                                    font.bold: true
-                                                }
-                                                ValueBar {
-                                                    theme: root
-                                                    Layout.fillWidth: true
-                                                    value: root.sink && root.sink.audio ? root.sink.audio.volume : 0
-                                                    onMoved: v => {
-                                                        if (root.sink && root.sink.audio) root.sink.audio.volume = v;
-                                                    }
-                                                }
-                                                IconButton {
-                                                    theme: root
-                                                    implicitWidth: 70
-                                                    implicitHeight: 28
-                                                    label: root.sink && root.sink.audio && root.sink.audio.muted ? "Unmute" : "Mute"
-                                                    onClicked: if (root.sink && root.sink.audio) root.sink.audio.muted = !root.sink.audio.muted
-                                                }
-                                            }
-
                                             Text {
-                                                Layout.fillWidth: true
-                                                text: root.sink ? (root.sink.description || root.sink.name) : "No output device"
-                                                color: root.muted
-                                                font.pixelSize: 11
-                                                elide: Text.ElideRight
+                                                text: "Sound output and microphone"
+                                                color: root.fg
+                                                font.pixelSize: 13
+                                                font.bold: true
                                             }
+                                            AudioRow { theme: root; Layout.fillWidth: true; input: false }
+                                            AudioRow { theme: root; Layout.fillWidth: true; input: true }
 
                                             Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.overlay }
 
@@ -3769,6 +4118,372 @@ ShellRoot {
                                             Layout.fillWidth: true
                                             label: "Shut down"
                                             onConfirmed: Quickshell.execDetached(["systemctl", "poweroff"])
+                                        }
+                                    }
+                                }
+
+                                // ===== 6: Capture =====
+                                ColumnLayout {
+                                    spacing: 12
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        Layout.fillHeight: true
+                                        spacing: 12
+
+                                        // ---- Screenshot ----
+                                        HubCard {
+                                            theme: root
+                                            Layout.fillWidth: true
+                                            Layout.fillHeight: true
+                                            Layout.preferredWidth: 1
+
+                                            ColumnLayout {
+                                                anchors.fill: parent
+                                                anchors.margins: 16
+                                                spacing: 12
+
+                                                RowLayout {
+                                                    spacing: 8
+                                                    Text { text: "\uf030"; color: root.accent; font.family: root.iconFont; font.pixelSize: 15 }
+                                                    Text { text: "Screenshot"; color: root.fg; font.pixelSize: 15; font.bold: true }
+                                                }
+
+                                                GridLayout {
+                                                    Layout.fillWidth: true
+                                                    columns: 2
+                                                    rowSpacing: 10
+                                                    columnSpacing: 10
+
+                                                    Repeater {
+                                                        model: [
+                                                            { icon: "\uf125", title: "Area", sub: "Drag a box", mode: "area" },
+                                                            { icon: "\uf2d0", title: "Window", sub: "Click a window", mode: "window" },
+                                                            { icon: "\uf108", title: "This screen", sub: "The monitor you're on", mode: "screen" },
+                                                            { icon: "\uf26c", title: "All screens", sub: "Every monitor", mode: "all" }
+                                                        ]
+                                                        delegate: Rectangle {
+                                                            id: cap
+                                                            required property var modelData
+                                                            Layout.fillWidth: true
+                                                            Layout.preferredWidth: 1
+                                                            Layout.preferredHeight: 74
+                                                            radius: 18
+                                                            color: capMouse.containsMouse ? root.overlay : root.bg
+                                                            border.width: 1
+                                                            border.color: root.glassEdge
+                                                            scale: capMouse.pressed ? 0.95 : (capMouse.containsMouse ? 1.03 : 1)
+                                                            Behavior on color { ColorAnimation { duration: root.animMs } }
+                                                            Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+
+                                                            RowLayout {
+                                                                anchors.fill: parent
+                                                                anchors.margins: 12
+                                                                spacing: 10
+                                                                Rectangle {
+                                                                    Layout.preferredWidth: 40
+                                                                    Layout.preferredHeight: 40
+                                                                    radius: 20
+                                                                    color: root.overlay
+                                                                    Text { anchors.centerIn: parent; text: cap.modelData.icon; color: root.accent; font.family: root.iconFont; font.pixelSize: 16 }
+                                                                }
+                                                                ColumnLayout {
+                                                                    Layout.fillWidth: true
+                                                                    spacing: 1
+                                                                    Text { Layout.fillWidth: true; text: cap.modelData.title; color: root.fg; font.pixelSize: 13; font.bold: true; elide: Text.ElideRight }
+                                                                    Text { Layout.fillWidth: true; text: cap.modelData.sub; color: root.muted; font.pixelSize: 11; elide: Text.ElideRight }
+                                                                }
+                                                            }
+                                                            MouseArea {
+                                                                id: capMouse
+                                                                anchors.fill: parent
+                                                                hoverEnabled: true
+                                                                cursorShape: Qt.PointingHandCursor
+                                                                onClicked: root.shot(cap.modelData.mode)
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                // delay
+                                                RowLayout {
+                                                    Layout.fillWidth: true
+                                                    spacing: 8
+                                                    Text { text: "Delay"; color: root.muted; font.pixelSize: 12 }
+                                                    Item { Layout.fillWidth: true }
+                                                    Repeater {
+                                                        model: [0, 3, 5, 10]
+                                                        delegate: Rectangle {
+                                                            id: dly
+                                                            required property int modelData
+                                                            readonly property bool on: root.shotDelay === dly.modelData
+                                                            width: 52
+                                                            height: 30
+                                                            radius: 10
+                                                            color: dly.on ? root.accent : (dlyMouse.containsMouse ? root.overlay : root.bg)
+                                                            border.width: 1
+                                                            border.color: root.glassEdge
+                                                            Behavior on color { ColorAnimation { duration: root.animMs } }
+                                                            Text { anchors.centerIn: parent; text: dly.modelData === 0 ? "Now" : dly.modelData + "s"; color: dly.on ? root.bg : root.fg; font.pixelSize: 12; font.bold: dly.on }
+                                                            MouseArea { id: dlyMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.shotDelay = dly.modelData }
+                                                        }
+                                                    }
+                                                }
+                                                Item { Layout.fillHeight: true }
+                                            }
+                                        }
+
+                                        // ---- Screen recording ----
+                                        HubCard {
+                                            theme: root
+                                            Layout.fillWidth: true
+                                            Layout.fillHeight: true
+                                            Layout.preferredWidth: 1
+
+                                            ColumnLayout {
+                                                anchors.fill: parent
+                                                anchors.margins: 16
+                                                spacing: 12
+
+                                                RowLayout {
+                                                    spacing: 8
+                                                    Text { text: "\uf03d"; color: root.recording ? root.danger : root.accent; font.family: root.iconFont; font.pixelSize: 15 }
+                                                    Text { text: "Screen recording"; color: root.fg; font.pixelSize: 15; font.bold: true }
+                                                }
+
+                                                // not installed
+                                                ColumnLayout {
+                                                    visible: !root.canRecord
+                                                    Layout.fillWidth: true
+                                                    Layout.fillHeight: true
+                                                    spacing: 6
+                                                    Item { Layout.fillHeight: true }
+                                                    Text {
+                                                        Layout.fillWidth: true
+                                                        horizontalAlignment: Text.AlignHCenter
+                                                        wrapMode: Text.Wrap
+                                                        text: "Recording needs wf-recorder.\nInstall it in a terminal with:"
+                                                        color: root.muted
+                                                        font.pixelSize: 13
+                                                    }
+                                                    Text {
+                                                        Layout.alignment: Qt.AlignHCenter
+                                                        text: "sudo pacman -S wf-recorder"
+                                                        color: root.accent
+                                                        font.pixelSize: 13
+                                                        font.family: "monospace"
+                                                    }
+                                                    Item { Layout.fillHeight: true }
+                                                }
+
+                                                // recording now
+                                                ColumnLayout {
+                                                    visible: root.canRecord && root.recording
+                                                    Layout.fillWidth: true
+                                                    Layout.fillHeight: true
+                                                    spacing: 10
+                                                    Item { Layout.fillHeight: true }
+                                                    Rectangle {
+                                                        Layout.alignment: Qt.AlignHCenter
+                                                        width: 22
+                                                        height: 22
+                                                        radius: 11
+                                                        color: root.danger
+                                                        SequentialAnimation on opacity {
+                                                            running: root.recording
+                                                            loops: Animation.Infinite
+                                                            NumberAnimation { to: 0.3; duration: 700 }
+                                                            NumberAnimation { to: 1; duration: 700 }
+                                                        }
+                                                    }
+                                                    Text {
+                                                        Layout.alignment: Qt.AlignHCenter
+                                                        text: root.fmt(root.recSeconds)
+                                                        color: root.fg
+                                                        font.pixelSize: 34
+                                                        font.bold: true
+                                                    }
+                                                    BarButton {
+                                                        theme: root
+                                                        Layout.alignment: Qt.AlignHCenter
+                                                        icon: "\uf04d"
+                                                        label: "Stop recording"
+                                                        onClicked: mouse => root.stopRecording()
+                                                    }
+                                                    Item { Layout.fillHeight: true }
+                                                }
+
+                                                // ready to record
+                                                ColumnLayout {
+                                                    visible: root.canRecord && !root.recording
+                                                    Layout.fillWidth: true
+                                                    Layout.fillHeight: true
+                                                    spacing: 10
+
+                                                    Repeater {
+                                                        model: [
+                                                            { icon: "\uf125", title: "Record an area", sub: "Drag a box, then it starts", mode: "area" },
+                                                            { icon: "\uf108", title: "Record this screen", sub: "The monitor you're on", mode: "screen" }
+                                                        ]
+                                                        delegate: Rectangle {
+                                                            id: rcap
+                                                            required property var modelData
+                                                            Layout.fillWidth: true
+                                                            Layout.preferredHeight: 64
+                                                            radius: 18
+                                                            color: rcapMouse.containsMouse ? root.overlay : root.bg
+                                                            border.width: 1
+                                                            border.color: root.glassEdge
+                                                            scale: rcapMouse.pressed ? 0.95 : (rcapMouse.containsMouse ? 1.02 : 1)
+                                                            Behavior on color { ColorAnimation { duration: root.animMs } }
+                                                            Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+
+                                                            RowLayout {
+                                                                anchors.fill: parent
+                                                                anchors.margins: 12
+                                                                spacing: 10
+                                                                Rectangle {
+                                                                    Layout.preferredWidth: 40
+                                                                    Layout.preferredHeight: 40
+                                                                    radius: 20
+                                                                    color: Qt.rgba(root.danger.r, root.danger.g, root.danger.b, 0.18)
+                                                                    Text { anchors.centerIn: parent; text: rcap.modelData.icon; color: root.danger; font.family: root.iconFont; font.pixelSize: 16 }
+                                                                }
+                                                                ColumnLayout {
+                                                                    Layout.fillWidth: true
+                                                                    spacing: 1
+                                                                    Text { Layout.fillWidth: true; text: rcap.modelData.title; color: root.fg; font.pixelSize: 13; font.bold: true; elide: Text.ElideRight }
+                                                                    Text { Layout.fillWidth: true; text: rcap.modelData.sub; color: root.muted; font.pixelSize: 11; elide: Text.ElideRight }
+                                                                }
+                                                            }
+                                                            MouseArea {
+                                                                id: rcapMouse
+                                                                anchors.fill: parent
+                                                                hoverEnabled: true
+                                                                cursorShape: Qt.PointingHandCursor
+                                                                onClicked: root.record(rcap.modelData.mode)
+                                                            }
+                                                        }
+                                                    }
+
+                                                    // sound
+                                                    RowLayout {
+                                                        Layout.fillWidth: true
+                                                        spacing: 8
+                                                        Text { text: "Sound"; color: root.muted; font.pixelSize: 12 }
+                                                        Item { Layout.fillWidth: true }
+                                                        Repeater {
+                                                            model: [
+                                                                { key: "none", name: "None" },
+                                                                { key: "system", name: "Computer" },
+                                                                { key: "mic", name: "Mic" }
+                                                            ]
+                                                            delegate: Rectangle {
+                                                                id: aud
+                                                                required property var modelData
+                                                                readonly property bool on: root.recAudio === aud.modelData.key
+                                                                width: audText.implicitWidth + 22
+                                                                height: 30
+                                                                radius: 10
+                                                                color: aud.on ? root.accent : (audMouse.containsMouse ? root.overlay : root.bg)
+                                                                border.width: 1
+                                                                border.color: root.glassEdge
+                                                                Behavior on color { ColorAnimation { duration: root.animMs } }
+                                                                Text { id: audText; anchors.centerIn: parent; text: aud.modelData.name; color: aud.on ? root.bg : root.fg; font.pixelSize: 12; font.bold: aud.on }
+                                                                MouseArea { id: audMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.recAudio = aud.modelData.key }
+                                                            }
+                                                        }
+                                                    }
+                                                    Item { Layout.fillHeight: true }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // ---- Recent screenshots ----
+                                    HubCard {
+                                        theme: root
+                                        Layout.fillWidth: true
+                                        Layout.preferredHeight: 128
+
+                                        FolderListModel {
+                                            id: recentShots
+                                            folder: "file://" + Quickshell.env("HOME") + "/Pictures/Screenshots"
+                                            nameFilters: ["*.png", "*.jpg"]
+                                            showDirs: false
+                                            sortField: FolderListModel.Time
+                                        }
+
+                                        RowLayout {
+                                            anchors.fill: parent
+                                            anchors.margins: 12
+                                            spacing: 10
+
+                                            ListView {
+                                                id: shotStrip
+                                                Layout.fillWidth: true
+                                                Layout.fillHeight: true
+                                                orientation: ListView.Horizontal
+                                                spacing: 8
+                                                clip: true
+                                                model: recentShots
+                                                delegate: Rectangle {
+                                                    id: rs
+                                                    required property url fileUrl
+                                                    required property int index
+                                                    visible: rs.index < 8
+                                                    width: visible ? 170 : 0
+                                                    height: shotStrip.height
+                                                    radius: 12
+                                                    color: root.overlay
+                                                    border.width: rsMouse.containsMouse ? 2 : 0
+                                                    border.color: root.accent
+                                                    Image {
+                                                        anchors.fill: parent
+                                                        anchors.margins: 3
+                                                        source: rs.fileUrl
+                                                        asynchronous: true
+                                                        fillMode: Image.PreserveAspectCrop
+                                                        sourceSize.width: 340
+                                                    }
+                                                    MouseArea {
+                                                        id: rsMouse
+                                                        anchors.fill: parent
+                                                        hoverEnabled: true
+                                                        cursorShape: Qt.PointingHandCursor
+                                                        onClicked: { root.hubOpen = false; Quickshell.execDetached(["xdg-open", rs.fileUrl.toString()]); }
+                                                    }
+                                                }
+
+                                                Text {
+                                                    anchors.centerIn: parent
+                                                    visible: recentShots.count === 0
+                                                    text: "Your screenshots will show up here"
+                                                    color: root.muted
+                                                    font.pixelSize: 12
+                                                }
+                                            }
+
+                                            ColumnLayout {
+                                                Layout.preferredWidth: 150
+                                                Layout.maximumWidth: 150
+                                                Layout.fillWidth: false
+                                                spacing: 8
+                                                BarButton {
+                                                    theme: root
+                                                    Layout.fillWidth: true
+                                                    icon: "\uf07b"
+                                                    label: "Screenshots"
+                                                    onClicked: mouse => { root.hubOpen = false; Quickshell.execDetached(["sh", "-c", "mkdir -p \"$HOME/Pictures/Screenshots\" && xdg-open \"$HOME/Pictures/Screenshots\""]); }
+                                                }
+                                                BarButton {
+                                                    theme: root
+                                                    Layout.fillWidth: true
+                                                    icon: "\uf07b"
+                                                    label: "Recordings"
+                                                    onClicked: mouse => { root.hubOpen = false; Quickshell.execDetached(["sh", "-c", "mkdir -p \"$HOME/Videos/Recordings\" && xdg-open \"$HOME/Videos/Recordings\""]); }
+                                                }
+                                            }
                                         }
                                     }
                                 }
