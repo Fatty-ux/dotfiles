@@ -6,6 +6,7 @@ com.spotify.Client
 com.valvesoftware.Steam
 dev.vencord.Vesktop
 io.github.benjamimgois.goverlay
+io.missioncenter.MissionCenter
 it.mijorus.gearlever
 org.gnome.baobab
 org.signal.Signal
