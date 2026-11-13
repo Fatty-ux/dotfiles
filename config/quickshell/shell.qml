@@ -129,6 +129,25 @@ ShellRoot {
         showDirs: false
     }
 
+    // ---------- Wallpaper picker (centre of the screen) ----------
+    property bool wallPickerOpen: false
+
+    // Optional, in hyprland.conf:  bind = SUPER, W, global, quickshell:wallpaper
+    GlobalShortcut {
+        appid: "quickshell"
+        name: "wallpaper"
+        description: "Open the wallpaper picker"
+        onPressed: root.wallPickerOpen = !root.wallPickerOpen
+    }
+
+    // Alternative:  quickshell ipc call wallpaper toggle
+    IpcHandler {
+        target: "wallpaper"
+        function toggle(): void {
+            root.wallPickerOpen = !root.wallPickerOpen;
+        }
+    }
+
     function setWallpaper(url) {
         pins.adapter.wallpaper = url;
     }
@@ -510,6 +529,7 @@ ShellRoot {
         launcherOpen = false;
         panelOpen = false;
         weatherOpen = false;
+        wallPickerOpen = false;
         closeAllRequested();
     }
 
@@ -1122,7 +1142,7 @@ ShellRoot {
             // ----- Auto-hide -----
             readonly property bool wantHide: root.autoHideOn
             property bool hotHover: false
-            readonly property bool popupOpen: ctxMenu.visible || mediaPopup.visible || wallPopup.visible
+            readonly property bool popupOpen: ctxMenu.visible || mediaPopup.visible || root.wallPickerOpen
             readonly property bool keepOpen: !wantHide || hotHover || cursorInBar || popupOpen
             property bool barShown: true
             readonly property bool atBottom: true
@@ -1207,12 +1227,10 @@ ShellRoot {
                 function onCloseAllRequested() {
                     ctxMenu.visible = false;
                     mediaPopup.visible = false;
-                    wallPopup.visible = false;
                 }
             }
 
             property double mediaClosedAt: 0
-            property double wallClosedAt: 0
 
             // Opens the shared right-click menu above an item
             function openMenu(target, entries) {
@@ -1515,127 +1533,6 @@ ShellRoot {
                     root.closeAll();
                     mediaPopup.visible = false;
                     panel.mediaClosedAt = Date.now();
-                }
-            }
-
-            // ===== Wallpaper popup =====
-            PopupWindow {
-                id: wallPopup
-                anchor.window: panel
-                anchor.edges: Edges.Top
-                anchor.gravity: Edges.Top
-                implicitWidth: 540
-                implicitHeight: 380
-                color: "transparent"
-                visible: false
-
-                Rectangle {
-                    opacity: 0
-                    scale: 0.96
-                    NumberAnimation on opacity { running: wallPopup.visible; from: 0; to: 1; duration: root.animMs; easing.type: Easing.OutCubic }
-                    NumberAnimation on scale { running: wallPopup.visible; from: 0.96; to: 1; duration: root.animMs; easing.type: Easing.OutCubic }
-                    anchors.fill: parent
-                    radius: 14
-                    color: root.popupBg
-                    border.color: root.overlay
-                    border.width: 1
-
-                    ColumnLayout {
-                        anchors.fill: parent
-                        anchors.margins: 12
-                        spacing: 10
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: 8
-
-                            Text {
-                                Layout.fillWidth: true
-                                text: "Wallpapers"
-                                color: root.fg
-                                font.pixelSize: 14
-                                font.bold: true
-                            }
-                            IconButton {
-                                theme: root
-                                implicitWidth: 80
-                                implicitHeight: 28
-                                label: "Random"
-                                onClicked: root.randomWallpaper()
-                            }
-                            IconButton {
-                                theme: root
-                                implicitWidth: 80
-                                implicitHeight: 28
-                                label: "Clear"
-                                onClicked: root.setWallpaper("")
-                            }
-                        }
-
-                        Text {
-                            visible: wallpapers.count === 0
-                            Layout.fillWidth: true
-                            wrapMode: Text.WordWrap
-                            text: "No images found. Put .jpg / .png / .webp files in ~/Pictures/Wallpapers"
-                            color: root.muted
-                            font.pixelSize: 12
-                        }
-
-                        GridView {
-                            id: wallGrid
-                            Layout.fillWidth: true
-                            Layout.fillHeight: true
-                            visible: wallpapers.count > 0
-                            clip: true
-                            cellWidth: 172
-                            cellHeight: 102
-                            model: wallpapers
-
-                            delegate: Item {
-                                id: thumb
-                                required property url fileUrl
-                                width: wallGrid.cellWidth
-                                height: wallGrid.cellHeight
-
-                                Rectangle {
-                                    anchors.fill: parent
-                                    anchors.margins: 4
-                                    radius: 8
-                                    color: root.overlay
-                                    scale: thumbMouse.containsMouse ? 1.05 : 1
-                                    Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutCubic } }
-                                    border.width: thumb.fileUrl.toString() === pins.adapter.wallpaper ? 2 : 0
-                                    border.color: root.accent
-
-                                    Image {
-                                        anchors.fill: parent
-                                        anchors.margins: 3
-                                        source: thumb.fileUrl
-                                        asynchronous: true
-                                        fillMode: Image.PreserveAspectCrop
-                                        sourceSize.width: 320
-                                    }
-
-                                    MouseArea {
-                                        anchors.fill: parent
-                                        id: thumbMouse
-                                        hoverEnabled: true
-                                        onClicked: root.setWallpaper(thumb.fileUrl.toString())
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            HyprlandFocusGrab {
-                windows: [wallPopup]
-                active: wallPopup.visible
-                onCleared: {
-                    root.closeAll();
-                    wallPopup.visible = false;
-                    panel.wallClosedAt = Date.now();
                 }
             }
 
@@ -2147,18 +2044,21 @@ ShellRoot {
                         id: wallBtn
                         visible: root.bottomShowWallpaperButton
                         Layout.alignment: Qt.AlignVCenter
-                        implicitWidth: 34
-                        implicitHeight: 30
-                        radius: 8
-                        color: (wallPopup.visible || wallMouse.containsMouse) ? root.overlay : root.surface
+                        implicitWidth: 36
+                        implicitHeight: 32
+                        radius: 10
+                        color: (root.wallPickerOpen || wallMouse.containsMouse) ? root.overlay : root.surface
+                        scale: wallMouse.pressed ? 0.92 : (wallMouse.containsMouse ? 1.08 : 1)
                         Behavior on color { ColorAnimation { duration: root.animMs } }
+                        Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
                         border.width: 1
                         border.color: root.glassEdge
 
                         Text {
                             anchors.centerIn: parent
-                            text: "▣"
-                            color: root.fg
+                            text: "\uf03e"
+                            color: root.accent
+                            font.family: root.iconFont
                             font.pixelSize: 15
                         }
 
@@ -2166,20 +2066,14 @@ ShellRoot {
                             id: wallMouse
                             anchors.fill: parent
                             hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
                             acceptedButtons: Qt.LeftButton | Qt.MiddleButton
                             onClicked: mouse => {
                                 if (mouse.button === Qt.MiddleButton) {
                                     root.randomWallpaper();
                                     return;
                                 }
-                                if (Date.now() - panel.wallClosedAt < 250) return;
-                                if (wallPopup.visible) {
-                                    wallPopup.visible = false;
-                                    return;
-                                }
-                                const p = wallBtn.mapToItem(null, 0, 0);
-                                wallPopup.anchor.rect = Qt.rect(p.x, p.y, wallBtn.width, wallBtn.height);
-                                wallPopup.visible = true;
+                                root.wallPickerOpen = !root.wallPickerOpen;
                             }
                         }
                     }
@@ -4341,6 +4235,321 @@ ShellRoot {
             }
         }
     }
+    // ---------- Wallpaper picker (scroll through, click or Enter to set) ----------
+    Variants {
+        model: Quickshell.screens
+
+        PanelWindow {
+            id: picker
+            required property var modelData
+            screen: modelData
+
+            visible: root.wallPickerOpen
+                && (!Hyprland.focusedMonitor || Hyprland.focusedMonitor.name === modelData.name)
+
+            WlrLayershell.layer: WlrLayer.Overlay
+            WlrLayershell.namespace: "quickshell-wallpicker"
+            WlrLayershell.keyboardFocus: WlrKeyboardFocus.Exclusive
+            exclusionMode: ExclusionMode.Ignore
+            anchors {
+                top: true
+                bottom: true
+                left: true
+                right: true
+            }
+            color: "#66000000"
+
+            readonly property int thumbW: 340
+            readonly property int thumbH: 200
+            property real wheelAcc: 0
+
+            // Index of the wallpaper that's set right now (-1 if none)
+            function currentWallIndex() {
+                for (let i = 0; i < wallpapers.count; i++)
+                    if (wallpapers.get(i, "fileUrl").toString() === pins.adapter.wallpaper) return i;
+                return -1;
+            }
+
+            function step(n) {
+                if (wallpapers.count === 0) return;
+                strip.currentIndex = Math.max(0, Math.min(wallpapers.count - 1, strip.currentIndex + n));
+            }
+
+            function applyCurrent() {
+                if (strip.currentIndex < 0 || strip.currentIndex >= wallpapers.count) return;
+                root.setWallpaper(wallpapers.get(strip.currentIndex, "fileUrl").toString());
+            }
+
+            onVisibleChanged: {
+                if (visible) {
+                    const i = currentWallIndex();
+                    strip.currentIndex = i >= 0 ? i : 0;
+                    strip.positionViewAtIndex(strip.currentIndex, ListView.Center);
+                    keys.forceActiveFocus();
+                }
+            }
+
+            // Click outside the card to close
+            MouseArea {
+                anchors.fill: parent
+                onClicked: root.wallPickerOpen = false
+            }
+
+            Item {
+                id: keys
+                focus: true
+                Keys.onPressed: event => {
+                    if (event.key === Qt.Key_Escape) root.wallPickerOpen = false;
+                    else if (event.key === Qt.Key_Right || event.key === Qt.Key_Down || event.key === Qt.Key_Tab) picker.step(1);
+                    else if (event.key === Qt.Key_Left || event.key === Qt.Key_Up || event.key === Qt.Key_Backtab) picker.step(-1);
+                    else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) picker.applyCurrent();
+                    else if (event.key === Qt.Key_R) root.randomWallpaper();
+                    else return;
+                    event.accepted = true;
+                }
+            }
+
+            Rectangle {
+                id: wcardPick
+                opacity: 0
+                scale: 0.94
+                NumberAnimation on opacity { running: picker.visible; from: 0; to: 1; duration: root.animMs * 1.5; easing.type: Easing.OutCubic }
+                NumberAnimation on scale { running: picker.visible; from: 0.94; to: 1; duration: root.animMs * 2; easing.type: Easing.OutBack }
+
+                width: Math.min(picker.width - 80, 1240)
+                height: 470
+                anchors.centerIn: parent
+                radius: 28
+                color: root.popupBg
+                border.color: root.glassEdge
+                border.width: 1
+                clip: true
+
+                // Glossy sheen, same as the launcher
+                Rectangle {
+                    anchors.fill: parent
+                    radius: parent.radius
+                    gradient: Gradient {
+                        GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, root.dark ? 0.10 : 0.40) }
+                        GradientStop { position: 0.28; color: Qt.rgba(1, 1, 1, root.dark ? 0.03 : 0.10) }
+                        GradientStop { position: 0.6; color: Qt.rgba(1, 1, 1, 0) }
+                    }
+                }
+                Rectangle {
+                    anchors.fill: parent
+                    radius: parent.radius
+                    gradient: Gradient {
+                        GradientStop { position: 0.55; color: "transparent" }
+                        GradientStop { position: 1.0; color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, root.dark ? 0.12 : 0.08) }
+                    }
+                }
+                Rectangle {
+                    anchors.top: parent.top
+                    anchors.topMargin: 1
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    width: parent.width - 60
+                    height: 1
+                    color: Qt.rgba(1, 1, 1, root.dark ? 0.22 : 0.7)
+                }
+
+                // Swallow clicks inside the card
+                MouseArea { anchors.fill: parent }
+
+                ColumnLayout {
+                    anchors.fill: parent
+                    anchors.margins: 22
+                    spacing: 10
+
+                    // ---- Header ----
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 10
+
+                        Text {
+                            text: ""
+                            color: root.accent
+                            font.family: root.iconFont
+                            font.pixelSize: 18
+                        }
+                        Text {
+                            text: "Wallpapers"
+                            color: root.fg
+                            font.pixelSize: 17
+                            font.bold: true
+                        }
+                        Text {
+                            visible: wallpapers.count > 0
+                            text: (strip.currentIndex + 1) + " / " + wallpapers.count
+                            color: root.muted
+                            font.pixelSize: 13
+                        }
+                        Item { Layout.fillWidth: true }
+                        BarButton {
+                            theme: root
+                            icon: ""
+                            label: "Random"
+                            onClicked: mouse => {
+                                root.randomWallpaper();
+                                const i = picker.currentWallIndex();
+                                if (i >= 0) strip.currentIndex = i;
+                            }
+                        }
+                        BarButton {
+                            theme: root
+                            icon: ""
+                            label: "Clear"
+                            onClicked: mouse => root.setWallpaper("")
+                        }
+                    }
+
+                    // ---- The carousel ----
+                    Item {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+
+                        ListView {
+                            id: strip
+                            anchors.fill: parent
+                            orientation: ListView.Horizontal
+                            model: wallpapers
+                            spacing: 18
+                            clip: false
+                            interactive: true
+                            boundsBehavior: Flickable.StopAtBounds
+                            // keep the selected wallpaper in the middle
+                            highlightRangeMode: ListView.StrictlyEnforceRange
+                            preferredHighlightBegin: width / 2 - picker.thumbW / 2
+                            preferredHighlightEnd: width / 2 + picker.thumbW / 2
+                            highlightMoveDuration: root.animMs * 2
+                            snapMode: ListView.SnapToItem
+
+                            delegate: Item {
+                                id: wthumb
+                                required property url fileUrl
+                                required property string fileName
+                                required property int index
+                                readonly property bool centre: ListView.isCurrentItem
+                                readonly property bool isSet: wthumb.fileUrl.toString() === pins.adapter.wallpaper
+                                width: picker.thumbW
+                                height: strip.height
+                                z: centre ? 2 : 1
+
+                                Rectangle {
+                                    id: frame
+                                    anchors.centerIn: parent
+                                    width: picker.thumbW
+                                    height: picker.thumbH
+                                    radius: 20
+                                    color: root.overlay
+                                    border.width: wthumb.isSet ? 3 : (wthumb.centre ? 2 : 1)
+                                    border.color: wthumb.isSet ? root.accent : (wthumb.centre ? root.fg : root.glassEdge)
+                                    scale: wthumb.centre ? (thumbMouse.containsMouse ? 1.32 : 1.28) : (thumbMouse.containsMouse ? 0.9 : 0.84)
+                                    opacity: wthumb.centre ? 1 : 0.55
+                                    Behavior on scale { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutBack } }
+                                    Behavior on opacity { NumberAnimation { duration: root.animMs * 2 } }
+
+                                    Image {
+                                        anchors.fill: parent
+                                        anchors.margins: 4
+                                        source: wthumb.fileUrl
+                                        asynchronous: true
+                                        fillMode: Image.PreserveAspectCrop
+                                        sourceSize.width: 640
+                                    }
+
+                                    // glossy highlight across the top of each picture
+                                    Rectangle {
+                                        anchors.fill: parent
+                                        anchors.margins: 4
+                                        radius: 16
+                                        gradient: Gradient {
+                                            GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, 0.22) }
+                                            GradientStop { position: 0.35; color: Qt.rgba(1, 1, 1, 0) }
+                                        }
+                                    }
+
+                                    // tick on the wallpaper that's set now
+                                    Rectangle {
+                                        visible: wthumb.isSet
+                                        anchors.top: parent.top
+                                        anchors.right: parent.right
+                                        anchors.margins: 10
+                                        width: 26
+                                        height: 26
+                                        radius: 13
+                                        color: root.accent
+
+                                        Text {
+                                            anchors.centerIn: parent
+                                            text: ""
+                                            color: root.bg
+                                            font.family: root.iconFont
+                                            font.pixelSize: 12
+                                        }
+                                    }
+
+                                    MouseArea {
+                                        id: thumbMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            // first click brings it to the middle, clicking the middle one sets it
+                                            if (wthumb.centre) picker.applyCurrent();
+                                            else strip.currentIndex = wthumb.index;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Scroll wheel / touchpad moves one wallpaper per notch
+                        MouseArea {
+                            anchors.fill: parent
+                            acceptedButtons: Qt.NoButton
+                            onWheel: wheel => {
+                                const d = wheel.angleDelta.y !== 0 ? wheel.angleDelta.y : -wheel.angleDelta.x;
+                                picker.wheelAcc += d;
+                                while (picker.wheelAcc >= 120) { picker.step(-1); picker.wheelAcc -= 120; }
+                                while (picker.wheelAcc <= -120) { picker.step(1); picker.wheelAcc += 120; }
+                            }
+                        }
+
+                        Text {
+                            anchors.centerIn: parent
+                            visible: wallpapers.count === 0
+                            horizontalAlignment: Text.AlignHCenter
+                            text: "No wallpapers yet\nPut .jpg / .png / .webp files in ~/Pictures/Wallpapers"
+                            color: root.muted
+                            font.pixelSize: 14
+                            lineHeight: 1.3
+                        }
+                    }
+
+                    // ---- Name of the one in the middle ----
+                    Text {
+                        Layout.alignment: Qt.AlignHCenter
+                        Layout.maximumWidth: wcardPick.width - 80
+                        visible: wallpapers.count > 0
+                        elide: Text.ElideMiddle
+                        text: strip.currentItem ? strip.currentItem.fileName : ""
+                        color: root.fg
+                        font.pixelSize: 14
+                        font.bold: true
+                    }
+
+                    Text {
+                        Layout.alignment: Qt.AlignHCenter
+                        text: "Scroll or ← →  browse      Click the middle one or Enter  set      R  random      Esc  close"
+                        color: root.muted
+                        font.pixelSize: 11
+                        opacity: 0.8
+                    }
+                }
+            }
+        }
+    }
+
     // ---------- Wallpaper (drawn on the background layer) ----------
     Variants {
         model: Quickshell.screens
