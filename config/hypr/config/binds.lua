@@ -1,6 +1,9 @@
 local mainMod = "SUPER"
-local noctCall = "noctalia msg "
 local launchPrefix = "uwsm app -- " -- if you are not using UWSM, make this empty (e.g. "")
+
+-- JoeOS: everything that used to go to Noctalia now goes to Quickshell
+local qs = "qs ipc call "
+local capture = "bash $HOME/.config/quickshell/scripts/capture.sh "   -- $HOME is filled in by the shell
 
 -- AZERTY fix: the number-row keys emit symbols (& é " ' ...) without Shift, so
 -- binding to the digit characters fails. Bind by physical keycode instead.
@@ -27,9 +30,12 @@ hl.bind(mainMod .. " + Right", hl.dsp.focus({ direction = "right" }))
 hl.bind(mainMod .. " + Up",    hl.dsp.focus({ direction = "up" }))
 hl.bind(mainMod .. " + Down",  hl.dsp.focus({ direction = "down" }))
 hl.bind("ALT + Tab",           hl.dsp.window.cycle_next())
-hl.bind(mainMod .. " + Tab",   hl.dsp.exec_cmd(noctCall .. "window-switcher"))
 
--- Move active window around workspaces & monitors
+-- Desktop switcher: hold Super, tap Tab to move along, let go of Super to switch
+hl.bind(mainMod .. " + Tab",         hl.dsp.exec_cmd(qs .. "desktops switcher"))
+hl.bind(mainMod .. " + SHIFT + Tab", hl.dsp.exec_cmd(qs .. "desktops switcherBack"))
+
+-- Move active window around
 hl.bind(mainMod .. " + SHIFT + Up",                   hl.dsp.window.move({ direction = "u" }))
 hl.bind(mainMod .. " + SHIFT + Right",                hl.dsp.window.move({ direction = "r" }))
 hl.bind(mainMod .. " + SHIFT + Left",                 hl.dsp.window.move({ direction = "l" }))
@@ -39,17 +45,21 @@ hl.bind(mainMod .. " + SHIFT + " .. digitCode(2),     hl.dsp.window.move({ monit
 hl.bind(mainMod .. " + SHIFT + " .. digitCode(3),     hl.dsp.window.move({ monitor = MONITOR3 }))
 hl.bind(mainMod .. " + SHIFT + mouse_up",             hl.dsp.window.move({ monitor   = "-1" }))
 hl.bind(mainMod .. " + SHIFT + mouse_down",           hl.dsp.window.move({ monitor   = "+1" }))
-hl.bind(mainMod .. " + CONTROL + SHIFT + Right",      hl.dsp.window.move({ workspace = "m+1" }))
-hl.bind(mainMod .. " + CONTROL + SHIFT + Left",       hl.dsp.window.move({ workspace = "m-1" }))
-hl.bind(mainMod .. " + CONTROL + SHIFT + mouse_up",   hl.dsp.window.move({ workspace = "m-1" }))
-hl.bind(mainMod .. " + CONTROL + SHIFT + mouse_down", hl.dsp.window.move({ workspace = "m+1" }))
+
+-- Move active window to the next / previous desktop (linked desktops, follows the window)
+hl.bind(mainMod .. " + CONTROL + SHIFT + Right",      hl.dsp.exec_cmd(qs .. "desktops moveWindowBy 1"))
+hl.bind(mainMod .. " + CONTROL + SHIFT + Left",       hl.dsp.exec_cmd(qs .. "desktops moveWindowBy -1"))
+hl.bind(mainMod .. " + CONTROL + SHIFT + mouse_up",   hl.dsp.exec_cmd(qs .. "desktops moveWindowBy -1"))
+hl.bind(mainMod .. " + CONTROL + SHIFT + mouse_down", hl.dsp.exec_cmd(qs .. "desktops moveWindowBy 1"))
+
+-- Move active window to desktop N: Super+Ctrl+Shift+N follows it, Super+Alt+Shift+N leaves it there
 for i = 1, NUM_WPM do
     local key = i % 10
-    hl.bind(mainMod .. " + SHIFT + CONTROL + " .. digitCode(key), hl.dsp.window.move({ workspace = "m~" .. i }))
+    hl.bind(mainMod .. " + SHIFT + CONTROL + " .. digitCode(key), hl.dsp.exec_cmd(qs .. "desktops moveWindowTo " .. i))
 end
 for i = 1, NUM_WPM do
     local key = i % 10
-    hl.bind(mainMod .. " + SHIFT + ALT + " .. digitCode(key), hl.dsp.window.move({ workspace = "m~" .. i, follow = false }))
+    hl.bind(mainMod .. " + SHIFT + ALT + " .. digitCode(key), hl.dsp.exec_cmd(qs .. "desktops sendWindowTo " .. i))
 end
 
 -- Move & Resize with mouse
@@ -86,12 +96,13 @@ hl.bind(mainMod .. " + C",          hl.dsp.exec_cmd(launchPrefix .. CALCULATOR))
 hl.bind("XF86Calculator",           hl.dsp.exec_cmd(launchPrefix .. CALCULATOR))
 hl.bind(mainMod .. " + W",          hl.dsp.exec_cmd(launchPrefix .. BROWSER))
 hl.bind("CONTROL + SHIFT + Escape", hl.dsp.exec_cmd(launchPrefix .. TERMINAL .. " -e btop"))
-hl.bind(mainMod .. " + Z",          hl.dsp.exec_cmd(noctCall .. "settings-toggle"))
-hl.bind(mainMod .. " + X",          hl.dsp.exec_cmd(noctCall .. "panel-toggle control-center"))
-hl.bind(mainMod .. " + Space", hl.dsp.exec_cmd("qs ipc call launcher toggle"))
-hl.bind(mainMod .. " + period",     hl.dsp.exec_cmd(noctCall .. "panel-toggle launcher /emo"))
-hl.bind(mainMod .. " + L",          hl.dsp.exec_cmd(noctCall .. "session lock"))
-hl.bind(mainMod .. " + ALT + C",    hl.dsp.exec_cmd(noctCall .. "panel-toggle session"))
+
+-- Quickshell: launcher and the top hub
+hl.bind(mainMod .. " + Space",      hl.dsp.exec_cmd(qs .. "launcher toggle"))
+hl.bind(mainMod .. " + X",          hl.dsp.exec_cmd(qs .. "hub toggle"))      -- hub (Home)
+hl.bind(mainMod .. " + Z",          hl.dsp.exec_cmd(qs .. "hub open 5"))      -- hub: System
+hl.bind(mainMod .. " + ALT + C",    hl.dsp.exec_cmd(qs .. "hub open 5"))      -- hub: System (power buttons)
+hl.bind(mainMod .. " + L",          hl.dsp.exec_cmd("hyprlock"))              -- lock screen (needs hyprlock)
 
 ---------------------------
 ---- HARDWARE CONTROLS ----
@@ -104,32 +115,30 @@ hl.bind("XF86AudioMute", hl.dsp.exec_cmd("wpctl set-mute @DEFAULT_AUDIO_SINK@ to
 hl.bind("XF86AudioMicMute", hl.dsp.exec_cmd("wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle"), { locked = true })
 
 -- Media
-hl.bind("XF86AudioPlay",  hl.dsp.exec_cmd(noctCall .. "media toggle"),   { locked = true })
-hl.bind("XF86AudioPause", hl.dsp.exec_cmd(noctCall .. "media toggle"),   { locked = true })
-hl.bind("XF86AudioNext",  hl.dsp.exec_cmd(noctCall .. "media next"),     { locked = true })
-hl.bind("XF86AudioPrev",  hl.dsp.exec_cmd(noctCall .. "media previous"), { locked = true })
+hl.bind("XF86AudioPlay",  hl.dsp.exec_cmd(qs .. "media toggle"),   { locked = true })
+hl.bind("XF86AudioPause", hl.dsp.exec_cmd(qs .. "media toggle"),   { locked = true })
+hl.bind("XF86AudioNext",  hl.dsp.exec_cmd(qs .. "media next"),     { locked = true })
+hl.bind("XF86AudioPrev",  hl.dsp.exec_cmd(qs .. "media previous"), { locked = true })
 
--- Brightness
-hl.bind("XF86MonBrightnessUp",   hl.dsp.exec_cmd(noctCall .. "brightness-up"),   { locked = true, repeating = true })
-hl.bind("XF86MonBrightnessDown", hl.dsp.exec_cmd(noctCall .. "brightness-down"), { locked = true, repeating = true })
+-- Brightness (laptops / supported monitors; does nothing otherwise)
+hl.bind("XF86MonBrightnessUp",   hl.dsp.exec_cmd("brightnessctl set 5%+"), { locked = true, repeating = true })
+hl.bind("XF86MonBrightnessDown", hl.dsp.exec_cmd("brightnessctl set 5%-"), { locked = true, repeating = true })
 
 -------------------
 ---- UTILITIES ----
 -------------------
 
 -- Screen Capture
-hl.bind(mainMod .. " + P",     hl.dsp.exec_cmd("hyprpicker -a -n"))
-hl.bind("Print",               hl.dsp.exec_cmd(noctCall .. "screenshot-region"))
-hl.bind(mainMod .. " + Print", hl.dsp.exec_cmd(noctCall .. "screenshot-fullscreen"))
+hl.bind(mainMod .. " + P",             hl.dsp.exec_cmd("hyprpicker -a -n"))
+hl.bind("Print",                       hl.dsp.exec_cmd(capture .. "shot area 0"))     -- drag a box
+hl.bind(mainMod .. " + Print",         hl.dsp.exec_cmd(capture .. "shot screen 0"))   -- this monitor
+hl.bind(mainMod .. " + SHIFT + Print", hl.dsp.exec_cmd(qs .. "hub open 6"))           -- Capture tab (recording etc.)
 
--- Theming and Wallpaper
-hl.bind(mainMod .. " + SHIFT + W", hl.dsp.exec_cmd(noctCall .. "panel-toggle wallpaper"))
+-- Wallpaper picker
+hl.bind(mainMod .. " + SHIFT + W", hl.dsp.exec_cmd(qs .. "wallpaper toggle"))
 
--- Clipboard
-hl.bind(mainMod .. " + V", hl.dsp.exec_cmd(noctCall .. "panel-toggle clipboard"))
-
--- Notifications
-hl.bind(mainMod .. " + A", hl.dsp.exec_cmd(noctCall .. "panel-toggle control-center notifications"))
+-- Notifications (hub: Alerts)
+hl.bind(mainMod .. " + A", hl.dsp.exec_cmd(qs .. "hub open 4"))
 
 -------------------------------
 ---- WORKSPACES & MONITORS ----
@@ -140,28 +149,26 @@ hl.bind(mainMod .. " + " .. digitCode(1), hl.dsp.focus({ monitor = MONITOR1 }))
 hl.bind(mainMod .. " + " .. digitCode(2), hl.dsp.focus({ monitor = MONITOR2 }))
 hl.bind(mainMod .. " + " .. digitCode(3), hl.dsp.focus({ monitor = MONITOR3 }))
 
--- Focus on workspace number
--- Absolute
+-- Switch to desktop N on ALL monitors (linked desktops): Super+Alt+N or Super+Ctrl+N
 for i = 1, NUM_WPM do
     local key = i % 10
-    hl.bind(mainMod .. " + ALT + " .. digitCode(key), hl.dsp.focus({ workspace = i }))
+    hl.bind(mainMod .. " + ALT + " .. digitCode(key), hl.dsp.exec_cmd(qs .. "desktops switchTo " .. i))
 end
--- Relative
 for i = 1, NUM_WPM do
     local key = i % 10
-    hl.bind(mainMod .. " + CONTROL + " .. digitCode(key), hl.dsp.focus({ workspace = "m~" .. i }))
+    hl.bind(mainMod .. " + CONTROL + " .. digitCode(key), hl.dsp.exec_cmd(qs .. "desktops switchTo " .. i))
 end
 
--- Move to adjacent workspaces and next empty on a given monitor
-hl.bind(mainMod .. " + CONTROL + Right",       hl.dsp.focus({ workspace = "m+1" }))
-hl.bind(mainMod .. " + CONTROL + Left",        hl.dsp.focus({ workspace = "m-1" }))
-hl.bind(mainMod .. " + CONTROL + Down",        hl.dsp.focus({ workspace = "emptym" }))
+-- Next / previous desktop, and a new one
+hl.bind(mainMod .. " + CONTROL + Right",       hl.dsp.exec_cmd(qs .. "desktops next"))
+hl.bind(mainMod .. " + CONTROL + Left",        hl.dsp.exec_cmd(qs .. "desktops prev"))
+hl.bind(mainMod .. " + CONTROL + Down",        hl.dsp.exec_cmd(qs .. "desktops add"))
 
--- Scroll through existing workspaces & monitors
-hl.bind(mainMod .. " + mouse_down",           hl.dsp.focus({ workspace = "m-1" }))
-hl.bind(mainMod .. " + mouse_up",             hl.dsp.focus({ workspace = "m+1" }))
-hl.bind(mainMod .. " + CONTROL + mouse_up",   hl.dsp.focus({ workspace = "m-1" }))
-hl.bind(mainMod .. " + CONTROL + mouse_down", hl.dsp.focus({ workspace = "m+1" }))
+-- Scroll through desktops
+hl.bind(mainMod .. " + mouse_down",           hl.dsp.exec_cmd(qs .. "desktops prev"))
+hl.bind(mainMod .. " + mouse_up",             hl.dsp.exec_cmd(qs .. "desktops next"))
+hl.bind(mainMod .. " + CONTROL + mouse_up",   hl.dsp.exec_cmd(qs .. "desktops prev"))
+hl.bind(mainMod .. " + CONTROL + mouse_down", hl.dsp.exec_cmd(qs .. "desktops next"))
 
 -- Special workspace (scratchpad)
 hl.bind(mainMod .. " + SHIFT + S", hl.dsp.window.move({ workspace = "special" }))

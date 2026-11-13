@@ -28,6 +28,7 @@ window_geom() {
 case "${1:-}" in
     shot)
         mode="${2:-area}"; delay="${3:-0}"; mon="${4:-}"
+        [ -z "$mon" ] && mon="$(hyprctl -j monitors | jq -r '.[] | select(.focused) | .name')"
         mkdir -p "$SHOTS"
         f="$SHOTS/$(stamp).png"
         g=""
@@ -47,6 +48,7 @@ case "${1:-}" in
 
     rec)
         mode="${2:-area}"; audio="${3:-none}"; mon="${4:-}"
+        [ -z "$mon" ] && mon="$(hyprctl -j monitors | jq -r '.[] | select(.focused) | .name')"
         command -v wf-recorder >/dev/null 2>&1 || { notify "Can't record" "Install wf-recorder first"; exit 1; }
         pgrep -x wf-recorder >/dev/null && exit 0
         mkdir -p "$VIDS"

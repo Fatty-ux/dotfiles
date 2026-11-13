@@ -554,6 +554,7 @@ ShellRoot {
         weatherOpen = false;
         wallPickerOpen = false;
         hubOpen = false;
+        switcherOpen = false;
         closeAllRequested();
     }
 
@@ -706,8 +707,10 @@ ShellRoot {
     }
 
     // ---------- Desktop manager ----------
-    // Every monitor gets its own list of desktops (Hyprland workspaces). The lists are saved,
-    // so an empty desktop stays in the bar until you delete it.
+    // Desktops are LINKED across monitors: desktop 1 is desktop 1 on every screen, and switching
+    // moves all monitors together. Each monitor still has its own Hyprland workspace behind each
+    // desktop (that's how Hyprland works), but the lists are kept the same length and in step.
+    // The lists are saved, so an empty desktop stays until you delete it.
     readonly property var deskMap: {
         try {
             return JSON.parse(pins.adapter.desktopsJson || "{}");
@@ -789,7 +792,28 @@ ShellRoot {
         }
         for (let f = 0; f < fresh.length; f++)
             while (map[fresh[f]].length < defaultDesktops) map[fresh[f]].push(freeId(map));
-        if (fresh.length > 0) saveDesk(map);
+        // linked desktops: every monitor gets the same number
+        let count = 0;
+        for (let s = 0; s < Quickshell.screens.length; s++)
+            count = Math.max(count, (map[Quickshell.screens[s].name] || []).length);
+        let changed = fresh.length > 0;
+        for (let s = 0; s < Quickshell.screens.length; s++) {
+            const name = Quickshell.screens[s].name;
+            if (!map[name]) map[name] = [];
+            while (map[name].length < count) {
+                map[name].push(freeId(map));
+                changed = true;
+            }
+        }
+        if (changed) saveDesk(map);
+    }
+
+    // A monitor plugged in later gets linked too
+    Connections {
+        target: Quickshell
+        function onScreensChanged() {
+            if (Hyprland.workspaces.values.length > 0) root.initDesktops();
+        }
     }
 
     // Wait until Hyprland has told us about its workspaces, then set up once
@@ -805,68 +829,187 @@ ShellRoot {
         }
     }
 
-    function gotoDesktop(monitorName, id) {
-        hyprList([
-            'hl.dsp.focus({ monitor = "' + monitorName + '" })',
-            'hl.dsp.focus({ workspace = ' + id + ', on_current_monitor = true })'
-        ]);
-    }
-
-    function addDesktop(monitorName) {
-        const map = copyMap();
-        const ids = map[monitorName] || [];
-        if (ids.length >= maxDesktops) return;
-        const id = freeId(map);
-        ids.push(id);
-        map[monitorName] = ids;
-        saveDesk(map);
-        gotoDesktop(monitorName, id);
-    }
-
-    // Deleting a desktop moves its windows to the neighbouring one, nothing gets closed
-    function removeDesktop(monitorName, id) {
-        const map = copyMap();
-        const ids = map[monitorName] || [];
-        const at = ids.indexOf(id);
-        if (ids.length <= 1 || at < 0) return;
-        const target = ids[at > 0 ? at - 1 : 1];
-        const cmds = [];
-        const ws = workspaceById(id);
-        if (ws) {
-            const tops = ws.toplevels.values;
-            for (let i = 0; i < tops.length; i++) {
-                let a = String(tops[i].address);
-                if (a.indexOf("0x") !== 0) a = "0x" + a;
-                cmds.push('hl.dsp.window.move({ workspace = ' + target + ', follow = false, window = "address:' + a + '" })');
-            }
-        }
-        if (activeWsId(monitorName) === id) {
-            cmds.push('hl.dsp.focus({ monitor = "' + monitorName + '" })');
-            cmds.push('hl.dsp.focus({ workspace = ' + target + ', on_current_monitor = true })');
-        }
-        ids.splice(at, 1);
-        map[monitorName] = ids;
-        saveDesk(map);
-        if (cmds.length > 0) hyprList(cmds);
-    }
-
     function focusedMonitorName() {
         return Hyprland.focusedMonitor ? Hyprland.focusedMonitor.name : "";
     }
 
-    function switchToNth(n) {
+    // How many desktops there are (the same on every monitor)
+    readonly property int deskCount: {
+        let n = 0;
+        for (const k in deskMap) n = Math.max(n, deskMap[k].length);
+        return n;
+    }
+
+    // Which desktop (0 = first) the focused monitor is showing
+    function currentDeskIndex() {
         const name = focusedMonitorName();
-        const ids = deskMap[name] || [];
-        if (n >= 1 && n <= ids.length) gotoDesktop(name, ids[n - 1]);
+        return (deskMap[name] || []).indexOf(activeWsId(name));
+    }
+
+    // Monitor names with the focused one last, so focus ends up where you already are
+    function screensFocusedLast() {
+        const here = focusedMonitorName(), out = [];
+        for (let i = 0; i < Quickshell.screens.length; i++)
+            if (Quickshell.screens[i].name !== here) out.push(Quickshell.screens[i].name);
+        if (here !== "") out.push(here);
+        return out;
+    }
+
+    // Switch EVERY monitor to desktop number n (0 = first)
+    function gotoDeskIndex(n) {
+        if (n < 0 || n >= deskCount) return;
+        const here = focusedMonitorName();
+        const names = screensFocusedLast();
+        const cmds = [];
+        for (let i = 0; i < names.length; i++) {
+            const ids = deskMap[names[i]] || [];
+            if (n >= ids.length) continue;
+            if (names[i] !== here && activeWsId(names[i]) === ids[n]) continue;   // already there
+            cmds.push('hl.dsp.focus({ monitor = "' + names[i] + '" })');
+            cmds.push('hl.dsp.focus({ workspace = ' + ids[n] + ', on_current_monitor = true })');
+        }
+        if (cmds.length > 0) hyprList(cmds);
+    }
+
+    // Clicking a desktop on any monitor switches all monitors to that desktop number
+    function gotoDesktop(monitorName, id) {
+        gotoDeskIndex((deskMap[monitorName] || []).indexOf(id));
+    }
+
+    // A new desktop is added on every monitor at once
+    function addDesktop(monitorName) {
+        if (deskCount >= maxDesktops) return;
+        const newIndex = deskCount;     // the new desktop goes on the end
+        const map = copyMap();
+        for (let i = 0; i < Quickshell.screens.length; i++) {
+            const name = Quickshell.screens[i].name;
+            if (!map[name]) map[name] = [];
+            map[name].push(freeId(map));
+        }
+        saveDesk(map);
+        gotoDeskIndex(newIndex);
+    }
+
+    // Deleting desktop N removes it on every monitor; its windows move to the neighbouring desktop
+    function removeDesktop(monitorName, id) {
+        const n = (deskMap[monitorName] || []).indexOf(id);
+        removeDeskIndex(n);
+    }
+
+    function removeDeskIndex(n) {
+        if (deskCount <= 1 || n < 0 || n >= deskCount) return;
+        const map = copyMap();
+        const cmds = [];
+        const names = screensFocusedLast();
+        for (let s = 0; s < names.length; s++) {
+            const name = names[s];
+            const ids = map[name] || [];
+            if (n >= ids.length) continue;
+            const gone = ids[n];
+            const target = ids[n > 0 ? n - 1 : 1];
+            const ws = workspaceById(gone);
+            if (ws) {
+                const tops = ws.toplevels.values;
+                for (let i = 0; i < tops.length; i++) {
+                    let a = String(tops[i].address);
+                    if (a.indexOf("0x") !== 0) a = "0x" + a;
+                    cmds.push('hl.dsp.window.move({ workspace = ' + target + ', follow = false, window = "address:' + a + '" })');
+                }
+            }
+            if (activeWsId(name) === gone) {
+                cmds.push('hl.dsp.focus({ monitor = "' + name + '" })');
+                cmds.push('hl.dsp.focus({ workspace = ' + target + ', on_current_monitor = true })');
+            }
+            ids.splice(n, 1);
+            map[name] = ids;
+        }
+        saveDesk(map);
+        if (cmds.length > 0) hyprList(cmds);
+    }
+
+    function switchToNth(n) {
+        gotoDeskIndex(n - 1);
     }
 
     function cycleDesktop(delta) {
-        const name = focusedMonitorName();
-        const ids = deskMap[name] || [];
-        if (ids.length === 0) return;
-        const at = ids.indexOf(activeWsId(name));
-        const next = ids[(Math.max(at, 0) + delta + ids.length) % ids.length];
-        gotoDesktop(name, next);
+        if (deskCount === 0) return;
+        const at = Math.max(currentDeskIndex(), 0);
+        gotoDeskIndex((at + delta + deskCount) % deskCount);
+    }
+
+    // Move the focused window to desktop n (0 = first) on the monitor it's on
+    function moveWindowToDesk(n, follow) {
+        const ids = deskMap[focusedMonitorName()] || [];
+        if (n < 0 || n >= ids.length) return;
+        hyprList(['hl.dsp.window.move({ workspace = ' + ids[n] + ', follow = false })']);
+        if (follow) gotoDeskIndex(n);
+    }
+
+    // Media keys:  qs ipc call media toggle | next | previous
+    IpcHandler {
+        target: "media"
+        function toggle(): void {
+            if (root.player && root.player.canTogglePlaying) root.player.togglePlaying();
+        }
+        function next(): void {
+            if (root.player && root.player.canGoNext) root.player.next();
+        }
+        function previous(): void {
+            if (root.player && root.player.canGoPrevious) root.player.previous();
+        }
+    }
+
+    // Apps open on desktop n, across every monitor (for the switcher)
+    function deskApps(n) {
+        const out = [];
+        for (const name in deskMap) {
+            const ids = deskMap[name];
+            if (n >= ids.length) continue;
+            const ws = workspaceById(ids[n]);
+            if (!ws) continue;
+            const tops = ws.toplevels.values;
+            for (let i = 0; i < tops.length; i++) {
+                const t = tops[i];
+                const appId = t.wayland ? t.wayland.appId : (t.lastIpcObject && t.lastIpcObject.class ? t.lastIpcObject.class : "");
+                out.push({ appId: appId, title: t.title || appId });
+            }
+        }
+        return out;
+    }
+
+    // ---------- Desktop switcher (Super+Tab) ----------
+    // Hold Super, tap Tab to move along, let go of Super to switch. Arrows / numbers / click work too.
+    property bool switcherOpen: false
+    property int switcherSel: 0
+
+    function switcherStep(delta) {
+        if (deskCount === 0) return;
+        if (!switcherOpen) {
+            switcherSel = (Math.max(currentDeskIndex(), 0) + delta + deskCount) % deskCount;
+            switcherOpen = true;
+        } else {
+            switcherSel = (switcherSel + delta + deskCount) % deskCount;
+        }
+    }
+
+    function switcherCommit() {
+        if (!switcherOpen) return;
+        switcherOpen = false;
+        gotoDeskIndex(switcherSel);
+    }
+
+    GlobalShortcut {
+        appid: "quickshell"
+        name: "desktopswitch"
+        description: "Desktop switcher: next desktop"
+        onPressed: root.switcherStep(1)
+    }
+
+    GlobalShortcut {
+        appid: "quickshell"
+        name: "desktopswitchback"
+        description: "Desktop switcher: previous desktop"
+        onPressed: root.switcherStep(-1)
     }
 
     // From a terminal:  quickshell ipc call desktops switchTo 2   (also next, prev, add, remove, reset)
@@ -874,6 +1017,16 @@ ShellRoot {
         target: "desktops"
         function switchTo(n: int): void { root.switchToNth(n); }
         function next(): void { root.cycleDesktop(1); }
+        function switcher(): void { root.switcherStep(1); }
+        function switcherBack(): void { root.switcherStep(-1); }
+        // Move the focused window to desktop n: "moveWindowTo" follows it, "sendWindowTo" stays put
+        function moveWindowTo(n: int): void { root.moveWindowToDesk(n - 1, true); }
+        function sendWindowTo(n: int): void { root.moveWindowToDesk(n - 1, false); }
+        function moveWindowBy(delta: int): void {
+            if (root.deskCount === 0) return;
+            const at = Math.max(root.currentDeskIndex(), 0);
+            root.moveWindowToDesk((at + delta + root.deskCount) % root.deskCount, true);
+        }
         function prev(): void { root.cycleDesktop(-1); }
         function add(): void {
             const name = root.focusedMonitorName();
@@ -881,7 +1034,7 @@ ShellRoot {
         }
         function remove(): void {
             const name = root.focusedMonitorName();
-            if (name !== "") root.removeDesktop(name, root.activeWsId(name));
+            if (name !== "") root.removeDeskIndex(root.currentDeskIndex());
         }
         function reset(): void {
             pins.adapter.desktopsJson = "";
@@ -5929,6 +6082,367 @@ ShellRoot {
             }
         }
     }
+    // ---------- Desktop switcher window (Super+Tab) ----------
+    Variants {
+        model: Quickshell.screens
+
+        PanelWindow {
+            id: sw
+            required property var modelData
+            screen: modelData
+
+            visible: root.switcherOpen
+                && (!Hyprland.focusedMonitor || Hyprland.focusedMonitor.name === modelData.name)
+
+            WlrLayershell.layer: WlrLayer.Overlay
+            WlrLayershell.namespace: "quickshell-deskswitch"
+            WlrLayershell.keyboardFocus: WlrKeyboardFocus.Exclusive
+            exclusionMode: ExclusionMode.Ignore
+            anchors {
+                top: true
+                bottom: true
+                left: true
+                right: true
+            }
+            color: "#55000000"
+
+            readonly property int current: root.currentDeskIndex()
+
+            onVisibleChanged: if (visible) swKeys.forceActiveFocus()
+
+            // Click outside the card to close without switching
+            MouseArea {
+                anchors.fill: parent
+                onClicked: root.switcherOpen = false
+            }
+
+            Item {
+                id: swKeys
+                focus: true
+                Keys.onPressed: event => {
+                    const k = event.key;
+                    if (k === Qt.Key_Escape) root.switcherOpen = false;
+                    else if (k === Qt.Key_Right || k === Qt.Key_Tab || k === Qt.Key_Down) root.switcherStep(1);
+                    else if (k === Qt.Key_Left || k === Qt.Key_Backtab || k === Qt.Key_Up) root.switcherStep(-1);
+                    else if (k === Qt.Key_Return || k === Qt.Key_Enter || k === Qt.Key_Space) root.switcherCommit();
+                    else if (k >= Qt.Key_1 && k <= Qt.Key_9 && k - Qt.Key_1 < root.deskCount) {
+                        root.switcherSel = k - Qt.Key_1;
+                        root.switcherCommit();
+                    } else return;
+                    event.accepted = true;
+                }
+                // Letting go of Super switches (like Alt+Tab)
+                Keys.onReleased: event => {
+                    const k = event.key;
+                    if (k === Qt.Key_Super_L || k === Qt.Key_Super_R || k === Qt.Key_Meta) {
+                        root.switcherCommit();
+                        event.accepted = true;
+                    }
+                }
+            }
+
+            Rectangle {
+                id: swCard
+                anchors.centerIn: parent
+                width: Math.min(swRow.implicitWidth + 48, sw.width - 80)
+                height: swCol.implicitHeight + 44
+                radius: 30
+                color: root.popupBg
+                border.width: 1
+                border.color: root.glassEdge
+                clip: true
+                opacity: 0
+                scale: 0.92
+                NumberAnimation on opacity { running: sw.visible; from: 0; to: 1; duration: root.animMs * 1.5; easing.type: Easing.OutCubic }
+                NumberAnimation on scale { running: sw.visible; from: 0.92; to: 1; duration: root.animMs * 2; easing.type: Easing.OutBack }
+
+                // gloss, accent glow, bright top edge
+                Rectangle {
+                    anchors.fill: parent
+                    radius: parent.radius
+                    gradient: Gradient {
+                        GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, root.dark ? 0.10 : 0.40) }
+                        GradientStop { position: 0.35; color: Qt.rgba(1, 1, 1, root.dark ? 0.02 : 0.08) }
+                        GradientStop { position: 0.6; color: Qt.rgba(1, 1, 1, 0) }
+                    }
+                }
+                Rectangle {
+                    anchors.fill: parent
+                    radius: parent.radius
+                    gradient: Gradient {
+                        GradientStop { position: 0.55; color: "transparent" }
+                        GradientStop { position: 1.0; color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, root.dark ? 0.12 : 0.08) }
+                    }
+                }
+                Rectangle {
+                    anchors.top: parent.top
+                    anchors.topMargin: 1
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    width: parent.width - 60
+                    height: 1
+                    color: Qt.rgba(1, 1, 1, root.dark ? 0.22 : 0.7)
+                }
+
+                MouseArea { anchors.fill: parent }   // clicks inside don't close it
+
+                Column {
+                    id: swCol
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    y: 22
+                    spacing: 16
+
+                    // ---- Title ----
+                    Row {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        spacing: 10
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: ""
+                            color: root.accent
+                            font.family: root.iconFont
+                            font.pixelSize: 16
+                        }
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: "Desktops"
+                            color: root.fg
+                            font.pixelSize: 17
+                            font.bold: true
+                        }
+                    }
+
+                    // ---- One card per desktop, plus "+" ----
+                    Flickable {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        width: Math.min(swRow.implicitWidth, sw.width - 128)
+                        height: swRow.implicitHeight
+                        contentWidth: swRow.implicitWidth
+                        clip: true
+                        boundsBehavior: Flickable.StopAtBounds
+
+                        Row {
+                            id: swRow
+                            spacing: 16
+                            padding: 8
+
+                            Repeater {
+                                model: root.deskCount
+
+                                delegate: Rectangle {
+                                    id: dcard
+                                    required property int index
+                                    readonly property bool sel: root.switcherSel === dcard.index
+                                    readonly property bool isCurrent: sw.current === dcard.index
+                                    readonly property var apps: {
+                                        Hyprland.workspaces.values;      // refresh when windows move
+                                        return sw.visible ? root.deskApps(dcard.index) : [];
+                                    }
+                                    width: 210
+                                    height: 170
+                                    radius: 22
+                                    color: dcard.sel ? root.overlay : root.surface
+                                    border.width: dcard.sel ? 3 : 1
+                                    border.color: dcard.sel ? root.accent : root.glassEdge
+                                    scale: dcard.sel ? 1.06 : (dcardHover.hovered ? 1.02 : 1)
+                                    Behavior on scale { NumberAnimation { duration: root.animMs * 1.5; easing.type: Easing.OutBack } }
+                                    Behavior on color { ColorAnimation { duration: root.animMs } }
+
+                                    HoverHandler { id: dcardHover }
+
+                                    // gloss on each card
+                                    Rectangle {
+                                        anchors.fill: parent
+                                        radius: parent.radius
+                                        gradient: Gradient {
+                                            GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, root.dark ? 0.07 : 0.3) }
+                                            GradientStop { position: 0.45; color: Qt.rgba(1, 1, 1, 0) }
+                                        }
+                                    }
+
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            root.switcherSel = dcard.index;
+                                            root.switcherCommit();
+                                        }
+                                    }
+
+                                    // number + name
+                                    Row {
+                                        x: 14
+                                        y: 14
+                                        spacing: 10
+                                        Rectangle {
+                                            width: 34
+                                            height: 34
+                                            radius: 17
+                                            color: dcard.sel || dcard.isCurrent ? root.accent : root.overlay
+                                            Text {
+                                                anchors.centerIn: parent
+                                                text: dcard.index + 1
+                                                color: dcard.sel || dcard.isCurrent ? root.bg : root.fg
+                                                font.pixelSize: 15
+                                                font.bold: true
+                                            }
+                                        }
+                                        Column {
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            Text {
+                                                text: "Desktop " + (dcard.index + 1)
+                                                color: root.fg
+                                                font.pixelSize: 13
+                                                font.bold: true
+                                            }
+                                            Text {
+                                                text: dcard.isCurrent ? "You're here"
+                                                    : (dcard.apps.length === 0 ? "Empty"
+                                                    : dcard.apps.length + (dcard.apps.length === 1 ? " window" : " windows"))
+                                                color: dcard.isCurrent ? root.accent : root.muted
+                                                font.pixelSize: 11
+                                            }
+                                        }
+                                    }
+
+                                    // delete (×), shows on hover when there's more than one desktop
+                                    Rectangle {
+                                        visible: dcardHover.hovered && root.deskCount > 1
+                                        anchors.top: parent.top
+                                        anchors.right: parent.right
+                                        anchors.margins: 10
+                                        width: 26
+                                        height: 26
+                                        radius: 13
+                                        color: delMouse.containsMouse ? root.danger : root.overlay
+                                        Text {
+                                            anchors.centerIn: parent
+                                            text: ""
+                                            color: delMouse.containsMouse ? root.bg : root.fg
+                                            font.family: root.iconFont
+                                            font.pixelSize: 11
+                                        }
+                                        MouseArea {
+                                            id: delMouse
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                root.removeDeskIndex(dcard.index);
+                                                root.switcherSel = Math.min(root.switcherSel, root.deskCount - 1);
+                                            }
+                                        }
+                                    }
+
+                                    // app icons on this desktop
+                                    Grid {
+                                        x: 14
+                                        y: 62
+                                        columns: 4
+                                        spacing: 8
+                                        visible: dcard.apps.length > 0
+
+                                        Repeater {
+                                            model: dcard.apps.slice(0, dcard.apps.length > 8 ? 7 : 8)
+                                            delegate: Rectangle {
+                                                id: appIco
+                                                required property var modelData
+                                                width: 38
+                                                height: 38
+                                                radius: 11
+                                                color: root.bg
+                                                border.width: 1
+                                                border.color: root.glassEdge
+                                                IconImage {
+                                                    anchors.centerIn: parent
+                                                    implicitSize: 26
+                                                    source: Quickshell.iconPath(appIco.modelData.appId, "application-x-executable")
+                                                }
+                                            }
+                                        }
+                                        Rectangle {
+                                            visible: dcard.apps.length > 8
+                                            width: 38
+                                            height: 38
+                                            radius: 11
+                                            color: root.overlay
+                                            Text {
+                                                anchors.centerIn: parent
+                                                text: "+" + (dcard.apps.length - 7)
+                                                color: root.fg
+                                                font.pixelSize: 12
+                                                font.bold: true
+                                            }
+                                        }
+                                    }
+
+                                    Text {
+                                        visible: dcard.apps.length === 0
+                                        anchors.horizontalCenter: parent.horizontalCenter
+                                        y: 92
+                                        text: ""
+                                        color: root.muted
+                                        opacity: 0.5
+                                        font.family: root.iconFont
+                                        font.pixelSize: 30
+                                    }
+                                }
+                            }
+
+                            // ---- add a desktop ----
+                            Rectangle {
+                                visible: root.deskCount < root.maxDesktops
+                                width: 110
+                                height: 170
+                                radius: 22
+                                color: addMouse.containsMouse ? root.overlay : "transparent"
+                                border.width: 2
+                                border.color: addMouse.containsMouse ? root.accent : root.glassEdge
+                                scale: addMouse.pressed ? 0.95 : (addMouse.containsMouse ? 1.03 : 1)
+                                Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+                                Behavior on color { ColorAnimation { duration: root.animMs } }
+
+                                Column {
+                                    anchors.centerIn: parent
+                                    spacing: 6
+                                    Text {
+                                        anchors.horizontalCenter: parent.horizontalCenter
+                                        text: "+"
+                                        color: root.accent
+                                        font.pixelSize: 34
+                                    }
+                                    Text {
+                                        anchors.horizontalCenter: parent.horizontalCenter
+                                        text: "New desktop"
+                                        color: root.fg
+                                        font.pixelSize: 12
+                                    }
+                                }
+                                MouseArea {
+                                    id: addMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        root.switcherOpen = false;
+                                        root.addDesktop(root.focusedMonitorName());
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Text {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        text: "Hold Super + Tab to move      let go to switch      ← →  1–9  Enter  click      Esc  cancel"
+                        color: root.muted
+                        font.pixelSize: 11
+                        opacity: 0.85
+                    }
+                }
+            }
+        }
+    }
+
     // ---------- Wallpaper picker (scroll through, click or Enter to set) ----------
     Variants {
         model: Quickshell.screens

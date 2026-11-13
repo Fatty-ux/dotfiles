@@ -101,6 +101,7 @@ hdparm
 heroic-games-launcher
 hwdetect
 hwinfo
+hyprlock
 hyprpaper
 hyprsunset
 inetutils
