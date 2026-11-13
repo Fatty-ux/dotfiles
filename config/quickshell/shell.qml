@@ -26,14 +26,17 @@ ShellRoot {
     readonly property real sat: Math.max(0.35, Math.min(0.85, seed.hslSaturation))
 
     property color bg: dark ? Qt.hsla(hue, sat * 0.35, 0.10, 1) : Qt.hsla(hue, sat * 0.30, 0.96, 1)
-    property color surface: dark ? Qt.hsla(hue, sat * 0.30, 0.16, 0.55) : Qt.hsla(hue, sat * 0.25, 0.97, 0.60)
-    property color overlay: dark ? Qt.hsla(hue, sat * 0.30, 0.30, 0.75) : Qt.hsla(hue, sat * 0.35, 0.82, 0.85)
-    property color popupBg: dark ? Qt.hsla(hue, sat * 0.30, 0.12, 0.86) : Qt.hsla(hue, sat * 0.25, 0.96, 0.90)
+    // Liquid glass: surfaces are see-through and Hyprland blurs what's behind them
+    // (layer rules in ~/.config/hypr/config/decorations.lua). Raise the last number of
+    // popupBg / surface to make the glass less see-through.
+    property color surface: dark ? Qt.hsla(hue, sat * 0.30, 0.22, 0.30) : Qt.hsla(hue, sat * 0.25, 0.99, 0.38)
+    property color overlay: dark ? Qt.hsla(hue, sat * 0.30, 0.38, 0.45) : Qt.hsla(hue, sat * 0.35, 0.86, 0.60)
+    property color popupBg: dark ? Qt.hsla(hue, sat * 0.35, 0.10, 0.42) : Qt.hsla(hue, sat * 0.25, 0.97, 0.50)
     property color fg: dark ? Qt.hsla(hue, sat * 0.30, 0.93, 1) : Qt.hsla(hue, sat * 0.40, 0.14, 1)
     property color muted: dark ? Qt.hsla(hue, sat * 0.20, 0.72, 1) : Qt.hsla(hue, sat * 0.25, 0.38, 1)
     property color accent: dark ? Qt.hsla(hue, sat, 0.72, 1) : Qt.hsla(hue, sat, 0.38, 1)
     property color danger: dark ? "#f38ba8" : "#c0264a"
-    property color glassEdge: dark ? Qt.rgba(1, 1, 1, 0.12) : Qt.rgba(0, 0, 0, 0.10)
+    property color glassEdge: dark ? Qt.rgba(1, 1, 1, 0.24) : Qt.rgba(1, 1, 1, 0.70)
 
     // Colors fade smoothly when the wallpaper (or theme) changes
     Behavior on bg { ColorAnimation { duration: 700 } }
@@ -1421,6 +1424,8 @@ ShellRoot {
                     border.color: root.overlay
                     border.width: 1
 
+                    GlassShine { radius: parent.radius; dark: root.dark }
+
                     Column {
                         id: menuCol
                         anchors.fill: parent
@@ -1508,6 +1513,8 @@ ShellRoot {
                     color: root.popupBg
                     border.color: root.overlay
                     border.width: 1
+
+                    GlassShine { radius: parent.radius; dark: root.dark }
 
                     ColumnLayout {
                         id: content
@@ -1771,10 +1778,12 @@ ShellRoot {
                     implicitWidth: dockRow.implicitWidth + 20
                     implicitHeight: root.dockIconSize + 26
                     radius: 24
-                    color: root.surface
+                    color: root.popupBg
                     border.width: 1
                     border.color: root.glassEdge
                     visible: dockRow.implicitWidth > 0
+
+                    GlassShine { radius: parent.radius; dark: root.dark }
 
                     RowLayout {
                         id: dockRow
@@ -2448,6 +2457,60 @@ ShellRoot {
         return a.volume < 0.4 ? "" : "";
     }
 
+    // Liquid glass shine: light across the top, a bright rim, and light pooling at the bottom.
+    // Drop it into any rounded Rectangle:  GlassShine { radius: parent.radius; dark: root.dark }
+    component GlassShine: Item {
+        id: gs
+        property real radius: 20
+        property bool dark: true
+        property real strength: 1
+        anchors.fill: parent
+
+        // soft light falling across the top half
+        Rectangle {
+            anchors.fill: parent
+            radius: gs.radius
+            gradient: Gradient {
+                GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, (gs.dark ? 0.16 : 0.45) * gs.strength) }
+                GradientStop { position: 0.4; color: Qt.rgba(1, 1, 1, (gs.dark ? 0.03 : 0.10) * gs.strength) }
+                GradientStop { position: 0.7; color: Qt.rgba(1, 1, 1, 0) }
+            }
+        }
+        // light gathering along the bottom edge, like it's bending through the glass
+        Rectangle {
+            anchors.fill: parent
+            radius: gs.radius
+            gradient: Gradient {
+                GradientStop { position: 0.78; color: Qt.rgba(1, 1, 1, 0) }
+                GradientStop { position: 1.0; color: Qt.rgba(1, 1, 1, (gs.dark ? 0.09 : 0.25) * gs.strength) }
+            }
+        }
+        // inner rim
+        Rectangle {
+            anchors.fill: parent
+            anchors.margins: 1
+            radius: Math.max(0, gs.radius - 1)
+            color: "transparent"
+            border.width: 1
+            border.color: Qt.rgba(1, 1, 1, (gs.dark ? 0.10 : 0.35) * gs.strength)
+        }
+        // bright specular streak along the top edge
+        Rectangle {
+            anchors.top: parent.top
+            anchors.topMargin: 1
+            anchors.horizontalCenter: parent.horizontalCenter
+            width: Math.max(0, parent.width - gs.radius * 1.4)
+            height: 1
+            gradient: Gradient {
+                orientation: Gradient.Horizontal
+                GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, 0) }
+                GradientStop { position: 0.3; color: Qt.rgba(1, 1, 1, (gs.dark ? 0.55 : 0.95) * gs.strength) }
+                GradientStop { position: 0.7; color: Qt.rgba(1, 1, 1, (gs.dark ? 0.55 : 0.95) * gs.strength) }
+                GradientStop { position: 1.0; color: Qt.rgba(1, 1, 1, 0) }
+            }
+        }
+    }
+
     // Small glossy card used all over the hub
     component HubCard: Rectangle {
         id: hc
@@ -2457,14 +2520,7 @@ ShellRoot {
         border.width: 1
         border.color: hc.theme ? hc.theme.glassEdge : "transparent"
 
-        Rectangle {
-            anchors.fill: parent
-            radius: parent.radius
-            gradient: Gradient {
-                GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, hc.theme && hc.theme.dark ? 0.06 : 0.25) }
-                GradientStop { position: 0.5; color: Qt.rgba(1, 1, 1, 0) }
-            }
-        }
+        GlassShine { radius: hc.radius; dark: hc.theme ? hc.theme.dark : true; strength: 0.6 }
     }
 
     // Volume row with mute, slider and a device button (output or microphone)
@@ -2703,7 +2759,7 @@ ShellRoot {
                 width: pillRow.implicitWidth + 36
                 height: 42
                 radius: 21
-                color: root.bg
+                color: root.popupBg
                 border.width: 1
                 border.color: root.glassEdge
                 opacity: panel.hubHere ? 0 : 1
@@ -2715,15 +2771,7 @@ ShellRoot {
 
                 HoverHandler { id: pillHover }
 
-                // gloss
-                Rectangle {
-                    anchors.fill: parent
-                    radius: parent.radius
-                    gradient: Gradient {
-                        GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, root.dark ? 0.10 : 0.35) }
-                        GradientStop { position: 0.55; color: Qt.rgba(1, 1, 1, 0) }
-                    }
-                }
+                GlassShine { radius: parent.radius; dark: root.dark }
 
                 // clicking any empty part of the pill opens the hub
                 MouseArea {
@@ -3081,16 +3129,7 @@ ShellRoot {
                     Behavior on height { NumberAnimation { duration: root.animMs * 2.6; easing.type: Easing.OutBack; easing.overshoot: 0.8 } }
                     Behavior on radius { NumberAnimation { duration: root.animMs * 2 } }
 
-                    // gloss, accent glow and a bright top edge
-                    Rectangle {
-                        anchors.fill: parent
-                        radius: parent.radius
-                        gradient: Gradient {
-                            GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, root.dark ? 0.10 : 0.40) }
-                            GradientStop { position: 0.25; color: Qt.rgba(1, 1, 1, root.dark ? 0.03 : 0.10) }
-                            GradientStop { position: 0.55; color: Qt.rgba(1, 1, 1, 0) }
-                        }
-                    }
+                    GlassShine { radius: parent.radius; dark: root.dark }
                     Rectangle {
                         anchors.fill: parent
                         radius: parent.radius
@@ -3098,14 +3137,6 @@ ShellRoot {
                             GradientStop { position: 0.6; color: "transparent" }
                             GradientStop { position: 1.0; color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, root.dark ? 0.12 : 0.08) }
                         }
-                    }
-                    Rectangle {
-                        anchors.top: parent.top
-                        anchors.topMargin: 1
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        width: parent.width - 60
-                        height: 1
-                        color: Qt.rgba(1, 1, 1, root.dark ? 0.22 : 0.7)
                     }
 
                     // The contents keep their full size and fade in, so they don't squash while the card grows
@@ -3118,7 +3149,7 @@ ShellRoot {
                             z: 9
                             visible: root.devPicker !== ""
                             onClicked: root.devPicker = ""
-                            Rectangle { anchors.fill: parent; radius: 30; color: "#55000000" }
+                            Rectangle { anchors.fill: parent; radius: 30; color: "#2a000000" }
                         }
 
                         HubCard {
@@ -4693,7 +4724,7 @@ ShellRoot {
                 left: true
                 right: true
             }
-            color: "#55000000"
+            color: "#2a000000"
 
             readonly property string query: searchInput.text
             readonly property bool searching: query.trim() !== ""
@@ -4772,16 +4803,7 @@ ShellRoot {
                 border.width: 1
                 clip: true
 
-                // Glossy sheen: light catching the top of the glass
-                Rectangle {
-                    anchors.fill: parent
-                    radius: parent.radius
-                    gradient: Gradient {
-                        GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, root.dark ? 0.10 : 0.40) }
-                        GradientStop { position: 0.28; color: Qt.rgba(1, 1, 1, root.dark ? 0.03 : 0.10) }
-                        GradientStop { position: 0.6; color: Qt.rgba(1, 1, 1, 0) }
-                    }
-                }
+                GlassShine { radius: parent.radius; dark: root.dark }
                 // a soft wash of the wallpaper's accent colour from the bottom
                 Rectangle {
                     anchors.fill: parent
@@ -4792,14 +4814,6 @@ ShellRoot {
                     }
                 }
                 // thin bright edge along the top
-                Rectangle {
-                    anchors.top: parent.top
-                    anchors.topMargin: 1
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    width: parent.width - 60
-                    height: 1
-                    color: Qt.rgba(1, 1, 1, root.dark ? 0.22 : 0.7)
-                }
 
                 // Swallow clicks inside the card
                 MouseArea { anchors.fill: parent }
@@ -5115,6 +5129,8 @@ ShellRoot {
                 color: root.popupBg
                 border.width: 1
                 border.color: root.glassEdge
+
+                GlassShine { radius: parent.radius; dark: root.dark }
 
                 Behavior on x { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutCubic } }
                 Behavior on opacity { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutCubic } }
@@ -5658,6 +5674,8 @@ ShellRoot {
                     color: root.popupBg
                     border.width: 1
                     border.color: toast.critical ? root.danger : root.glassEdge
+
+                    GlassShine { radius: parent.radius; dark: root.dark }
                     opacity: 0
 
                     NumberAnimation on opacity { running: true; from: 0; to: 1; duration: root.animMs * 2 }
@@ -5759,6 +5777,8 @@ ShellRoot {
                 color: root.popupBg
                 border.width: 1
                 border.color: root.glassEdge
+
+                GlassShine { radius: parent.radius; dark: root.dark }
 
                 Behavior on x { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutCubic } }
                 Behavior on opacity { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutCubic } }
@@ -6059,6 +6079,8 @@ ShellRoot {
                 border.width: 1
                 border.color: root.glassEdge
                 opacity: (root.osdShow && osd.mine) ? 1 : 0
+
+                GlassShine { radius: parent.radius; dark: root.dark }
                 scale: (root.osdShow && osd.mine) ? 1 : 0.9
                 Behavior on opacity { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutCubic } }
                 Behavior on scale { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutBack } }
@@ -6118,7 +6140,7 @@ ShellRoot {
                 left: true
                 right: true
             }
-            color: "#55000000"
+            color: "#2a000000"
 
             readonly property int current: root.currentDeskIndex()
 
@@ -6170,16 +6192,7 @@ ShellRoot {
                 NumberAnimation on opacity { running: sw.visible; from: 0; to: 1; duration: root.animMs * 1.5; easing.type: Easing.OutCubic }
                 NumberAnimation on scale { running: sw.visible; from: 0.92; to: 1; duration: root.animMs * 2; easing.type: Easing.OutBack }
 
-                // gloss, accent glow, bright top edge
-                Rectangle {
-                    anchors.fill: parent
-                    radius: parent.radius
-                    gradient: Gradient {
-                        GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, root.dark ? 0.10 : 0.40) }
-                        GradientStop { position: 0.35; color: Qt.rgba(1, 1, 1, root.dark ? 0.02 : 0.08) }
-                        GradientStop { position: 0.6; color: Qt.rgba(1, 1, 1, 0) }
-                    }
-                }
+                GlassShine { radius: parent.radius; dark: root.dark }
                 Rectangle {
                     anchors.fill: parent
                     radius: parent.radius
@@ -6187,14 +6200,6 @@ ShellRoot {
                         GradientStop { position: 0.55; color: "transparent" }
                         GradientStop { position: 1.0; color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, root.dark ? 0.12 : 0.08) }
                     }
-                }
-                Rectangle {
-                    anchors.top: parent.top
-                    anchors.topMargin: 1
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    width: parent.width - 60
-                    height: 1
-                    color: Qt.rgba(1, 1, 1, root.dark ? 0.22 : 0.7)
                 }
 
                 MouseArea { anchors.fill: parent }   // clicks inside don't close it
@@ -6479,7 +6484,7 @@ ShellRoot {
                 left: true
                 right: true
             }
-            color: "#66000000"
+            color: "#30000000"
 
             readonly property int thumbW: 340
             readonly property int thumbH: 200
@@ -6547,16 +6552,7 @@ ShellRoot {
                 border.width: 1
                 clip: true
 
-                // Glossy sheen, same as the launcher
-                Rectangle {
-                    anchors.fill: parent
-                    radius: parent.radius
-                    gradient: Gradient {
-                        GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, root.dark ? 0.10 : 0.40) }
-                        GradientStop { position: 0.28; color: Qt.rgba(1, 1, 1, root.dark ? 0.03 : 0.10) }
-                        GradientStop { position: 0.6; color: Qt.rgba(1, 1, 1, 0) }
-                    }
-                }
+                GlassShine { radius: parent.radius; dark: root.dark }
                 Rectangle {
                     anchors.fill: parent
                     radius: parent.radius
@@ -6564,14 +6560,6 @@ ShellRoot {
                         GradientStop { position: 0.55; color: "transparent" }
                         GradientStop { position: 1.0; color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, root.dark ? 0.12 : 0.08) }
                     }
-                }
-                Rectangle {
-                    anchors.top: parent.top
-                    anchors.topMargin: 1
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    width: parent.width - 60
-                    height: 1
-                    color: Qt.rgba(1, 1, 1, root.dark ? 0.22 : 0.7)
                 }
 
                 // Swallow clicks inside the card

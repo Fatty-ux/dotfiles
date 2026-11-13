@@ -49,8 +49,18 @@ hl.config({
             passes = 4,
             special = true,
             popups = true,           -- menus and right-click popups get the frosted look too
-            vibrancy = 0.25,         -- lets the wallpaper's colours glow through a bit
+            vibrancy = 0.3,          -- lets the wallpaper's colours glow through (liquid glass)
             noise = 0.02,            -- tiny grain so it reads as frosted glass, not plain blur
         },
     },
+})
+
+-- Liquid glass: blur behind every Quickshell surface (bars, hub, launcher, panels, pop-ups).
+-- ignore_alpha keeps the light dimming behind full-screen menus from being blurred.
+hl.layer_rule({
+    name = "joeos-glass",
+    match = { namespace = "^quickshell-(bar|topbar|hub|launcher|panel|toast|weather|osd|deskswitch|wallpicker)$" },
+    blur = true,
+    blur_popups = true,
+    ignore_alpha = 0.2,
 })
