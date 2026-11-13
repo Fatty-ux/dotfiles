@@ -82,13 +82,13 @@ ShellRoot {
     readonly property int maxDesktops: 9
     readonly property bool showDesktopOsd: true    // small pop-up when you switch desktops
     // Auto-hide (switch it on/off from the control center):
-    //   on  = bottom bar slides away and comes back when the mouse touches the bottom edge;
-    //         top bar stays tucked away until you click the little tab at the top of the screen
+    //   on  = both bars tuck away; touch the top or bottom edge with the mouse to bring one back.
+    //         Windows shrink to fit while a bar is out and go back to full size when it hides.
     //   off = both bars always visible
     readonly property string autoHide: pins.adapter.autoHide
     readonly property bool autoHideOn: autoHide !== "off"
     readonly property int hideDelayMs: 450        // wait before hiding after the mouse leaves
-    readonly property int hotZoneSize: 4          // thickness of the invisible hover strip at the screen edge (px)
+    readonly property int hotZoneSize: 6          // thickness of the invisible hover strip at the screen edge (px)
 
     // ---------- Shared state ----------
     SystemClock {
@@ -1140,45 +1140,12 @@ ShellRoot {
             WlrLayershell.namespace: "quickshell-bar"
 
             // ----- Auto-hide -----
+            // Touch the screen edge and the bar slides out; windows shrink to make room for it.
+            // Move away and it slides back after a moment; windows stretch back to full size.
             readonly property bool wantHide: root.autoHideOn
-            property bool hotHover: false
             readonly property bool popupOpen: ctxMenu.visible || mediaPopup.visible || root.wallPickerOpen
-            readonly property bool keepOpen: !wantHide || hotHover || cursorInBar || popupOpen
+            readonly property bool keepOpen: !wantHide || barHover.hovered || popupOpen
             property bool barShown: true
-            readonly property bool atBottom: true
-            property bool cursorInBar: false
-
-            // Ask Hyprland where the cursor is while the bar is showing, so it hides
-            // again reliably when the pointer leaves
-            Timer {
-                interval: 120
-                repeat: true
-                running: panel.barShown && panel.wantHide
-                onTriggered: if (!cursorProc.running) cursorProc.running = true
-            }
-
-            Process {
-                id: cursorProc
-                command: ["hyprctl", "cursorpos"]
-                stdout: StdioCollector {
-                    onStreamFinished: {
-                        const parts = text.trim().split(/[ ,]+/);
-                        const cx = parseFloat(parts[0]);
-                        const cy = parseFloat(parts[1]);
-                        const s = panel.screen;
-                        const band = panel.implicitHeight + 6;
-                        const inside = cx >= s.x && cx < s.x + s.width && cy >= s.y && cy < s.y + s.height;
-                        const inBand = panel.atBottom ? cy >= s.y + s.height - band : cy < s.y + band;
-                        panel.cursorInBar = inside && inBand;
-                    }
-                }
-            }
-
-            // Bars overlay windows instead of pushing them when auto-hide is on
-            exclusionMode: root.autoHide === "off" ? ExclusionMode.Auto : ExclusionMode.Ignore
-            // While hidden, clicks pass straight through to the windows underneath
-            mask: barShown ? null : hiddenMask
-            Region { id: hiddenMask }
 
             onKeepOpenChanged: {
                 if (keepOpen) {
@@ -1196,30 +1163,30 @@ ShellRoot {
                 onTriggered: panel.barShown = panel.keepOpen
             }
 
-            // Invisible strip at the screen edge that brings the bar back
-            PanelWindow {
-                id: hotZone
-                screen: panel.screen
-                visible: root.autoHide !== "off" && panel.wantHide && !panel.barShown
-                anchors {
-                    bottom: true
-                    left: true
-                    right: true
-                }
-                implicitHeight: root.hotZoneSize
-                exclusionMode: ExclusionMode.Ignore
-                color: "transparent"
-                WlrLayershell.namespace: "quickshell-hotzone"
-                onVisibleChanged: if (!visible) panel.hotHover = false
+            // Windows only make room while the bar is out
+            exclusionMode: ExclusionMode.Normal
+            exclusiveZone: barShown ? implicitHeight : 0
 
-                MouseArea {
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    onEntered: panel.hotHover = true
-                    onExited: panel.hotHover = false
-                }
+            // While hidden, only a thin strip at the screen edge listens for the mouse;
+            // everything else passes straight through to the windows underneath
+            mask: barShown ? null : edgeMask
+            Region { id: edgeMask; item: hotStrip }
+
+            Item {
+                id: hotStrip
+                anchors.bottom: parent.bottom
+                anchors.left: parent.left
+                anchors.right: parent.right
+                height: root.hotZoneSize
             }
 
+            // Is the mouse anywhere over this bar (or the edge strip)? Sits on top of everything,
+            // but only watches: hovers and clicks still reach the buttons underneath.
+            Item {
+                anchors.fill: parent
+                z: 1000
+                HoverHandler { id: barHover }
+            }
 
             // Closes this bar's popups when asked (outside click, workspace change)
             Connections {
@@ -2109,68 +2076,54 @@ ShellRoot {
             color: "transparent"
             WlrLayershell.namespace: "quickshell-topbar"
 
-            // ----- Pull-down tab -----
-            // With auto-hide on, the bar stays tucked away until the tab is clicked.
+            // ----- Auto-hide -----
+            // Touch the screen edge and the bar slides out; windows shrink to make room for it.
+            // Move away and it slides back after a moment; windows stretch back to full size.
             readonly property bool wantHide: root.autoHideOn
             readonly property bool popupOpen: mediaPopup.visible || volPopup.visible || sysPopup.visible
-            readonly property bool keepOpen: !wantHide || root.topBarOpen || popupOpen
-            property bool barShown: keepOpen
+            readonly property bool keepOpen: !wantHide || barHover.hovered || popupOpen
+                || root.topBarOpen     // Super+T (if bound) pins it open
+            property bool barShown: true
 
-            // Bars overlay windows instead of pushing them when auto-hide is on
-            exclusionMode: root.autoHideOn ? ExclusionMode.Ignore : ExclusionMode.Auto
-            // While hidden, clicks pass straight through to the windows underneath
-            mask: barShown ? null : hiddenMask
-            Region { id: hiddenMask }
-
-            // The little tab hanging from the top edge. It rides down with the bar.
-            PanelWindow {
-                id: tabWin
-                screen: panel.screen
-                visible: panel.wantHide
-                anchors.top: true
-                implicitWidth: 72
-                implicitHeight: panel.implicitHeight + 22
-                exclusionMode: ExclusionMode.Ignore
-                color: "transparent"
-                WlrLayershell.namespace: "quickshell-topbar-tab"
-                mask: Region { item: pullTab }
-
-                Rectangle {
-                    id: pullTab
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    width: tabMouse.containsMouse ? 64 : 52
-                    height: 22
-                    // top corners sit off-screen so only the rounded bottom shows
-                    y: panel.barShown ? panel.implicitHeight - 2 : -8
-                    radius: 10
-                    color: tabMouse.containsMouse || root.topBarOpen ? root.overlay : root.popupBg
-                    border.width: 1
-                    border.color: root.glassEdge
-                    Behavior on y { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutCubic } }
-                    Behavior on width { NumberAnimation { duration: root.animMs; easing.type: Easing.OutCubic } }
-                    Behavior on color { ColorAnimation { duration: root.animMs } }
-
-                    // small chevron: points down when closed, up when open
-                    Text {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        y: 8
-                        height: 14
-                        verticalAlignment: Text.AlignVCenter
-                        text: "▾"
-                        color: root.fg
-                        font.pixelSize: 14
-                        rotation: panel.barShown ? 180 : 0
-                        Behavior on rotation { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutCubic } }
-                    }
-
-                    MouseArea {
-                        id: tabMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: root.topBarOpen = !root.topBarOpen
-                    }
+            onKeepOpenChanged: {
+                if (keepOpen) {
+                    hideTimer.stop();
+                    barShown = true;
+                } else {
+                    hideTimer.restart();
                 }
+            }
+            Component.onCompleted: if (!keepOpen) hideTimer.start()
+
+            Timer {
+                id: hideTimer
+                interval: root.hideDelayMs
+                onTriggered: panel.barShown = panel.keepOpen
+            }
+
+            // Windows only make room while the bar is out
+            exclusionMode: ExclusionMode.Normal
+            exclusiveZone: barShown ? implicitHeight : 0
+
+            // While hidden, only a thin strip at the screen edge listens for the mouse;
+            // everything else passes straight through to the windows underneath
+            mask: barShown ? null : edgeMask
+            Region { id: edgeMask; item: hotStrip }
+
+            Item {
+                id: hotStrip
+                anchors.top: parent.top
+                anchors.left: parent.left
+                anchors.right: parent.right
+                height: root.hotZoneSize
+            }
+
+            // Is the mouse anywhere over this bar (or the edge strip)? Sits on top of everything,
+            // but only watches: hovers and clicks still reach the buttons underneath.
+            Item {
+                anchors.fill: parent
+                z: 1000
+                HoverHandler { id: barHover }
             }
 
             // Closes this bar's popups when asked (outside click, workspace change)
