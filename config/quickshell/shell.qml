@@ -175,6 +175,20 @@ ShellRoot {
         pins.adapter.wallpaper = url;
     }
 
+    // ---------- Lock screen follows the desktop wallpaper ----------
+    // Writes the wallpaper's path to ~/.config/hypr/hyprlock-wallpaper.conf as $wallpaper,
+    // which hyprlock.conf reads (source = ...) and uses for its background.
+    readonly property string lockWallpaper: pins.adapter.wallpaper
+    onLockWallpaperChanged: writeLockWallpaper()
+
+    function writeLockWallpaper() {
+        let path = lockWallpaper;
+        if (path.indexOf("file://") === 0) path = decodeURIComponent(path.slice(7));
+        Quickshell.execDetached(["sh", "-c",
+            'mkdir -p "$HOME/.config/hypr" && printf "%s\\n" "\\$wallpaper = $1" > "$HOME/.config/hypr/hyprlock-wallpaper.conf"',
+            "sh", path]);
+    }
+
     function randomWallpaper() {
         if (wallpapers.count === 0) return;
         const i = Math.floor(Math.random() * wallpapers.count);
