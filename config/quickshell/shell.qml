@@ -64,14 +64,7 @@ ShellRoot {
     readonly property bool bottomShowClock: true
     readonly property bool bottomShowWallpaperButton: true
     readonly property int dockIconSize: 44         // size of the app icons on the bottom dock
-    // Top bar: what to show
-    readonly property bool topShowApps: true
-    readonly property bool topShowSystem: true
-    readonly property bool topShowClock: true
-    readonly property bool topShowMedia: true
-    readonly property bool topShowVolume: true
-    readonly property bool topShowPanel: true
-    readonly property bool topShowWeather: true
+    // Top bar: a pill at the top centre that grows into the hub when clicked (see "Top bar: the island")
     // Weather (from Open-Meteo, no account or key needed). Put your own coordinates here.
     readonly property string weatherName: "Windsor, ON"
     readonly property real weatherLat: 42.3149
@@ -513,7 +506,7 @@ ShellRoot {
     Timer {
         interval: 1500
         repeat: true
-        running: root.panelOpen && root.tab === 2
+        running: true                 // the top pill always shows CPU and RAM
         triggeredOnStart: true
         onTriggered: {
             statFile.reload();
@@ -530,6 +523,7 @@ ShellRoot {
         panelOpen = false;
         weatherOpen = false;
         wallPickerOpen = false;
+        hubOpen = false;
         closeAllRequested();
     }
 
@@ -2058,7 +2052,204 @@ ShellRoot {
         }
     }
 
-    // ---------- Top bar ----------
+    // ---------- Top bar: the island ----------
+    // A compact pill at the top centre. Click it and it grows into the hub:
+    // Home, Media, Apps, Calendar, Alerts and System.
+    property bool hubOpen: false
+    property int hubTab: 0           // 0 home, 1 media, 2 apps, 3 calendar, 4 alerts, 5 system
+    property int calOffset: 0        // how many months away from this one the calendar shows
+    readonly property int hubW: 800
+    readonly property int hubH: 560
+
+    function openHub(tab) {
+        hubTab = tab;
+        calOffset = 0;
+        hubOpen = true;
+    }
+
+    // Optional, in hyprland.conf:  bind = SUPER, A, global, quickshell:hub
+    GlobalShortcut {
+        appid: "quickshell"
+        name: "hub"
+        description: "Open or close the top hub"
+        onPressed: root.hubOpen = !root.hubOpen
+    }
+
+    // Alternative:  quickshell ipc call hub toggle   (or: quickshell ipc call hub open 3)
+    IpcHandler {
+        target: "hub"
+        function toggle(): void {
+            root.hubOpen = !root.hubOpen;
+        }
+        function open(tab: int): void {
+            root.openHub(tab);
+        }
+    }
+
+    // ----- Network, Bluetooth and night light state (checked every few seconds) -----
+    property bool wifiOn: false
+    property string netKind: ""      // "wifi", "ethernet" or "" when offline
+    property string netName: ""
+    property string btState: "none"  // "yes", "no", or "none" when Bluetooth isn't available
+    property string nightState: "none" // "on", "off", or "none" when hyprsunset isn't installed
+
+    Process {
+        id: statusProc
+        command: ["sh", "-c", 'echo "W=$(nmcli -t -f WIFI g 2>/dev/null)"; echo "N=$(nmcli -t -f TYPE,STATE,CONNECTION d 2>/dev/null | grep -m1 ":connected:")"; if command -v bluetoothctl >/dev/null 2>&1; then echo "B=$(bluetoothctl show 2>/dev/null | grep -m1 -o "Powered: [a-z]*")"; fi; if command -v hyprsunset >/dev/null 2>&1; then if pgrep -x hyprsunset >/dev/null; then echo "S=on"; else echo "S=off"; fi; fi']
+        stdout: StdioCollector {
+            onStreamFinished: {
+                const v = { W: "", N: "", B: null, S: null };
+                const lines = text.split("\n");
+                for (let i = 0; i < lines.length; i++) {
+                    const at = lines[i].indexOf("=");
+                    if (at > 0) v[lines[i].slice(0, at)] = lines[i].slice(at + 1);
+                }
+                root.wifiOn = v.W.trim() === "enabled";
+                const n = v.N.trim().split(":");
+                root.netKind = n.length >= 2 ? n[0] : "";
+                root.netName = n.length >= 3 ? n.slice(2).join(":") : "";
+                root.btState = v.B === null ? "none" : (v.B.indexOf("yes") >= 0 ? "yes" : "no");
+                root.nightState = v.S === null ? "none" : v.S.trim();
+            }
+        }
+    }
+
+    Timer {
+        interval: 5000
+        repeat: true
+        running: true
+        triggeredOnStart: true
+        onTriggered: if (!statusProc.running) statusProc.running = true
+    }
+
+    Timer {
+        id: statusSoon
+        interval: 800
+        onTriggered: if (!statusProc.running) statusProc.running = true
+    }
+
+    // Runs a shell command, then re-checks the toggles so they update straight away
+    function run(cmd) {
+        Quickshell.execDetached(["sh", "-c", cmd]);
+        statusSoon.restart();
+    }
+
+    // ----- GPU usage/temperature and CPU temperature (only while the hub is open) -----
+    property int gpuUse: -1
+    property int gpuTemp: -1
+    property int cpuTemp: -1
+
+    Process {
+        id: gpuProc
+        command: ["sh", "-c", 'g=""; if command -v nvidia-smi >/dev/null 2>&1; then g=$(nvidia-smi --query-gpu=utilization.gpu,temperature.gpu --format=csv,noheader,nounits 2>/dev/null | head -n1 | tr -d " "); fi; if [ -z "$g" ]; then for d in /sys/class/drm/card*/device; do if [ -r "$d/gpu_busy_percent" ]; then t=$(cat "$d"/hwmon/hwmon*/temp1_input 2>/dev/null | head -n1); g="$(cat "$d/gpu_busy_percent"),$(( ${t:-0} / 1000 ))"; break; fi; done; fi; c=""; for h in /sys/class/hwmon/hwmon*; do n=$(cat "$h/name" 2>/dev/null); if [ "$n" = k10temp ] || [ "$n" = coretemp ] || [ "$n" = zenpower ]; then c=$(( $(cat "$h/temp1_input" 2>/dev/null || echo 0) / 1000 )); break; fi; done; echo "G=$g"; echo "C=$c"']
+        stdout: StdioCollector {
+            onStreamFinished: {
+                let g = "", c = "";
+                const lines = text.split("\n");
+                for (let i = 0; i < lines.length; i++) {
+                    if (lines[i].indexOf("G=") === 0) g = lines[i].slice(2).trim();
+                    if (lines[i].indexOf("C=") === 0) c = lines[i].slice(2).trim();
+                }
+                const gp = g.split(",");
+                root.gpuUse = gp.length === 2 && gp[0] !== "" ? parseInt(gp[0]) : -1;
+                root.gpuTemp = gp.length === 2 && gp[1] !== "" && parseInt(gp[1]) > 0 ? parseInt(gp[1]) : -1;
+                root.cpuTemp = c !== "" && parseInt(c) > 0 ? parseInt(c) : -1;
+            }
+        }
+    }
+
+    Timer {
+        interval: 2500
+        repeat: true
+        running: root.hubOpen
+        triggeredOnStart: true
+        onTriggered: if (!gpuProc.running) gpuProc.running = true
+    }
+
+    // ----- Screenshot: closes the hub first so it isn't in the picture -----
+    Timer {
+        id: shotTimer
+        interval: 400
+        onTriggered: root.run('d="$HOME/Pictures/Screenshots"; mkdir -p "$d"; f="$d/$(date +%Y-%m-%d_%H-%M-%S).png"; grim -g "$(slurp)" "$f" && { wl-copy < "$f"; notify-send -i "$f" "Screenshot saved" "Also copied to the clipboard"; }')
+    }
+
+    function takeScreenshot() {
+        hubOpen = false;
+        shotTimer.restart();
+    }
+
+    function netIcon() {
+        if (netKind === "wifi") return "";
+        if (netKind === "ethernet") return "";
+        return "";
+    }
+
+    function volIcon(a) {
+        if (!a || a.muted) return "";
+        return a.volume < 0.4 ? "" : "";
+    }
+
+    // Small glossy card used all over the hub
+    component HubCard: Rectangle {
+        id: hc
+        property var theme: null
+        radius: 20
+        color: hc.theme ? hc.theme.surface : "#313244"
+        border.width: 1
+        border.color: hc.theme ? hc.theme.glassEdge : "transparent"
+
+        Rectangle {
+            anchors.fill: parent
+            radius: parent.radius
+            gradient: Gradient {
+                GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, hc.theme && hc.theme.dark ? 0.06 : 0.25) }
+                GradientStop { position: 0.5; color: Qt.rgba(1, 1, 1, 0) }
+            }
+        }
+    }
+
+    // One app icon with its name (hub Apps tab)
+    component AppTile: Rectangle {
+        id: at
+        property var theme: null
+        property var entry: null
+        signal launched()
+        width: 92
+        height: 96
+        radius: 18
+        color: atMouse.containsMouse && at.theme ? at.theme.overlay : "transparent"
+        scale: atMouse.pressed ? 0.93 : (atMouse.containsMouse ? 1.06 : 1)
+        Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutBack } }
+
+        Column {
+            anchors.centerIn: parent
+            spacing: 6
+
+            IconImage {
+                anchors.horizontalCenter: parent.horizontalCenter
+                implicitSize: 48
+                source: at.entry ? Quickshell.iconPath(at.entry.icon, "application-x-executable") : ""
+            }
+            Text {
+                anchors.horizontalCenter: parent.horizontalCenter
+                width: 84
+                horizontalAlignment: Text.AlignHCenter
+                elide: Text.ElideRight
+                text: at.entry ? at.entry.name : ""
+                color: at.theme ? at.theme.fg : "#cdd6f4"
+                font.pixelSize: 11
+            }
+        }
+
+        MouseArea {
+            id: atMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: at.launched()
+        }
+    }
+
     Variants {
         model: Quickshell.screens
 
@@ -2072,15 +2263,18 @@ ShellRoot {
                 left: true
                 right: true
             }
-            implicitHeight: 58
+            implicitHeight: 52
             color: "transparent"
             WlrLayershell.namespace: "quickshell-topbar"
 
+            readonly property bool focusedHere: !Hyprland.focusedMonitor || Hyprland.focusedMonitor.name === modelData.name
+            readonly property bool hubHere: root.hubOpen && focusedHere
+
             // ----- Auto-hide -----
-            // Touch the screen edge and the bar slides out; windows shrink to make room for it.
-            // Move away and it slides back after a moment; windows stretch back to full size.
+            // Touch the top edge and the pill slides down; windows shrink to make room.
+            // Move away and it slides back up; windows stretch back to full size.
             readonly property bool wantHide: root.autoHideOn
-            readonly property bool popupOpen: mediaPopup.visible || volPopup.visible || sysPopup.visible
+            readonly property bool popupOpen: hubHere
             readonly property bool keepOpen: !wantHide || barHover.hovered || popupOpen
                 || root.topBarOpen     // Super+T (if bound) pins it open
             property bool barShown: true
@@ -2101,12 +2295,11 @@ ShellRoot {
                 onTriggered: panel.barShown = panel.keepOpen
             }
 
-            // Windows only make room while the bar is out
+            // Windows only make room while the pill is out
             exclusionMode: ExclusionMode.Normal
             exclusiveZone: barShown ? implicitHeight : 0
 
-            // While hidden, only a thin strip at the screen edge listens for the mouse;
-            // everything else passes straight through to the windows underneath
+            // While hidden, only a thin strip at the top edge listens for the mouse
             mask: barShown ? null : edgeMask
             Region { id: edgeMask; item: hotStrip }
 
@@ -2118,642 +2311,1467 @@ ShellRoot {
                 height: root.hotZoneSize
             }
 
-            // Is the mouse anywhere over this bar (or the edge strip)? Sits on top of everything,
-            // but only watches: hovers and clicks still reach the buttons underneath.
             Item {
                 anchors.fill: parent
                 z: 1000
                 HoverHandler { id: barHover }
             }
 
-            // Closes this bar's popups when asked (outside click, workspace change)
-            Connections {
-                target: root
-                function onCloseAllRequested() {
-                    mediaPopup.visible = false;
-                    volPopup.visible = false;
-                    sysPopup.visible = false;
+            // Desktops on this monitor, the focused app, and today's calendar
+            readonly property var desks: root.deskMap[modelData.name] || []
+            readonly property var activeWin: ToplevelManager.activeToplevel
+            readonly property var calInfo: {
+                const now = clock.date;
+                const first = new Date(now.getFullYear(), now.getMonth() + root.calOffset, 1);
+                const start = new Date(first.getFullYear(), first.getMonth(), 1 - first.getDay());
+                const days = [];
+                for (let i = 0; i < 42; i++) {
+                    const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
+                    days.push({
+                        n: d.getDate(),
+                        inMonth: d.getMonth() === first.getMonth(),
+                        today: d.toDateString() === now.toDateString()
+                    });
                 }
+                return { title: Qt.formatDate(first, "MMMM yyyy"), days: days };
             }
 
-            property double mediaClosedAt: 0
-            property double volClosedAt: 0
-            property double sysClosedAt: 0
+            // ===================== The compact pill =====================
+            Rectangle {
+                id: pill
+                anchors.horizontalCenter: parent.horizontalCenter
+                y: panel.barShown ? 6 : -height - 6
+                width: pillRow.implicitWidth + 30
+                height: 40
+                radius: 20
+                color: root.bg
+                border.width: 1
+                border.color: root.glassEdge
+                opacity: panel.hubHere ? 0 : 1
+                scale: pillMouse.pressed ? 0.97 : (pillHover.hovered ? 1.03 : 1)
+                Behavior on y { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutCubic } }
+                Behavior on width { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutCubic } }
+                Behavior on opacity { NumberAnimation { duration: root.animMs } }
+                Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
 
-            // ===== Media popup =====
-            PopupWindow {
-                id: mediaPopup
-                readonly property var p: root.player
-                anchor.window: panel
-                anchor.edges: Edges.Bottom
-                anchor.gravity: Edges.Bottom
-                implicitWidth: 340
-                implicitHeight: content.implicitHeight + 24
-                color: "transparent"
-                visible: false
+                HoverHandler { id: pillHover }
 
-                // Position only updates when asked, so poll while it's open
-                Timer {
-                    interval: 1000
-                    repeat: true
-                    running: mediaPopup.visible && root.playing(mediaPopup.p)
-                    onTriggered: mediaPopup.p.positionChanged()
-                }
-
-                Connections {
-                    target: root
-                    function onPlayerChanged() {
-                        if (!root.player) mediaPopup.visible = false;
+                // gloss
+                Rectangle {
+                    anchors.fill: parent
+                    radius: parent.radius
+                    gradient: Gradient {
+                        GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, root.dark ? 0.10 : 0.35) }
+                        GradientStop { position: 0.55; color: Qt.rgba(1, 1, 1, 0) }
                     }
                 }
 
-                Rectangle {
-                    opacity: 0
-                    scale: 0.96
-                    NumberAnimation on opacity { running: mediaPopup.visible; from: 0; to: 1; duration: root.animMs; easing.type: Easing.OutCubic }
-                    NumberAnimation on scale { running: mediaPopup.visible; from: 0.96; to: 1; duration: root.animMs; easing.type: Easing.OutCubic }
+                // clicking any empty part of the pill opens the hub
+                MouseArea {
+                    id: pillMouse
                     anchors.fill: parent
-                    radius: 14
-                    color: root.popupBg
-                    border.color: root.overlay
-                    border.width: 1
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.openHub(0)
+                }
 
-                    ColumnLayout {
-                        id: content
-                        anchors.fill: parent
-                        anchors.margins: 12
-                        spacing: 10
+                Row {
+                    id: pillRow
+                    anchors.centerIn: parent
+                    spacing: 14
 
-                        // Cover art + title
-                        RowLayout {
-                            spacing: 12
+                    // ---- Desktop dots ----
+                    Row {
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 5
 
-                            Rectangle {
-                                Layout.preferredWidth: 60
-                                Layout.preferredHeight: 60
-                                radius: 8
-                                color: root.overlay
-                                clip: true
+                        Repeater {
+                            model: panel.desks
 
-                                Image {
+                            delegate: Item {
+                                id: dDot
+                                required property var modelData
+                                readonly property bool isActive: root.activeWsId(panel.modelData.name) === dDot.modelData
+                                width: dot.width
+                                height: 14
+
+                                Rectangle {
+                                    id: dot
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: dDot.isActive ? 20 : 8
+                                    height: 8
+                                    radius: 4
+                                    color: dDot.isActive ? root.accent
+                                        : (root.wsWindowCount(dDot.modelData) > 0 ? root.muted : root.overlay)
+                                    Behavior on width { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutBack } }
+                                    Behavior on color { ColorAnimation { duration: root.animMs } }
+                                }
+
+                                MouseArea {
                                     anchors.fill: parent
-                                    source: mediaPopup.p ? mediaPopup.p.trackArtUrl : ""
-                                    fillMode: Image.PreserveAspectCrop
-                                    visible: status === Image.Ready
-                                }
-
-                                Text {
-                                    anchors.centerIn: parent
-                                    text: "♪"
-                                    color: root.muted
-                                    font.pixelSize: 24
-                                }
-                            }
-
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                spacing: 2
-
-                                Text {
-                                    Layout.fillWidth: true
-                                    text: mediaPopup.p ? (mediaPopup.p.trackTitle || "Unknown title") : ""
-                                    color: root.fg
-                                    font.pixelSize: 14
-                                    font.bold: true
-                                    elide: Text.ElideRight
-                                }
-                                Text {
-                                    Layout.fillWidth: true
-                                    text: mediaPopup.p ? mediaPopup.p.trackArtist : ""
-                                    color: root.muted
-                                    font.pixelSize: 12
-                                    elide: Text.ElideRight
-                                }
-                                Text {
-                                    Layout.fillWidth: true
-                                    text: mediaPopup.p ? mediaPopup.p.identity : ""
-                                    color: root.muted
-                                    font.pixelSize: 11
-                                    elide: Text.ElideRight
-                                }
-                            }
-                        }
-
-                        // Seek bar
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 2
-
-                            ValueBar {
-                                theme: root
-                                Layout.fillWidth: true
-                                value: mediaPopup.p && mediaPopup.p.length > 0
-                                    ? mediaPopup.p.position / mediaPopup.p.length : 0
-                                onMoved: v => {
-                                    const p = mediaPopup.p;
-                                    if (p && p.canSeek && p.length > 0) p.position = v * p.length;
-                                }
-                            }
-
-                            RowLayout {
-                                Layout.fillWidth: true
-                                Text {
-                                    text: root.fmt(mediaPopup.p ? mediaPopup.p.position : 0)
-                                    color: root.muted
-                                    font.pixelSize: 11
-                                }
-                                Item { Layout.fillWidth: true }
-                                Text {
-                                    text: root.fmt(mediaPopup.p ? mediaPopup.p.length : 0)
-                                    color: root.muted
-                                    font.pixelSize: 11
-                                }
-                            }
-                        }
-
-                        // Transport controls
-                        RowLayout {
-                            Layout.alignment: Qt.AlignHCenter
-                            spacing: 8
-
-                            IconButton {
-                                theme: root
-                                label: "|◀"
-                                dim: !(mediaPopup.p && mediaPopup.p.canGoPrevious)
-                                onClicked: if (mediaPopup.p && mediaPopup.p.canGoPrevious) mediaPopup.p.previous()
-                            }
-                            IconButton {
-                                theme: root
-                                implicitWidth: 56
-                                label: root.playing(mediaPopup.p) ? "❚❚" : "▶"
-                                dim: !(mediaPopup.p && mediaPopup.p.canTogglePlaying)
-                                onClicked: if (mediaPopup.p && mediaPopup.p.canTogglePlaying) mediaPopup.p.togglePlaying()
-                            }
-                            IconButton {
-                                theme: root
-                                label: "▶|"
-                                dim: !(mediaPopup.p && mediaPopup.p.canGoNext)
-                                onClicked: if (mediaPopup.p && mediaPopup.p.canGoNext) mediaPopup.p.next()
-                            }
-                        }
-
-                        // Player's own volume (not every player supports this)
-                        RowLayout {
-                            Layout.fillWidth: true
-                            visible: mediaPopup.p && mediaPopup.p.volumeSupported
-                            spacing: 8
-
-                            Text {
-                                Layout.preferredWidth: 52
-                                text: "Player"
-                                color: root.muted
-                                font.pixelSize: 12
-                            }
-                            ValueBar {
-                                theme: root
-                                Layout.fillWidth: true
-                                value: mediaPopup.p ? mediaPopup.p.volume : 0
-                                onMoved: v => {
-                                    if (mediaPopup.p && mediaPopup.p.volumeSupported) mediaPopup.p.volume = v;
-                                }
-                            }
-                            Item { Layout.preferredWidth: 60 }
-                        }
-
-                        // System volume (works for any app, including browser video)
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: 8
-
-                            Text {
-                                Layout.preferredWidth: 52
-                                text: "System"
-                                color: root.muted
-                                font.pixelSize: 12
-                            }
-                            ValueBar {
-                                theme: root
-                                Layout.fillWidth: true
-                                value: root.sink && root.sink.audio ? root.sink.audio.volume : 0
-                                onMoved: v => {
-                                    if (root.sink && root.sink.audio) root.sink.audio.volume = v;
-                                }
-                            }
-                            IconButton {
-                                theme: root
-                                implicitWidth: 60
-                                implicitHeight: 28
-                                label: root.sink && root.sink.audio && root.sink.audio.muted ? "Unmute" : "Mute"
-                                onClicked: {
-                                    if (root.sink && root.sink.audio) root.sink.audio.muted = !root.sink.audio.muted;
+                                    anchors.margins: -4
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: root.gotoDesktop(panel.modelData.name, dDot.modelData)
                                 }
                             }
                         }
                     }
-                }
-            }
 
-            HyprlandFocusGrab {
-                windows: [mediaPopup]
-                active: mediaPopup.visible
-                onCleared: {
-                    root.closeAll();
-                    mediaPopup.visible = false;
-                    panel.mediaClosedAt = Date.now();
-                }
-            }
+                    // ---- Focused app ----
+                    Row {
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 7
 
-            // ===== Volume popup =====
-            PopupWindow {
-                id: volPopup
-                readonly property var audio: root.sink ? root.sink.audio : null
-                anchor.window: panel
-                anchor.edges: Edges.Bottom
-                anchor.gravity: Edges.Bottom
-                implicitWidth: 280
-                implicitHeight: volCol.implicitHeight + 24
-                color: "transparent"
-                visible: false
-
-                Rectangle {
-                    opacity: 0
-                    scale: 0.96
-                    NumberAnimation on opacity { running: volPopup.visible; from: 0; to: 1; duration: root.animMs; easing.type: Easing.OutCubic }
-                    NumberAnimation on scale { running: volPopup.visible; from: 0.96; to: 1; duration: root.animMs; easing.type: Easing.OutCubic }
-                    anchors.fill: parent
-                    radius: 14
-                    color: root.popupBg
-                    border.color: root.overlay
-                    border.width: 1
-
-                    ColumnLayout {
-                        id: volCol
-                        anchors.fill: parent
-                        anchors.margins: 12
-                        spacing: 10
-
-                        RowLayout {
-                            Layout.fillWidth: true
-
-                            Text {
-                                Layout.fillWidth: true
-                                text: "Volume"
-                                color: root.fg
-                                font.pixelSize: 14
-                                font.bold: true
-                            }
-                            Text {
-                                text: volPopup.audio ? Math.round(volPopup.audio.volume * 100) + "%" : "--"
-                                color: root.muted
-                                font.pixelSize: 13
-                            }
+                        IconImage {
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: !!panel.activeWin
+                            implicitSize: 18
+                            source: panel.activeWin ? Quickshell.iconPath(panel.activeWin.appId, "application-x-executable") : ""
                         }
-
-                        ValueBar {
-                            theme: root
-                            Layout.fillWidth: true
-                            value: volPopup.audio ? volPopup.audio.volume : 0
-                            onMoved: v => {
-                                if (volPopup.audio) volPopup.audio.volume = v;
-                            }
-                        }
-
                         Text {
-                            Layout.fillWidth: true
-                            text: root.sink ? (root.sink.description || root.sink.name) : "No output device"
-                            color: root.muted
-                            font.pixelSize: 11
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: Math.min(implicitWidth, 220)
                             elide: Text.ElideRight
-                        }
-
-                        IconButton {
-                            theme: root
-                            Layout.fillWidth: true
-                            label: volPopup.audio && volPopup.audio.muted ? "Unmute" : "Mute"
-                            onClicked: {
-                                if (volPopup.audio) volPopup.audio.muted = !volPopup.audio.muted;
-                            }
+                            text: panel.activeWin ? (panel.activeWin.title || panel.activeWin.appId) : "Desktop"
+                            color: root.fg
+                            font.pixelSize: 13
                         }
                     }
-                }
-            }
 
-            HyprlandFocusGrab {
-                windows: [volPopup]
-                active: volPopup.visible
-                onCleared: {
-                    root.closeAll();
-                    volPopup.visible = false;
-                    panel.volClosedAt = Date.now();
-                }
-            }
+                    Rectangle { anchors.verticalCenter: parent.verticalCenter; width: 4; height: 4; radius: 2; color: root.muted }
 
-            // ===== System popup =====
-            PopupWindow {
-                id: sysPopup
-                anchor.window: panel
-                anchor.edges: Edges.Bottom
-                anchor.gravity: Edges.Bottom
-                implicitWidth: 340
-                implicitHeight: sysCol.implicitHeight + 24
-                color: "transparent"
-                visible: false
-
-                Rectangle {
-                    opacity: 0
-                    scale: 0.96
-                    NumberAnimation on opacity { running: sysPopup.visible; from: 0; to: 1; duration: root.animMs; easing.type: Easing.OutCubic }
-                    NumberAnimation on scale { running: sysPopup.visible; from: 0.96; to: 1; duration: root.animMs; easing.type: Easing.OutCubic }
-                    anchors.fill: parent
-                    radius: 14
-                    color: root.popupBg
-                    border.color: root.overlay
-                    border.width: 1
-
-                    ColumnLayout {
-                        id: sysCol
-                        anchors.fill: parent
-                        anchors.margins: 12
-                        spacing: 10
+                    // ---- Clock (opens the calendar) ----
+                    Row {
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 7
 
                         Text {
-                            text: "System"
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: Qt.formatDateTime(clock.date, root.timePattern)
                             color: root.fg
                             font.pixelSize: 14
                             font.bold: true
                         }
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: Qt.formatDateTime(clock.date, "ddd d")
+                            color: root.muted
+                            font.pixelSize: 12
+                        }
 
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: 8
+                        MouseArea {
+                            width: parent.width
+                            height: 30
+                            anchors.verticalCenter: parent.verticalCenter
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.openHub(3)
+                        }
+                    }
 
-                            IconButton {
-                                theme: root
-                                Layout.fillWidth: true
-                                label: "Reload Hyprland"
-                                onClicked: {
-                                    sysPopup.visible = false;
-                                    Quickshell.execDetached(["hyprctl", "reload"]);
+                    Rectangle { anchors.verticalCenter: parent.verticalCenter; width: 4; height: 4; radius: 2; color: root.muted }
+
+                    // ---- CPU and RAM ----
+                    Row {
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 10
+
+                        Repeater {
+                            model: [
+                                { icon: "", value: root.cpuUsage },
+                                { icon: "", value: root.memUsage }
+                            ]
+
+                            delegate: Row {
+                                id: chip
+                                required property var modelData
+                                spacing: 5
+
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: chip.modelData.icon
+                                    color: root.accent
+                                    font.family: root.iconFont
+                                    font.pixelSize: 12
+                                }
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: Math.round(chip.modelData.value * 100) + "%"
+                                    color: root.fg
+                                    font.pixelSize: 12
                                 }
                             }
-                            IconButton {
-                                theme: root
-                                Layout.fillWidth: true
-                                label: "Restart bar"
-                                onClicked: {
-                                    sysPopup.visible = false;
-                                    Quickshell.reload(true);
+                        }
+                    }
+
+                    // ---- Status icons ----
+                    Row {
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 12
+
+                        // music note while something plays (opens Media)
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: root.playing(root.player)
+                            text: ""
+                            color: root.accent
+                            font.family: root.iconFont
+                            font.pixelSize: 13
+                            SequentialAnimation on opacity {
+                                running: root.playing(root.player)
+                                loops: Animation.Infinite
+                                NumberAnimation { to: 0.45; duration: 700; easing.type: Easing.InOutSine }
+                                NumberAnimation { to: 1; duration: 700; easing.type: Easing.InOutSine }
+                            }
+                            MouseArea { anchors.fill: parent; anchors.margins: -5; cursorShape: Qt.PointingHandCursor; onClicked: root.openHub(1) }
+                        }
+
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: root.netIcon()
+                            color: root.netKind === "" ? root.muted : root.fg
+                            font.family: root.iconFont
+                            font.pixelSize: 13
+                        }
+
+                        // volume: scroll to change, click to mute
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: root.volIcon(root.sink ? root.sink.audio : null)
+                            color: root.fg
+                            font.family: root.iconFont
+                            font.pixelSize: 14
+                            MouseArea {
+                                anchors.fill: parent
+                                anchors.margins: -5
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: if (root.sink && root.sink.audio) root.sink.audio.muted = !root.sink.audio.muted
+                                onWheel: wheel => {
+                                    const a = root.sink ? root.sink.audio : null;
+                                    if (!a) return;
+                                    const step = wheel.angleDelta.y > 0 ? root.volumeStep : -root.volumeStep;
+                                    a.volume = Math.max(0, Math.min(1, a.volume + step));
                                 }
                             }
                         }
 
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: 8
+                        // bell with a count (opens Alerts)
+                        Item {
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: bell.implicitWidth + (badge.visible ? 8 : 0)
+                            height: 18
 
-                            IconButton {
-                                theme: root
-                                Layout.fillWidth: true
-                                label: "Lock"
-                                onClicked: {
-                                    sysPopup.visible = false;
-                                    Quickshell.execDetached(["sh", "-c", "hyprlock || loginctl lock-session"]);
-                                }
+                            Text {
+                                id: bell
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: ""
+                                color: root.dnd ? root.muted : root.fg
+                                font.family: root.iconFont
+                                font.pixelSize: 13
                             }
-                            IconButton {
-                                theme: root
-                                Layout.fillWidth: true
-                                label: "Sleep"
-                                onClicked: {
-                                    sysPopup.visible = false;
-                                    Quickshell.execDetached(["systemctl", "suspend"]);
-                                }
-                            }
-                            IconButton {
-                                theme: root
-                                Layout.fillWidth: true
-                                label: "Config folder"
-                                onClicked: {
-                                    sysPopup.visible = false;
-                                    Quickshell.execDetached(["xdg-open", Quickshell.env("HOME") + "/.config"]);
-                                }
-                            }
-                        }
+                            Rectangle {
+                                id: badge
+                                visible: notifServer.trackedNotifications.values.length > 0
+                                anchors.left: bell.right
+                                anchors.leftMargin: -4
+                                anchors.top: parent.top
+                                anchors.topMargin: -3
+                                width: Math.max(14, badgeText.implicitWidth + 6)
+                                height: 14
+                                radius: 7
+                                color: root.accent
 
-                        Rectangle {
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: 1
-                            color: root.overlay
-                        }
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: 8
-
-                            ConfirmButton {
-                                theme: root
-                                Layout.fillWidth: true
-                                label: "Log out"
-                                onConfirmed: {
-                                    sysPopup.visible = false;
-                                    Quickshell.execDetached(["hyprctl", "dispatch", "exit"]);
+                                Text {
+                                    id: badgeText
+                                    anchors.centerIn: parent
+                                    text: notifServer.trackedNotifications.values.length
+                                    color: root.bg
+                                    font.pixelSize: 9
+                                    font.bold: true
                                 }
                             }
-                            ConfirmButton {
-                                theme: root
-                                Layout.fillWidth: true
-                                label: "Reboot"
-                                onConfirmed: {
-                                    sysPopup.visible = false;
-                                    Quickshell.execDetached(["systemctl", "reboot"]);
-                                }
-                            }
-                            ConfirmButton {
-                                theme: root
-                                Layout.fillWidth: true
-                                label: "Shut down"
-                                onConfirmed: {
-                                    sysPopup.visible = false;
-                                    Quickshell.execDetached(["systemctl", "poweroff"]);
-                                }
-                            }
+                            MouseArea { anchors.fill: parent; anchors.margins: -5; cursorShape: Qt.PointingHandCursor; onClicked: root.openHub(4) }
                         }
                     }
                 }
             }
 
-            HyprlandFocusGrab {
-                windows: [sysPopup]
-                active: sysPopup.visible
-                onCleared: {
-                    root.closeAll();
-                    sysPopup.visible = false;
-                    panel.sysClosedAt = Date.now();
-                }
-            }
+            // ===================== The hub (grows out of the pill) =====================
+            PanelWindow {
+                id: hubWin
+                screen: panel.screen
+                visible: panel.hubHere || hubCard.height > pill.height + 2
+                anchors.top: true
+                implicitWidth: root.hubW + 40
+                implicitHeight: root.hubH + 40
+                exclusionMode: ExclusionMode.Ignore
+                color: "transparent"
+                WlrLayershell.layer: WlrLayer.Overlay
+                WlrLayershell.namespace: "quickshell-hub"
+                WlrLayershell.keyboardFocus: panel.hubHere ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
+                mask: Region { item: hubCard }
 
-            // ===== Top bar contents =====
-            Item {
-                id: barContent
-                opacity: panel.barShown ? 1 : 0
-                Behavior on opacity { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutCubic } }
-                transform: Translate {
-                    y: panel.barShown ? 0 : -panel.implicitHeight
-                    Behavior on y { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutCubic } }
-                }
-                anchors.fill: parent
+                onVisibleChanged: if (visible) hubKeys.forceActiveFocus()
 
-                // The solid block the whole top bar sits on
+                HyprlandFocusGrab {
+                    windows: [hubWin]
+                    active: panel.hubHere
+                    onCleared: root.hubOpen = false
+                }
+
+                Item {
+                    id: hubKeys
+                    focus: true
+                    Keys.onPressed: event => {
+                        if (event.key === Qt.Key_Escape) root.hubOpen = false;
+                        else if (event.key === Qt.Key_Tab) root.hubTab = (root.hubTab + 1) % 6;
+                        else if (event.key === Qt.Key_Backtab) root.hubTab = (root.hubTab + 5) % 6;
+                        else return;
+                        event.accepted = true;
+                    }
+                }
+
                 Rectangle {
-                    id: topBlock
-                    anchors.fill: parent
-                    anchors.topMargin: 6
-                    anchors.leftMargin: 8
-                    anchors.rightMargin: 8
-                    radius: 18
-                    color: root.bg
+                    id: hubCard
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    y: 6
+                    width: panel.hubHere ? root.hubW : pill.width
+                    height: panel.hubHere ? root.hubH : pill.height
+                    radius: panel.hubHere ? 30 : 20
+                    color: root.popupBg
                     border.width: 1
                     border.color: root.glassEdge
+                    clip: true
+                    Behavior on width { NumberAnimation { duration: root.animMs * 2.6; easing.type: Easing.OutBack; easing.overshoot: 0.8 } }
+                    Behavior on height { NumberAnimation { duration: root.animMs * 2.6; easing.type: Easing.OutBack; easing.overshoot: 0.8 } }
+                    Behavior on radius { NumberAnimation { duration: root.animMs * 2 } }
 
-                    // ---- Left: panel, apps, system ----
-                    RowLayout {
-                        anchors.left: parent.left
-                        anchors.leftMargin: 8
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: 8
-
-                        BarButton {
-                            id: panelBtn
-                            theme: root
-                            visible: root.topShowPanel
-                            icon: notifServer.trackedNotifications.values.length > 0 ? "" : ""
-                            label: notifServer.trackedNotifications.values.length > 0
-                                ? "Panel (" + notifServer.trackedNotifications.values.length + ")" : "Panel"
-                            active: root.panelOpen
-                            onClicked: mouse => {
-                                if (Date.now() - root.panelClosedAt < 250) return;
-                                root.panelOpen = !root.panelOpen;
-                            }
-                        }
-
-                        BarButton {
-                            id: appsBtn
-                            theme: root
-                            visible: root.topShowApps
-                            icon: ""
-                            label: "Apps"
-                            active: root.launcherOpen
-                            onClicked: mouse => { root.launcherOpen = !root.launcherOpen; }
-                        }
-
-                        BarButton {
-                            id: sysBtn
-                            theme: root
-                            visible: root.topShowSystem
-                            icon: ""
-                            label: "System"
-                            active: sysPopup.visible
-                            onClicked: mouse => {
-                                if (Date.now() - panel.sysClosedAt < 250) return;
-                                if (sysPopup.visible) {
-                                    sysPopup.visible = false;
-                                    return;
-                                }
-                                const p = sysBtn.mapToItem(null, 0, 0);
-                                sysPopup.anchor.rect = Qt.rect(p.x, p.y, sysBtn.width, sysBtn.height);
-                                sysPopup.visible = true;
-                            }
+                    // gloss, accent glow and a bright top edge
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: parent.radius
+                        gradient: Gradient {
+                            GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, root.dark ? 0.10 : 0.40) }
+                            GradientStop { position: 0.25; color: Qt.rgba(1, 1, 1, root.dark ? 0.03 : 0.10) }
+                            GradientStop { position: 0.55; color: Qt.rgba(1, 1, 1, 0) }
                         }
                     }
-
-                    // ---- Center: date and time ----
-                    BarButton {
-                        anchors.centerIn: parent
-                        theme: root
-                        visible: root.topShowClock
-                        interactive: false
-                        icon: ""
-                        label: Qt.formatDateTime(clock.date, "dddd, MMM d    " + root.timePattern)
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: parent.radius
+                        gradient: Gradient {
+                            GradientStop { position: 0.6; color: "transparent" }
+                            GradientStop { position: 1.0; color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, root.dark ? 0.12 : 0.08) }
+                        }
+                    }
+                    Rectangle {
+                        anchors.top: parent.top
+                        anchors.topMargin: 1
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        width: parent.width - 60
+                        height: 1
+                        color: Qt.rgba(1, 1, 1, root.dark ? 0.22 : 0.7)
                     }
 
-                    // ---- Right: media, weather, volume ----
-                    RowLayout {
-                        anchors.right: parent.right
-                        anchors.rightMargin: 8
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: 8
+                    // The contents keep their full size and fade in, so they don't squash while the card grows
+                    Item {
+                        id: hubContent
+                        width: root.hubW
+                        height: root.hubH
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        opacity: panel.hubHere ? 1 : 0
+                        Behavior on opacity { NumberAnimation { duration: panel.hubHere ? root.animMs * 3 : root.animMs; easing.type: Easing.OutCubic } }
 
-                        // Media (only shows when something is playing/paused; middle click = play/pause)
-                        BarButton {
-                            id: mediaBtn
-                            theme: root
-                            visible: root.topShowMedia && root.player !== null
-                            icon: root.playing(root.player) ? "" : ""
-                            label: root.player
-                                ? (root.player.trackTitle || root.player.identity)
-                                  + (root.player.trackArtist ? " – " + root.player.trackArtist : "")
-                                : ""
-                            maxLabelWidth: 220
-                            active: mediaPopup.visible
-                            onClicked: mouse => {
-                                if (mouse.button === Qt.MiddleButton) {
-                                    if (root.player && root.player.canTogglePlaying) root.player.togglePlaying();
-                                    return;
-                                }
-                                // Clicking the button also dismisses the popup; don't instantly reopen it
-                                if (Date.now() - panel.mediaClosedAt < 250) return;
-                                if (mediaPopup.visible) {
-                                    mediaPopup.visible = false;
-                                    return;
-                                }
-                                const p = mediaBtn.mapToItem(null, 0, 0);
-                                mediaPopup.anchor.rect = Qt.rect(p.x, p.y, mediaBtn.width, mediaBtn.height);
-                                mediaPopup.visible = true;
-                            }
-                        }
+                        ColumnLayout {
+                            anchors.fill: parent
+                            anchors.margins: 20
+                            spacing: 14
 
-                        // Weather
-                        BarButton {
-                            id: weatherBtn
-                            theme: root
-                            visible: root.topShowWeather
-                            icon: root.wxNow ? root.wxNow.icon : "☁"
-                            label: root.wxNow ? root.wxNow.temp + "°" : "Weather"
-                            active: root.weatherOpen
-                            onClicked: mouse => {
-                                if (Date.now() - root.weatherClosedAt < 250) return;
-                                root.weatherOpen = !root.weatherOpen;
-                            }
-                        }
+                            // ---- Header: big clock + tabs ----
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 14
 
-                        // Volume (scroll to change, middle click to mute)
-                        BarButton {
-                            id: volBtn
-                            theme: root
-                            visible: root.topShowVolume
-                            readonly property var a: volPopup.audio
-                            icon: !a || a.muted ? "" : (a.volume < 0.4 ? "" : "")
-                            label: !a ? "--" : (a.muted ? "Muted" : Math.round(a.volume * 100) + "%")
-                            active: volPopup.visible
-                            onClicked: mouse => {
-                                if (mouse.button === Qt.MiddleButton) {
-                                    if (volPopup.audio) volPopup.audio.muted = !volPopup.audio.muted;
-                                    return;
+                                Column {
+                                    spacing: 0
+                                    Text {
+                                        text: Qt.formatDateTime(clock.date, root.timePattern)
+                                        color: root.fg
+                                        font.pixelSize: 30
+                                        font.bold: true
+                                    }
+                                    Text {
+                                        text: Qt.formatDateTime(clock.date, "dddd, MMMM d")
+                                        color: root.muted
+                                        font.pixelSize: 12
+                                    }
                                 }
-                                if (Date.now() - panel.volClosedAt < 250) return;
-                                if (volPopup.visible) {
-                                    volPopup.visible = false;
-                                    return;
+
+                                Item { Layout.fillWidth: true }
+
+                                Rectangle {
+                                    implicitHeight: 42
+                                    implicitWidth: tabRow.implicitWidth + 8
+                                    radius: 14
+                                    color: root.surface
+                                    border.width: 1
+                                    border.color: root.glassEdge
+
+                                    Row {
+                                        id: tabRow
+                                        anchors.centerIn: parent
+                                        spacing: 3
+
+                                        Repeater {
+                                            model: [
+                                                { name: "Home", icon: "" },
+                                                { name: "Media", icon: "" },
+                                                { name: "Apps", icon: "" },
+                                                { name: "Calendar", icon: "" },
+                                                { name: "Alerts", icon: "" },
+                                                { name: "System", icon: "" }
+                                            ]
+
+                                            delegate: Rectangle {
+                                                id: htab
+                                                required property var modelData
+                                                required property int index
+                                                readonly property bool current: root.hubTab === htab.index
+                                                width: htabRow.implicitWidth + 20
+                                                height: 34
+                                                radius: 11
+                                                color: htab.current ? root.accent : (htabMouse.containsMouse ? root.overlay : "transparent")
+                                                scale: htabMouse.pressed ? 0.94 : 1
+                                                Behavior on color { ColorAnimation { duration: root.animMs } }
+                                                Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+
+                                                Row {
+                                                    id: htabRow
+                                                    anchors.centerIn: parent
+                                                    spacing: 6
+                                                    Text {
+                                                        anchors.verticalCenter: parent.verticalCenter
+                                                        text: htab.modelData.icon
+                                                        color: htab.current ? root.bg : root.accent
+                                                        font.family: root.iconFont
+                                                        font.pixelSize: 13
+                                                    }
+                                                    Text {
+                                                        anchors.verticalCenter: parent.verticalCenter
+                                                        text: htab.modelData.name
+                                                        color: htab.current ? root.bg : root.fg
+                                                        font.pixelSize: 12
+                                                        font.bold: htab.current
+                                                    }
+                                                }
+
+                                                MouseArea {
+                                                    id: htabMouse
+                                                    anchors.fill: parent
+                                                    hoverEnabled: true
+                                                    cursorShape: Qt.PointingHandCursor
+                                                    onClicked: root.hubTab = htab.index
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
-                                const p = volBtn.mapToItem(null, 0, 0);
-                                volPopup.anchor.rect = Qt.rect(p.x, p.y, volBtn.width, volBtn.height);
-                                volPopup.visible = true;
                             }
-                            onWheeled: wheel => {
-                                const a = volPopup.audio;
-                                if (!a) return;
-                                const step = wheel.angleDelta.y > 0 ? root.volumeStep : -root.volumeStep;
-                                a.volume = Math.max(0, Math.min(1, a.volume + step));
+
+                            // ---- Pages ----
+                            StackLayout {
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                currentIndex: root.hubTab
+
+                                // ===== 0: Home =====
+                                ColumnLayout {
+                                    spacing: 12
+
+                                    // Quick toggles
+                                    GridLayout {
+                                        Layout.fillWidth: true
+                                        columns: 4
+                                        rowSpacing: 10
+                                        columnSpacing: 10
+
+                                        Repeater {
+                                            model: [
+                                                {
+                                                    icon: "", title: "Wi-Fi",
+                                                    sub: !root.wifiOn ? "Off" : (root.netKind === "wifi" ? root.netName : "On"),
+                                                    active: root.wifiOn, ok: true,
+                                                    run: () => root.run("nmcli radio wifi " + (root.wifiOn ? "off" : "on"))
+                                                },
+                                                {
+                                                    icon: "", title: "Bluetooth",
+                                                    sub: root.btState === "none" ? "Not available" : (root.btState === "yes" ? "On" : "Off"),
+                                                    active: root.btState === "yes", ok: root.btState !== "none",
+                                                    run: () => root.run("bluetoothctl power " + (root.btState === "yes" ? "off" : "on"))
+                                                },
+                                                {
+                                                    icon: "", title: "Do not disturb",
+                                                    sub: root.dnd ? "On" : "Off",
+                                                    active: root.dnd, ok: true,
+                                                    run: () => { root.dnd = !root.dnd; }
+                                                },
+                                                {
+                                                    icon: "", title: "Night light",
+                                                    sub: root.nightState === "none" ? "Needs hyprsunset" : (root.nightState === "on" ? "On" : "Off"),
+                                                    active: root.nightState === "on", ok: root.nightState !== "none",
+                                                    run: () => root.run(root.nightState === "on" ? "pkill -x hyprsunset" : "hyprsunset -t 4000 >/dev/null 2>&1")
+                                                },
+                                                {
+                                                    icon: "", title: "Screenshot", sub: "Select an area",
+                                                    active: false, ok: true,
+                                                    run: () => root.takeScreenshot()
+                                                },
+                                                {
+                                                    icon: "", title: "Theme",
+                                                    sub: root.themeMode === "auto" ? "Auto" : (root.themeMode === "dark" ? "Dark" : "Light"),
+                                                    active: false, ok: true,
+                                                    run: () => root.cycleTheme()
+                                                },
+                                                {
+                                                    icon: "", title: "Auto-hide bars",
+                                                    sub: root.autoHideOn ? "On" : "Off",
+                                                    active: root.autoHideOn, ok: true,
+                                                    run: () => root.cycleAutoHide()
+                                                },
+                                                {
+                                                    icon: "", title: "Wallpaper", sub: "Choose one",
+                                                    active: false, ok: true,
+                                                    run: () => { root.hubOpen = false; root.wallPickerOpen = true; }
+                                                }
+                                            ]
+
+                                            delegate: Rectangle {
+                                                id: tgl
+                                                required property var modelData
+                                                Layout.fillWidth: true
+                                                Layout.preferredHeight: 70
+                                                radius: 20
+                                                color: tgl.modelData.active ? root.accent : (tglMouse.containsMouse ? root.overlay : root.surface)
+                                                border.width: 1
+                                                border.color: root.glassEdge
+                                                opacity: tgl.modelData.ok ? 1 : 0.45
+                                                scale: tglMouse.pressed ? 0.95 : (tglMouse.containsMouse && tgl.modelData.ok ? 1.03 : 1)
+                                                Behavior on color { ColorAnimation { duration: root.animMs } }
+                                                Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+
+                                                RowLayout {
+                                                    anchors.fill: parent
+                                                    anchors.margins: 12
+                                                    spacing: 10
+
+                                                    Rectangle {
+                                                        Layout.preferredWidth: 38
+                                                        Layout.preferredHeight: 38
+                                                        radius: 19
+                                                        color: tgl.modelData.active ? Qt.rgba(1, 1, 1, 0.25) : root.overlay
+
+                                                        Text {
+                                                            anchors.centerIn: parent
+                                                            text: tgl.modelData.icon
+                                                            color: tgl.modelData.active ? root.bg : root.accent
+                                                            font.family: root.iconFont
+                                                            font.pixelSize: 15
+                                                        }
+                                                    }
+
+                                                    ColumnLayout {
+                                                        Layout.fillWidth: true
+                                                        spacing: 1
+                                                        Text {
+                                                            Layout.fillWidth: true
+                                                            text: tgl.modelData.title
+                                                            color: tgl.modelData.active ? root.bg : root.fg
+                                                            font.pixelSize: 13
+                                                            font.bold: true
+                                                            elide: Text.ElideRight
+                                                        }
+                                                        Text {
+                                                            Layout.fillWidth: true
+                                                            text: tgl.modelData.sub
+                                                            color: tgl.modelData.active ? root.bg : root.muted
+                                                            font.pixelSize: 11
+                                                            elide: Text.ElideRight
+                                                        }
+                                                    }
+                                                }
+
+                                                MouseArea {
+                                                    id: tglMouse
+                                                    anchors.fill: parent
+                                                    hoverEnabled: true
+                                                    cursorShape: tgl.modelData.ok ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                                    onClicked: if (tgl.modelData.ok) tgl.modelData.run()
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // Now playing + stats
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        Layout.preferredHeight: 150
+                                        spacing: 12
+
+                                        HubCard {
+                                            theme: root
+                                            Layout.fillWidth: true
+                                            Layout.fillHeight: true
+
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: root.hubTab = 1
+                                            }
+
+                                            RowLayout {
+                                                anchors.fill: parent
+                                                anchors.margins: 14
+                                                spacing: 14
+                                                visible: root.player !== null
+
+                                                Rectangle {
+                                                    Layout.preferredWidth: 110
+                                                    Layout.preferredHeight: 110
+                                                    radius: 16
+                                                    color: root.overlay
+                                                    clip: true
+                                                    Image {
+                                                        anchors.fill: parent
+                                                        source: root.player ? root.player.trackArtUrl : ""
+                                                        fillMode: Image.PreserveAspectCrop
+                                                        visible: status === Image.Ready
+                                                    }
+                                                    Text {
+                                                        anchors.centerIn: parent
+                                                        visible: !root.player || root.player.trackArtUrl === ""
+                                                        text: ""
+                                                        color: root.muted
+                                                        font.family: root.iconFont
+                                                        font.pixelSize: 30
+                                                    }
+                                                }
+
+                                                ColumnLayout {
+                                                    Layout.fillWidth: true
+                                                    spacing: 3
+                                                    Text {
+                                                        Layout.fillWidth: true
+                                                        text: root.player ? (root.player.trackTitle || root.player.identity) : ""
+                                                        color: root.fg
+                                                        font.pixelSize: 15
+                                                        font.bold: true
+                                                        elide: Text.ElideRight
+                                                    }
+                                                    Text {
+                                                        Layout.fillWidth: true
+                                                        text: root.player ? root.player.trackArtist : ""
+                                                        color: root.muted
+                                                        font.pixelSize: 12
+                                                        elide: Text.ElideRight
+                                                    }
+                                                    Item { Layout.fillHeight: true }
+                                                    RowLayout {
+                                                        spacing: 6
+                                                        IconButton {
+                                                            theme: root
+                                                            label: "|◀"
+                                                            dim: !(root.player && root.player.canGoPrevious)
+                                                            onClicked: if (root.player && root.player.canGoPrevious) root.player.previous()
+                                                        }
+                                                        IconButton {
+                                                            theme: root
+                                                            implicitWidth: 54
+                                                            label: root.playing(root.player) ? "❚❚" : "▶"
+                                                            dim: !(root.player && root.player.canTogglePlaying)
+                                                            onClicked: if (root.player && root.player.canTogglePlaying) root.player.togglePlaying()
+                                                        }
+                                                        IconButton {
+                                                            theme: root
+                                                            label: "▶|"
+                                                            dim: !(root.player && root.player.canGoNext)
+                                                            onClicked: if (root.player && root.player.canGoNext) root.player.next()
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            Column {
+                                                anchors.centerIn: parent
+                                                visible: root.player === null
+                                                spacing: 6
+                                                Text {
+                                                    anchors.horizontalCenter: parent.horizontalCenter
+                                                    text: ""
+                                                    color: root.muted
+                                                    font.family: root.iconFont
+                                                    font.pixelSize: 26
+                                                }
+                                                Text {
+                                                    anchors.horizontalCenter: parent.horizontalCenter
+                                                    text: "Nothing playing"
+                                                    color: root.muted
+                                                    font.pixelSize: 13
+                                                }
+                                            }
+                                        }
+
+                                        HubCard {
+                                            theme: root
+                                            Layout.preferredWidth: 300
+                                            Layout.fillHeight: true
+
+                                            ColumnLayout {
+                                                anchors.fill: parent
+                                                anchors.margins: 14
+                                                spacing: 8
+
+                                                Repeater {
+                                                    model: [
+                                                        { name: "CPU", icon: "", value: root.cpuUsage, extra: root.cpuTemp >= 0 ? root.cpuTemp + "°C" : "", show: true },
+                                                        { name: "RAM", icon: "", value: root.memUsage, extra: "", show: true },
+                                                        { name: "GPU", icon: "", value: root.gpuUse >= 0 ? root.gpuUse / 100 : 0, extra: root.gpuTemp >= 0 ? root.gpuTemp + "°C" : "", show: root.gpuUse >= 0 }
+                                                    ]
+
+                                                    delegate: ColumnLayout {
+                                                        id: st
+                                                        required property var modelData
+                                                        visible: st.modelData.show
+                                                        Layout.fillWidth: true
+                                                        spacing: 4
+
+                                                        RowLayout {
+                                                            Layout.fillWidth: true
+                                                            spacing: 7
+                                                            Text {
+                                                                text: st.modelData.icon
+                                                                color: root.accent
+                                                                font.family: root.iconFont
+                                                                font.pixelSize: 12
+                                                            }
+                                                            Text {
+                                                                Layout.fillWidth: true
+                                                                text: st.modelData.name
+                                                                color: root.fg
+                                                                font.pixelSize: 12
+                                                            }
+                                                            Text {
+                                                                visible: st.modelData.extra !== ""
+                                                                text: st.modelData.extra
+                                                                color: root.muted
+                                                                font.pixelSize: 11
+                                                            }
+                                                            Text {
+                                                                text: Math.round(st.modelData.value * 100) + "%"
+                                                                color: root.fg
+                                                                font.pixelSize: 12
+                                                                font.bold: true
+                                                            }
+                                                        }
+                                                        Rectangle {
+                                                            Layout.fillWidth: true
+                                                            implicitHeight: 6
+                                                            radius: 3
+                                                            color: root.overlay
+                                                            Rectangle {
+                                                                width: parent.width * Math.max(0, Math.min(1, st.modelData.value))
+                                                                height: parent.height
+                                                                radius: 3
+                                                                color: root.accent
+                                                                Behavior on width { NumberAnimation { duration: 400; easing.type: Easing.OutCubic } }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                Item { Layout.fillHeight: true }
+                                            }
+                                        }
+                                    }
+
+                                    // Volume
+                                    HubCard {
+                                        theme: root
+                                        Layout.fillWidth: true
+                                        Layout.preferredHeight: 52
+
+                                        RowLayout {
+                                            anchors.fill: parent
+                                            anchors.leftMargin: 16
+                                            anchors.rightMargin: 16
+                                            spacing: 12
+
+                                            Text {
+                                                text: root.volIcon(root.sink ? root.sink.audio : null)
+                                                color: root.accent
+                                                font.family: root.iconFont
+                                                font.pixelSize: 16
+                                                MouseArea {
+                                                    anchors.fill: parent
+                                                    anchors.margins: -6
+                                                    cursorShape: Qt.PointingHandCursor
+                                                    onClicked: if (root.sink && root.sink.audio) root.sink.audio.muted = !root.sink.audio.muted
+                                                }
+                                            }
+                                            ValueBar {
+                                                theme: root
+                                                Layout.fillWidth: true
+                                                value: root.sink && root.sink.audio ? root.sink.audio.volume : 0
+                                                onMoved: v => {
+                                                    if (root.sink && root.sink.audio) root.sink.audio.volume = v;
+                                                }
+                                            }
+                                            Text {
+                                                Layout.preferredWidth: 44
+                                                horizontalAlignment: Text.AlignRight
+                                                text: root.sink && root.sink.audio
+                                                    ? (root.sink.audio.muted ? "Muted" : Math.round(root.sink.audio.volume * 100) + "%") : "--"
+                                                color: root.fg
+                                                font.pixelSize: 12
+                                            }
+                                        }
+                                    }
+
+                                    Item { Layout.fillHeight: true }
+                                }
+
+                                // ===== 1: Media =====
+                                HubCard {
+                                    theme: root
+
+                                    RowLayout {
+                                        anchors.fill: parent
+                                        anchors.margins: 24
+                                        spacing: 26
+                                        visible: root.player !== null
+
+                                        Rectangle {
+                                            Layout.preferredWidth: 260
+                                            Layout.preferredHeight: 260
+                                            radius: 24
+                                            color: root.overlay
+                                            clip: true
+                                            Image {
+                                                anchors.fill: parent
+                                                source: root.player ? root.player.trackArtUrl : ""
+                                                fillMode: Image.PreserveAspectCrop
+                                                visible: status === Image.Ready
+                                            }
+                                            Text {
+                                                anchors.centerIn: parent
+                                                visible: !root.player || root.player.trackArtUrl === ""
+                                                text: ""
+                                                color: root.muted
+                                                font.family: root.iconFont
+                                                font.pixelSize: 60
+                                            }
+                                            Rectangle {
+                                                anchors.fill: parent
+                                                radius: parent.radius
+                                                gradient: Gradient {
+                                                    GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, 0.18) }
+                                                    GradientStop { position: 0.4; color: Qt.rgba(1, 1, 1, 0) }
+                                                }
+                                            }
+                                        }
+
+                                        ColumnLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 6
+
+                                            Text {
+                                                Layout.fillWidth: true
+                                                text: root.player ? (root.player.trackTitle || "Unknown title") : ""
+                                                color: root.fg
+                                                font.pixelSize: 22
+                                                font.bold: true
+                                                wrapMode: Text.Wrap
+                                                maximumLineCount: 2
+                                                elide: Text.ElideRight
+                                            }
+                                            Text {
+                                                Layout.fillWidth: true
+                                                text: root.player ? root.player.trackArtist : ""
+                                                color: root.muted
+                                                font.pixelSize: 15
+                                                elide: Text.ElideRight
+                                            }
+                                            Text {
+                                                Layout.fillWidth: true
+                                                text: root.player ? root.player.identity : ""
+                                                color: root.accent
+                                                font.pixelSize: 12
+                                            }
+
+                                            Item { Layout.preferredHeight: 18 }
+
+                                            // seek bar (position only updates when asked, so poll while visible)
+                                            Timer {
+                                                interval: 1000
+                                                repeat: true
+                                                running: panel.hubHere && root.hubTab === 1 && root.playing(root.player)
+                                                onTriggered: root.player.positionChanged()
+                                            }
+                                            ValueBar {
+                                                theme: root
+                                                Layout.fillWidth: true
+                                                value: root.player && root.player.length > 0 ? root.player.position / root.player.length : 0
+                                                onMoved: v => {
+                                                    const p = root.player;
+                                                    if (p && p.canSeek && p.length > 0) p.position = v * p.length;
+                                                }
+                                            }
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                Text {
+                                                    text: root.fmt(root.player ? root.player.position : 0)
+                                                    color: root.muted
+                                                    font.pixelSize: 11
+                                                }
+                                                Item { Layout.fillWidth: true }
+                                                Text {
+                                                    text: root.fmt(root.player ? root.player.length : 0)
+                                                    color: root.muted
+                                                    font.pixelSize: 11
+                                                }
+                                            }
+
+                                            RowLayout {
+                                                Layout.alignment: Qt.AlignHCenter
+                                                spacing: 12
+                                                IconButton {
+                                                    theme: root
+                                                    implicitWidth: 60
+                                                    implicitHeight: 46
+                                                    label: "|◀"
+                                                    dim: !(root.player && root.player.canGoPrevious)
+                                                    onClicked: if (root.player && root.player.canGoPrevious) root.player.previous()
+                                                }
+                                                IconButton {
+                                                    theme: root
+                                                    implicitWidth: 76
+                                                    implicitHeight: 46
+                                                    label: root.playing(root.player) ? "❚❚" : "▶"
+                                                    dim: !(root.player && root.player.canTogglePlaying)
+                                                    onClicked: if (root.player && root.player.canTogglePlaying) root.player.togglePlaying()
+                                                }
+                                                IconButton {
+                                                    theme: root
+                                                    implicitWidth: 60
+                                                    implicitHeight: 46
+                                                    label: "▶|"
+                                                    dim: !(root.player && root.player.canGoNext)
+                                                    onClicked: if (root.player && root.player.canGoNext) root.player.next()
+                                                }
+                                            }
+
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                visible: root.player && root.player.volumeSupported
+                                                spacing: 10
+                                                Text {
+                                                    text: "Player"
+                                                    color: root.muted
+                                                    font.pixelSize: 12
+                                                }
+                                                ValueBar {
+                                                    theme: root
+                                                    Layout.fillWidth: true
+                                                    value: root.player ? root.player.volume : 0
+                                                    onMoved: v => {
+                                                        if (root.player && root.player.volumeSupported) root.player.volume = v;
+                                                    }
+                                                }
+                                            }
+                                            Item { Layout.fillHeight: true }
+                                        }
+                                    }
+
+                                    Column {
+                                        anchors.centerIn: parent
+                                        visible: root.player === null
+                                        spacing: 8
+                                        Text {
+                                            anchors.horizontalCenter: parent.horizontalCenter
+                                            text: ""
+                                            color: root.muted
+                                            font.family: root.iconFont
+                                            font.pixelSize: 44
+                                        }
+                                        Text {
+                                            anchors.horizontalCenter: parent.horizontalCenter
+                                            text: "Nothing playing right now"
+                                            color: root.muted
+                                            font.pixelSize: 14
+                                        }
+                                    }
+                                }
+
+                                // ===== 2: Apps =====
+                                ColumnLayout {
+                                    spacing: 10
+
+                                    Text {
+                                        text: "Pinned"
+                                        color: root.fg
+                                        font.pixelSize: 14
+                                        font.bold: true
+                                    }
+                                    Flow {
+                                        Layout.fillWidth: true
+                                        spacing: 6
+                                        Repeater {
+                                            model: panel.hubHere && root.hubTab === 2 ? root.appsForTab(3, "") : []
+                                            delegate: AppTile {
+                                                required property var modelData
+                                                theme: root
+                                                entry: modelData
+                                                onLaunched: { root.hubOpen = false; root.launchApp(modelData); }
+                                            }
+                                        }
+                                    }
+
+                                    Text {
+                                        text: "Recent"
+                                        color: root.fg
+                                        font.pixelSize: 14
+                                        font.bold: true
+                                    }
+                                    Flow {
+                                        Layout.fillWidth: true
+                                        spacing: 6
+                                        Repeater {
+                                            model: panel.hubHere && root.hubTab === 2 ? root.appsForTab(1, "").slice(0, 8) : []
+                                            delegate: AppTile {
+                                                required property var modelData
+                                                theme: root
+                                                entry: modelData
+                                                onLaunched: { root.hubOpen = false; root.launchApp(modelData); }
+                                            }
+                                        }
+                                    }
+
+                                    Item { Layout.fillHeight: true }
+
+                                    BarButton {
+                                        theme: root
+                                        Layout.alignment: Qt.AlignHCenter
+                                        icon: ""
+                                        label: "All apps"
+                                        onClicked: mouse => { root.hubOpen = false; root.launcherOpen = true; }
+                                    }
+                                }
+
+                                // ===== 3: Calendar =====
+                                RowLayout {
+                                    spacing: 12
+
+                                    HubCard {
+                                        theme: root
+                                        Layout.fillWidth: true
+                                        Layout.fillHeight: true
+
+                                        ColumnLayout {
+                                            anchors.fill: parent
+                                            anchors.margins: 16
+                                            spacing: 8
+
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                Text {
+                                                    Layout.fillWidth: true
+                                                    text: panel.calInfo.title
+                                                    color: root.fg
+                                                    font.pixelSize: 17
+                                                    font.bold: true
+                                                }
+                                                IconButton { theme: root; implicitWidth: 36; implicitHeight: 30; label: "‹"; onClicked: root.calOffset -= 1 }
+                                                IconButton { theme: root; implicitWidth: 60; implicitHeight: 30; label: "Today"; onClicked: root.calOffset = 0 }
+                                                IconButton { theme: root; implicitWidth: 36; implicitHeight: 30; label: "›"; onClicked: root.calOffset += 1 }
+                                            }
+
+                                            GridLayout {
+                                                Layout.fillWidth: true
+                                                Layout.fillHeight: true
+                                                columns: 7
+                                                rowSpacing: 4
+                                                columnSpacing: 4
+
+                                                Repeater {
+                                                    model: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+                                                    delegate: Text {
+                                                        required property string modelData
+                                                        Layout.fillWidth: true
+                                                        horizontalAlignment: Text.AlignHCenter
+                                                        text: modelData
+                                                        color: root.muted
+                                                        font.pixelSize: 11
+                                                        font.bold: true
+                                                    }
+                                                }
+
+                                                Repeater {
+                                                    model: panel.calInfo.days
+                                                    delegate: Rectangle {
+                                                        id: cday
+                                                        required property var modelData
+                                                        Layout.fillWidth: true
+                                                        Layout.fillHeight: true
+                                                        radius: 12
+                                                        color: cday.modelData.today ? root.accent : (cdayHover.hovered ? root.overlay : "transparent")
+
+                                                        HoverHandler { id: cdayHover }
+
+                                                        Text {
+                                                            anchors.centerIn: parent
+                                                            text: cday.modelData.n
+                                                            color: cday.modelData.today ? root.bg : (cday.modelData.inMonth ? root.fg : root.muted)
+                                                            opacity: cday.modelData.inMonth ? 1 : 0.45
+                                                            font.pixelSize: 13
+                                                            font.bold: cday.modelData.today
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    ColumnLayout {
+                                        Layout.preferredWidth: 230
+                                        Layout.fillHeight: true
+                                        spacing: 12
+
+                                        HubCard {
+                                            theme: root
+                                            Layout.fillWidth: true
+                                            Layout.preferredHeight: 170
+
+                                            Column {
+                                                anchors.centerIn: parent
+                                                spacing: 2
+                                                Text {
+                                                    anchors.horizontalCenter: parent.horizontalCenter
+                                                    text: Qt.formatDateTime(clock.date, "dddd")
+                                                    color: root.accent
+                                                    font.pixelSize: 14
+                                                    font.bold: true
+                                                }
+                                                Text {
+                                                    anchors.horizontalCenter: parent.horizontalCenter
+                                                    text: Qt.formatDateTime(clock.date, "d")
+                                                    color: root.fg
+                                                    font.pixelSize: 64
+                                                    font.bold: true
+                                                }
+                                                Text {
+                                                    anchors.horizontalCenter: parent.horizontalCenter
+                                                    text: Qt.formatDateTime(clock.date, "MMMM yyyy")
+                                                    color: root.muted
+                                                    font.pixelSize: 12
+                                                }
+                                            }
+                                        }
+
+                                        HubCard {
+                                            theme: root
+                                            Layout.fillWidth: true
+                                            Layout.fillHeight: true
+
+                                            ColumnLayout {
+                                                anchors.fill: parent
+                                                anchors.margins: 16
+                                                spacing: 4
+
+                                                Text {
+                                                    text: root.weatherName
+                                                    color: root.muted
+                                                    font.pixelSize: 11
+                                                }
+                                                RowLayout {
+                                                    spacing: 10
+                                                    Text {
+                                                        text: root.wxNow ? root.wxNow.icon : "☁"
+                                                        color: root.accent
+                                                        font.pixelSize: 34
+                                                    }
+                                                    Text {
+                                                        text: root.wxNow ? root.wxNow.temp + "°" : "--"
+                                                        color: root.fg
+                                                        font.pixelSize: 32
+                                                        font.bold: true
+                                                    }
+                                                }
+                                                Text {
+                                                    Layout.fillWidth: true
+                                                    text: root.wxNow ? root.wxNow.desc + "  ·  H " + root.wxNow.hi + "°  L " + root.wxNow.lo + "°" : root.wxStatus
+                                                    color: root.muted
+                                                    font.pixelSize: 12
+                                                    elide: Text.ElideRight
+                                                }
+                                                Item { Layout.fillHeight: true }
+                                                BarButton {
+                                                    theme: root
+                                                    Layout.fillWidth: true
+                                                    icon: ""
+                                                    label: "Full forecast"
+                                                    onClicked: mouse => { root.hubOpen = false; root.weatherOpen = true; }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // ===== 4: Alerts =====
+                                ColumnLayout {
+                                    spacing: 10
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: notifServer.trackedNotifications.values.length > 0
+                                                ? notifServer.trackedNotifications.values.length + " notifications" : "Notifications"
+                                            color: root.fg
+                                            font.pixelSize: 15
+                                            font.bold: true
+                                        }
+                                        BarButton {
+                                            theme: root
+                                            icon: ""
+                                            label: root.dnd ? "Do not disturb: on" : "Do not disturb: off"
+                                            active: root.dnd
+                                            onClicked: mouse => { root.dnd = !root.dnd; }
+                                        }
+                                        BarButton {
+                                            theme: root
+                                            icon: ""
+                                            label: "Clear all"
+                                            onClicked: mouse => root.clearNotifications()
+                                        }
+                                    }
+
+                                    Item {
+                                        Layout.fillWidth: true
+                                        Layout.fillHeight: true
+
+                                        ListView {
+                                            id: hubNotifs
+                                            anchors.fill: parent
+                                            clip: true
+                                            spacing: 8
+                                            model: notifServer.trackedNotifications
+
+                                            delegate: HubCard {
+                                                id: hn
+                                                required property var modelData
+                                                theme: root
+                                                width: hubNotifs.width
+                                                height: hnCol.implicitHeight + 24
+                                                border.color: hn.modelData.urgency === NotificationUrgency.Critical ? root.danger : root.glassEdge
+
+                                                ColumnLayout {
+                                                    id: hnCol
+                                                    anchors.fill: parent
+                                                    anchors.margins: 12
+                                                    spacing: 3
+
+                                                    RowLayout {
+                                                        Layout.fillWidth: true
+                                                        Text {
+                                                            Layout.fillWidth: true
+                                                            text: hn.modelData.appName
+                                                            color: root.accent
+                                                            font.pixelSize: 11
+                                                            font.bold: true
+                                                            elide: Text.ElideRight
+                                                        }
+                                                        Text {
+                                                            text: ""
+                                                            color: root.muted
+                                                            font.family: root.iconFont
+                                                            font.pixelSize: 12
+                                                            MouseArea {
+                                                                anchors.fill: parent
+                                                                anchors.margins: -6
+                                                                cursorShape: Qt.PointingHandCursor
+                                                                onClicked: hn.modelData.dismiss()
+                                                            }
+                                                        }
+                                                    }
+                                                    Text {
+                                                        Layout.fillWidth: true
+                                                        text: hn.modelData.summary
+                                                        color: root.fg
+                                                        font.pixelSize: 13
+                                                        font.bold: true
+                                                        wrapMode: Text.Wrap
+                                                    }
+                                                    Text {
+                                                        Layout.fillWidth: true
+                                                        visible: text !== ""
+                                                        text: hn.modelData.body
+                                                        color: root.muted
+                                                        font.pixelSize: 12
+                                                        wrapMode: Text.Wrap
+                                                        maximumLineCount: 3
+                                                        elide: Text.ElideRight
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        Column {
+                                            anchors.centerIn: parent
+                                            visible: hubNotifs.count === 0
+                                            spacing: 8
+                                            Text {
+                                                anchors.horizontalCenter: parent.horizontalCenter
+                                                text: ""
+                                                color: root.muted
+                                                font.family: root.iconFont
+                                                font.pixelSize: 40
+                                            }
+                                            Text {
+                                                anchors.horizontalCenter: parent.horizontalCenter
+                                                text: "You're all caught up"
+                                                color: root.muted
+                                                font.pixelSize: 14
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // ===== 5: System =====
+                                ColumnLayout {
+                                    spacing: 12
+
+                                    HubCard {
+                                        theme: root
+                                        Layout.fillWidth: true
+                                        Layout.fillHeight: true
+
+                                        ColumnLayout {
+                                            anchors.fill: parent
+                                            anchors.margins: 16
+                                            spacing: 10
+
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 10
+                                                Text {
+                                                    Layout.preferredWidth: 110
+                                                    text: "Output"
+                                                    color: root.fg
+                                                    font.pixelSize: 13
+                                                    font.bold: true
+                                                }
+                                                ValueBar {
+                                                    theme: root
+                                                    Layout.fillWidth: true
+                                                    value: root.sink && root.sink.audio ? root.sink.audio.volume : 0
+                                                    onMoved: v => {
+                                                        if (root.sink && root.sink.audio) root.sink.audio.volume = v;
+                                                    }
+                                                }
+                                                IconButton {
+                                                    theme: root
+                                                    implicitWidth: 70
+                                                    implicitHeight: 28
+                                                    label: root.sink && root.sink.audio && root.sink.audio.muted ? "Unmute" : "Mute"
+                                                    onClicked: if (root.sink && root.sink.audio) root.sink.audio.muted = !root.sink.audio.muted
+                                                }
+                                            }
+
+                                            Text {
+                                                Layout.fillWidth: true
+                                                text: root.sink ? (root.sink.description || root.sink.name) : "No output device"
+                                                color: root.muted
+                                                font.pixelSize: 11
+                                                elide: Text.ElideRight
+                                            }
+
+                                            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.overlay }
+
+                                            Text {
+                                                text: root.audioStreams.length > 0 ? "Apps" : "No apps are playing audio"
+                                                color: root.muted
+                                                font.pixelSize: 11
+                                            }
+
+                                            ListView {
+                                                id: hubStreams
+                                                Layout.fillWidth: true
+                                                Layout.fillHeight: true
+                                                clip: true
+                                                spacing: 8
+                                                model: root.audioStreams
+
+                                                delegate: RowLayout {
+                                                    id: hs
+                                                    required property var modelData
+                                                    width: hubStreams.width
+                                                    spacing: 10
+                                                    Text {
+                                                        Layout.preferredWidth: 110
+                                                        text: (hs.modelData.properties && hs.modelData.properties["application.name"])
+                                                            || hs.modelData.description || hs.modelData.name
+                                                        color: root.fg
+                                                        font.pixelSize: 12
+                                                        elide: Text.ElideRight
+                                                    }
+                                                    ValueBar {
+                                                        theme: root
+                                                        Layout.fillWidth: true
+                                                        value: hs.modelData.audio ? hs.modelData.audio.volume : 0
+                                                        onMoved: v => {
+                                                            if (hs.modelData.audio) hs.modelData.audio.volume = v;
+                                                        }
+                                                    }
+                                                    Item { Layout.preferredWidth: 70 }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 8
+                                        BarButton { theme: root; Layout.fillWidth: true; icon: ""; label: "Lock"
+                                            onClicked: mouse => { root.hubOpen = false; Quickshell.execDetached(["sh", "-c", "hyprlock || loginctl lock-session"]); } }
+                                        BarButton { theme: root; Layout.fillWidth: true; icon: ""; label: "Sleep"
+                                            onClicked: mouse => { root.hubOpen = false; Quickshell.execDetached(["systemctl", "suspend"]); } }
+                                        BarButton { theme: root; Layout.fillWidth: true; icon: ""; label: "Reload Hyprland"
+                                            onClicked: mouse => { root.hubOpen = false; Quickshell.execDetached(["hyprctl", "reload"]); } }
+                                        BarButton { theme: root; Layout.fillWidth: true; icon: ""; label: "Restart bar"
+                                            onClicked: mouse => Quickshell.reload(true) }
+                                        BarButton { theme: root; Layout.fillWidth: true; icon: ""; label: "Config"
+                                            onClicked: mouse => { root.hubOpen = false; Quickshell.execDetached(["xdg-open", Quickshell.env("HOME") + "/.config"]); } }
+                                    }
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 8
+                                        ConfirmButton {
+                                            theme: root
+                                            Layout.fillWidth: true
+                                            label: "Log out"
+                                            onConfirmed: Quickshell.execDetached(["hyprctl", "dispatch", "exit"])
+                                        }
+                                        ConfirmButton {
+                                            theme: root
+                                            Layout.fillWidth: true
+                                            label: "Reboot"
+                                            onConfirmed: Quickshell.execDetached(["systemctl", "reboot"])
+                                        }
+                                        ConfirmButton {
+                                            theme: root
+                                            Layout.fillWidth: true
+                                            label: "Shut down"
+                                            onConfirmed: Quickshell.execDetached(["systemctl", "poweroff"])
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

@@ -102,6 +102,7 @@ heroic-games-launcher
 hwdetect
 hwinfo
 hyprpaper
+hyprsunset
 inetutils
 intel-ucode
 iwd
