@@ -122,6 +122,7 @@ ShellRoot {
             property string sportsFav: ""        // favourite team: "league|teamId|ABBR"
             property bool gameMode: false        // game mode stays on across restarts
             property bool restoreSession: true   // reopen apps on their desktops after logging in
+            property bool topPillAlways: true    // the top pill stays on screen (no pull tab)
         }
     }
 
@@ -2405,6 +2406,47 @@ ShellRoot {
         }
     }
 
+    // ---------- Audio waves for the pill ----------
+    // Real levels from cava (if installed) while something plays; a gentle bounce otherwise.
+    property var waveLevels: [0.15, 0.15, 0.15, 0.15, 0.15]
+    property bool cavaMissing: false
+    readonly property bool wavesWanted: !!player && player.isPlaying && !gameMode
+
+    Process {
+        id: cavaProc
+        running: root.wavesWanted && !root.cavaMissing
+        command: ["sh", "-c",
+            'command -v cava >/dev/null 2>&1 || exit 3; '
+            + 'cfg="${XDG_RUNTIME_DIR:-/tmp}/joeos-cava.conf"; '
+            + 'printf "[general]\\nbars = 5\\nframerate = 30\\n[output]\\nmethod = raw\\nraw_target = /dev/stdout\\n'
+            + 'data_format = ascii\\nascii_max_range = 100\\nbar_delimiter = 59\\nframe_delimiter = 10\\n'
+            + '[smoothing]\\nnoise_reduction = 60\\n" > "$cfg"; exec cava -p "$cfg"']
+        stdout: SplitParser {
+            onRead: line => {
+                const parts = line.split(";");
+                const lv = [];
+                for (let i = 0; i < 5; i++) lv.push(Math.max(0.12, Math.min(1, (parseInt(parts[i]) || 0) / 100)));
+                root.waveLevels = lv;
+            }
+        }
+        onExited: code => {
+            if (code === 3) root.cavaMissing = true;
+            if (!root.wavesWanted) root.waveLevels = [0.15, 0.15, 0.15, 0.15, 0.15];
+        }
+    }
+    // no cava: a soft fake bounce so the waves still move while music plays
+    Timer {
+        interval: 140
+        repeat: true
+        running: root.wavesWanted && root.cavaMissing
+        onTriggered: {
+            const lv = [];
+            for (let i = 0; i < 5; i++) lv.push(0.25 + Math.random() * (i === 2 ? 0.75 : 0.6));
+            root.waveLevels = lv;
+        }
+    }
+    onWavesWantedChanged: if (!wavesWanted) waveLevels = [0.15, 0.15, 0.15, 0.15, 0.15]
+
     // ---------- Login screen wallpaper ----------
     // Keeps a copy of the current wallpaper where the login screen (Plasma Login / SDDM) can read it.
     // Only does anything after the one-time setup (login-wallpaper-setup) made that folder yours.
@@ -4019,7 +4061,7 @@ ShellRoot {
             // With auto-hide on, the pill stays tucked away until you click the little tab at the
             // top of the screen (no more popping out when the mouse brushes the edge). Click the
             // tab again to tuck it away. Windows make room while it's out.
-            readonly property bool wantHide: root.autoHideOn
+            readonly property bool wantHide: root.autoHideOn && !pins.adapter.topPillAlways   // the top pill always shows
             readonly property bool popupOpen: hubHere
             readonly property bool keepOpen: !wantHide || popupOpen || root.topBarOpen
             readonly property bool barShown: keepOpen
@@ -4173,6 +4215,200 @@ ShellRoot {
                     }
 
                     Rectangle { anchors.verticalCenter: parent.verticalCenter; width: 4; height: 4; radius: 2; color: root.muted }
+
+                    // ---- Now playing (only while something has a player open) ----
+                    Rectangle {
+                        id: pillMedia
+                        visible: !!root.player
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: pmRow.implicitWidth + 14
+                        height: 30
+                        radius: 15
+                        color: pmHover.hovered ? Qt.rgba(1, 1, 1, 0.10) : Qt.rgba(1, 1, 1, 0.055)
+                        border.width: 1
+                        border.color: root.glassEdge
+                        Behavior on color { ColorAnimation { duration: root.animMs } }
+                        Behavior on width { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutCubic } }
+
+                        HoverHandler { id: pmHover }
+
+                        // a soft shine along the top, like the rest of the glass
+                        Rectangle {
+                            anchors.fill: parent
+                            anchors.margins: 1
+                            radius: parent.radius
+                            gradient: Gradient {
+                                GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, 0.10) }
+                                GradientStop { position: 0.5; color: Qt.rgba(1, 1, 1, 0) }
+                            }
+                        }
+
+                        Row {
+                            id: pmRow
+                            anchors.verticalCenter: parent.verticalCenter
+                            x: 4
+                            spacing: 9
+
+                            // album art (rounded) – click art or title to open the full player
+                            Item {
+                                id: pmArtBox
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 22
+                                height: 22
+                                Rectangle {
+                                    anchors.fill: parent
+                                    radius: 11
+                                    color: root.overlay
+                                    Text {
+                                        anchors.centerIn: parent
+                                        visible: pmArt.status !== Image.Ready
+                                        text: ""
+                                        color: root.muted
+                                        font.family: root.iconFont
+                                        font.pixelSize: 10
+                                    }
+                                }
+                                Image {
+                                    id: pmArt
+                                    anchors.fill: parent
+                                    source: root.player ? (root.player.trackArtUrl || "") : ""
+                                    sourceSize.width: 64
+                                    sourceSize.height: 64
+                                    fillMode: Image.PreserveAspectCrop
+                                    visible: false
+                                    asynchronous: true
+                                }
+                                Item {
+                                    id: pmArtMask
+                                    anchors.fill: parent
+                                    layer.enabled: true
+                                    visible: false
+                                    Rectangle { anchors.fill: parent; radius: 11; color: "black" }
+                                }
+                                MultiEffect {
+                                    anchors.fill: parent
+                                    source: pmArt
+                                    maskEnabled: true
+                                    maskSource: pmArtMask
+                                    visible: pmArt.status === Image.Ready
+                                }
+                                // slowly spins like a record while playing
+                                RotationAnimation on rotation {
+                                    running: !!root.player && root.player.isPlaying && root.animMs > 0
+                                    from: 0
+                                    to: 360
+                                    duration: 12000
+                                    loops: Animation.Infinite
+                                }
+                            }
+
+                            // title, scrolling slowly when it's too long and you point at it
+                            Item {
+                                id: pmTitleBox
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: Math.min(pmTitle.implicitWidth, 190)
+                                height: 18
+                                clip: true
+                                Text {
+                                    id: pmTitle
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: root.player ? (root.player.trackTitle || root.player.identity || "") : ""
+                                    color: root.fg
+                                    font.pixelSize: 13
+                                    font.bold: true
+                                    x: 0
+                                    // "…" when it doesn't fit; the full title scrolls by while you point at it
+                                    width: pmHover.hovered ? implicitWidth : pmTitleBox.width
+                                    elide: pmHover.hovered ? Text.ElideNone : Text.ElideRight
+                                    SequentialAnimation on x {
+                                        running: pmHover.hovered && pmTitle.implicitWidth > pmTitleBox.width && root.animMs > 0
+                                        loops: Animation.Infinite
+                                        onStopped: pmTitle.x = 0
+                                        PauseAnimation { duration: 600 }
+                                        NumberAnimation { to: pmTitleBox.width - pmTitle.implicitWidth; duration: Math.max(1500, (pmTitle.implicitWidth - pmTitleBox.width) * 28) }
+                                        PauseAnimation { duration: 900 }
+                                        NumberAnimation { to: 0; duration: 500; easing.type: Easing.OutCubic }
+                                    }
+                                }
+                            }
+
+                            // audio waves
+                            Row {
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 2
+                                Repeater {
+                                    model: 5
+                                    delegate: Rectangle {
+                                        required property int index
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: 3
+                                        radius: 1.5
+                                        height: 3 + 13 * (root.waveLevels[index] || 0.15)
+                                        color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, root.player && root.player.isPlaying ? 0.95 : 0.4)
+                                        Behavior on height { NumberAnimation { duration: 90 } }
+                                    }
+                                }
+                            }
+
+                            // back · play/pause · next
+                            Row {
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 2
+                                Repeater {
+                                    model: [
+                                        { icon: "", act: "prev" },
+                                        { icon: root.player && root.player.isPlaying ? "" : "", act: "toggle" },
+                                        { icon: "", act: "next" }
+                                    ]
+                                    delegate: Rectangle {
+                                        id: pmBtn
+                                        required property var modelData
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: modelData.act === "toggle" ? 26 : 22
+                                        height: width
+                                        radius: width / 2
+                                        color: modelData.act === "toggle" ? (pmBtnMouse.containsMouse ? root.fg : Qt.rgba(1, 1, 1, 0.16))
+                                            : (pmBtnMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.14) : "transparent")
+                                        scale: pmBtnMouse.pressed ? 0.85 : 1
+                                        Behavior on color { ColorAnimation { duration: root.animMs } }
+                                        Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+                                        Text {
+                                            anchors.centerIn: parent
+                                            anchors.horizontalCenterOffset: pmBtn.modelData.icon === "" ? 1 : 0
+                                            text: pmBtn.modelData.icon
+                                            color: pmBtn.modelData.act === "toggle" && pmBtnMouse.containsMouse ? root.bg : root.fg
+                                            font.family: root.iconFont
+                                            font.pixelSize: pmBtn.modelData.act === "toggle" ? 11 : 10
+                                        }
+                                        MouseArea {
+                                            id: pmBtnMouse
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                const p = root.player;
+                                                if (!p) return;
+                                                if (pmBtn.modelData.act === "prev" && p.canGoPrevious) p.previous();
+                                                else if (pmBtn.modelData.act === "next" && p.canGoNext) p.next();
+                                                else if (pmBtn.modelData.act === "toggle" && p.canTogglePlaying) p.togglePlaying();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // art + title open the big player in the hub
+                        MouseArea {
+                            x: pmArtBox.x
+                            width: pmTitleBox.x + pmTitleBox.width + 6
+                            height: parent.height
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.openHub(1)
+                        }
+                    }
+
+                    Rectangle { visible: !!root.player; anchors.verticalCenter: parent.verticalCenter; width: 4; height: 4; radius: 2; color: root.muted }
 
                     // ---- Clock (opens the calendar) ----
                     Item {
