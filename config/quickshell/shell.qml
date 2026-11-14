@@ -2406,47 +2406,6 @@ ShellRoot {
         }
     }
 
-    // ---------- Audio waves for the pill ----------
-    // Real levels from cava (if installed) while something plays; a gentle bounce otherwise.
-    property var waveLevels: [0.15, 0.15, 0.15, 0.15, 0.15]
-    property bool cavaMissing: false
-    readonly property bool wavesWanted: !!player && player.isPlaying && !gameMode
-
-    Process {
-        id: cavaProc
-        running: root.wavesWanted && !root.cavaMissing
-        command: ["sh", "-c",
-            'command -v cava >/dev/null 2>&1 || exit 3; '
-            + 'cfg="${XDG_RUNTIME_DIR:-/tmp}/joeos-cava.conf"; '
-            + 'printf "[general]\\nbars = 5\\nframerate = 30\\n[output]\\nmethod = raw\\nraw_target = /dev/stdout\\n'
-            + 'data_format = ascii\\nascii_max_range = 100\\nbar_delimiter = 59\\nframe_delimiter = 10\\n'
-            + '[smoothing]\\nnoise_reduction = 60\\n" > "$cfg"; exec cava -p "$cfg"']
-        stdout: SplitParser {
-            onRead: line => {
-                const parts = line.split(";");
-                const lv = [];
-                for (let i = 0; i < 5; i++) lv.push(Math.max(0.12, Math.min(1, (parseInt(parts[i]) || 0) / 100)));
-                root.waveLevels = lv;
-            }
-        }
-        onExited: code => {
-            if (code === 3) root.cavaMissing = true;
-            if (!root.wavesWanted) root.waveLevels = [0.15, 0.15, 0.15, 0.15, 0.15];
-        }
-    }
-    // no cava: a soft fake bounce so the waves still move while music plays
-    Timer {
-        interval: 140
-        repeat: true
-        running: root.wavesWanted && root.cavaMissing
-        onTriggered: {
-            const lv = [];
-            for (let i = 0; i < 5; i++) lv.push(0.25 + Math.random() * (i === 2 ? 0.75 : 0.6));
-            root.waveLevels = lv;
-        }
-    }
-    onWavesWantedChanged: if (!wavesWanted) waveLevels = [0.15, 0.15, 0.15, 0.15, 0.15]
-
     // ---------- Login screen wallpaper ----------
     // Keeps a copy of the current wallpaper where the login screen (Plasma Login / SDDM) can read it.
     // Only does anything after the one-time setup (login-wallpaper-setup) made that folder yours.
@@ -3883,6 +3842,70 @@ ShellRoot {
         }
     }
 
+    // A quick-toggle tile (hub Home and System)
+    component HubToggle: Rectangle {
+        id: tgl
+        property var theme: null
+        property var item: ({})
+        radius: 20
+        color: tgl.item.active ? tgl.theme.accent : (tglMouse.containsMouse ? tgl.theme.overlay : tgl.theme.surface)
+        border.width: 1
+        border.color: tgl.theme.glassEdge
+        opacity: tgl.item.ok ? 1 : 0.45
+        scale: tglMouse.pressed ? 0.95 : (tglMouse.containsMouse && tgl.item.ok ? 1.03 : 1)
+        Behavior on color { ColorAnimation { duration: tgl.theme.animMs } }
+        Behavior on scale { NumberAnimation { duration: tgl.theme.animMs; easing.type: Easing.OutBack } }
+
+        RowLayout {
+            anchors.fill: parent
+            anchors.margins: 12
+            spacing: 10
+
+            Rectangle {
+                Layout.preferredWidth: 38
+                Layout.preferredHeight: 38
+                radius: 19
+                color: tgl.item.active ? Qt.rgba(1, 1, 1, 0.25) : tgl.theme.overlay
+
+                Text {
+                    anchors.centerIn: parent
+                    text: tgl.item.icon
+                    color: tgl.item.active ? tgl.theme.bg : tgl.theme.accent
+                    font.family: tgl.theme.iconFont
+                    font.pixelSize: 15
+                }
+            }
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 1
+                Text {
+                    Layout.fillWidth: true
+                    text: tgl.item.title
+                    color: tgl.item.active ? tgl.theme.bg : tgl.theme.fg
+                    font.pixelSize: 13
+                    font.bold: true
+                    elide: Text.ElideRight
+                }
+                Text {
+                    Layout.fillWidth: true
+                    text: tgl.item.sub
+                    color: tgl.item.active ? tgl.theme.bg : tgl.theme.muted
+                    font.pixelSize: 11
+                    elide: Text.ElideRight
+                }
+            }
+        }
+
+        MouseArea {
+            id: tglMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: tgl.item.ok ? Qt.PointingHandCursor : Qt.ArrowCursor
+            onClicked: if (tgl.item.ok) tgl.item.run()
+        }
+    }
+
     // Small glossy card used all over the hub
     component HubCard: Rectangle {
         id: hc
@@ -4289,24 +4312,6 @@ ShellRoot {
                                         NumberAnimation { to: pmTitleBox.width - pmTitle.implicitWidth; duration: Math.max(1500, (pmTitle.implicitWidth - pmTitleBox.width) * 28) }
                                         PauseAnimation { duration: 900 }
                                         NumberAnimation { to: 0; duration: 500; easing.type: Easing.OutCubic }
-                                    }
-                                }
-                            }
-
-                            // audio waves
-                            Row {
-                                anchors.verticalCenter: parent.verticalCenter
-                                spacing: 2
-                                Repeater {
-                                    model: 5
-                                    delegate: Rectangle {
-                                        required property int index
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        width: 3
-                                        radius: 1.5
-                                        height: 3 + 13 * (root.waveLevels[index] || 0.15)
-                                        color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, root.player && root.player.isPlaying ? 0.95 : 0.4)
-                                        Behavior on height { NumberAnimation { duration: 90 } }
                                     }
                                 }
                             }
@@ -4758,14 +4763,14 @@ ShellRoot {
 
                                 // ===== 0: Home =====
                                 ColumnLayout {
-                                    spacing: 12
+                                    spacing: 16
 
                                     // Quick toggles
                                     GridLayout {
                                         Layout.fillWidth: true
-                                        columns: 5
-                                        rowSpacing: 10
-                                        columnSpacing: 10
+                                        columns: 4
+                                        rowSpacing: 14
+                                        columnSpacing: 14
 
                                         Repeater {
                                             model: [
@@ -4799,18 +4804,6 @@ ShellRoot {
                                                     run: () => root.takeScreenshot()
                                                 },
                                                 {
-                                                    icon: "", title: "Theme",
-                                                    sub: root.themeMode === "glass" ? "Glass" : root.themeMode === "auto" ? "Auto" : (root.themeMode === "dark" ? "Dark" : "Light"),
-                                                    active: false, ok: true,
-                                                    run: () => root.cycleTheme()
-                                                },
-                                                {
-                                                    icon: "", title: "Auto-hide bars",
-                                                    sub: root.autoHideOn ? "On" : "Off",
-                                                    active: root.autoHideOn, ok: true,
-                                                    run: () => root.cycleAutoHide()
-                                                },
-                                                {
                                                     icon: "", title: "Wallpaper", sub: "Choose one",
                                                     active: false, ok: true,
                                                     run: () => { root.hubOpen = false; root.wallPickerOpen = true; }
@@ -4828,77 +4821,16 @@ ShellRoot {
                                                         : root.updCanCheck ? "Up to date" : "Needs pacman-contrib",
                                                     active: root.updTotal > 0, ok: true,
                                                     run: () => { if (root.updTotal > 0) { root.hubOpen = false; root.runUpdates(); } else root.checkUpdates(); }
-                                                },
-                                                {
-                                                    icon: "\uf0e2", title: "Reopen apps",
-                                                    sub: pins.adapter.restoreSession ? "On · after restart" : "Off",
-                                                    active: pins.adapter.restoreSession, ok: true,
-                                                    run: () => { pins.adapter.restoreSession = !pins.adapter.restoreSession; }
                                                 }
+
                                             ]
 
-                                            delegate: Rectangle {
-                                                id: tgl
+                                            delegate: HubToggle {
                                                 required property var modelData
+                                                theme: root
+                                                item: modelData
                                                 Layout.fillWidth: true
-                                                Layout.preferredHeight: 70
-                                                radius: 20
-                                                color: tgl.modelData.active ? root.accent : (tglMouse.containsMouse ? root.overlay : root.surface)
-                                                border.width: 1
-                                                border.color: root.glassEdge
-                                                opacity: tgl.modelData.ok ? 1 : 0.45
-                                                scale: tglMouse.pressed ? 0.95 : (tglMouse.containsMouse && tgl.modelData.ok ? 1.03 : 1)
-                                                Behavior on color { ColorAnimation { duration: root.animMs } }
-                                                Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
-
-                                                RowLayout {
-                                                    anchors.fill: parent
-                                                    anchors.margins: 12
-                                                    spacing: 10
-
-                                                    Rectangle {
-                                                        Layout.preferredWidth: 38
-                                                        Layout.preferredHeight: 38
-                                                        radius: 19
-                                                        color: tgl.modelData.active ? Qt.rgba(1, 1, 1, 0.25) : root.overlay
-
-                                                        Text {
-                                                            anchors.centerIn: parent
-                                                            text: tgl.modelData.icon
-                                                            color: tgl.modelData.active ? root.bg : root.accent
-                                                            font.family: root.iconFont
-                                                            font.pixelSize: 15
-                                                        }
-                                                    }
-
-                                                    ColumnLayout {
-                                                        Layout.fillWidth: true
-                                                        spacing: 1
-                                                        Text {
-                                                            Layout.fillWidth: true
-                                                            text: tgl.modelData.title
-                                                            color: tgl.modelData.active ? root.bg : root.fg
-                                                            font.pixelSize: 13
-                                                            font.bold: true
-                                                            elide: Text.ElideRight
-                                                        }
-                                                        Text {
-                                                            Layout.fillWidth: true
-                                                            text: tgl.modelData.sub
-                                                            color: tgl.modelData.active ? root.bg : root.muted
-                                                            font.pixelSize: 11
-                                                            elide: Text.ElideRight
-                                                        }
-                                                    }
-                                                }
-
-                                                MouseArea {
-                                                    id: tglMouse
-                                                    anchors.fill: parent
-                                                    hoverEnabled: true
-                                                    cursorShape: tgl.modelData.ok ? Qt.PointingHandCursor : Qt.ArrowCursor
-                                                    onClicked: if (tgl.modelData.ok) tgl.modelData.run()
-                                                }
+                                                Layout.preferredHeight: 72
                                             }
                                         }
                                     }
@@ -5500,6 +5432,41 @@ ShellRoot {
                                 // ===== 5: System =====
                                 ColumnLayout {
                                     spacing: 12
+
+                                    // settings you set once
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 14
+                                        Repeater {
+                                            model: [
+                                                    {
+                                                    icon: "", title: "Theme",
+                                                    sub: root.themeMode === "glass" ? "Glass" : root.themeMode === "auto" ? "Auto" : (root.themeMode === "dark" ? "Dark" : "Light"),
+                                                    active: false, ok: true,
+                                                    run: () => root.cycleTheme()
+                                                    },
+                                                    {
+                                                    icon: "", title: "Auto-hide bars",
+                                                    sub: root.autoHideOn ? "On" : "Off",
+                                                    active: root.autoHideOn, ok: true,
+                                                    run: () => root.cycleAutoHide()
+                                                    },
+                                                    {
+                                                    icon: "\uf0e2", title: "Reopen apps",
+                                                    sub: pins.adapter.restoreSession ? "On · after restart" : "Off",
+                                                    active: pins.adapter.restoreSession, ok: true,
+                                                    run: () => { pins.adapter.restoreSession = !pins.adapter.restoreSession; }
+                                                    }
+                                            ]
+                                            delegate: HubToggle {
+                                                required property var modelData
+                                                theme: root
+                                                item: modelData
+                                                Layout.fillWidth: true
+                                                Layout.preferredHeight: 72
+                                            }
+                                        }
+                                    }
 
                                     HubCard {
                                         theme: root
