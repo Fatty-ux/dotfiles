@@ -4144,9 +4144,9 @@ ShellRoot {
                 id: pill
                 anchors.horizontalCenter: parent.horizontalCenter
                 y: panel.barShown ? 6 : -height - 6
-                width: pillRow.implicitWidth + 36
-                height: 42
-                radius: 21
+                width: pillRow.implicitWidth + 24
+                height: 40
+                radius: 20
                 color: root.popupBg
                 border.width: 1
                 border.color: root.glassEdge
@@ -4172,49 +4172,10 @@ ShellRoot {
                 Row {
                     id: pillRow
                     anchors.centerIn: parent
-                    spacing: 16
+                    spacing: 12
 
                     // sticker spot
                     Buddy { theme: root; slot: 0; size: 26; anchors.verticalCenter: parent.verticalCenter }
-
-                    // ---- Desktop dots ----
-                    Row {
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: 5
-
-                        Repeater {
-                            model: panel.desks
-
-                            delegate: Item {
-                                id: dDot
-                                required property var modelData
-                                readonly property bool isActive: root.activeWsId(panel.modelData.name) === dDot.modelData
-                                width: dot.width
-                                height: 14
-
-                                Rectangle {
-                                    id: dot
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    width: dDot.isActive ? 20 : 8
-                                    height: 8
-                                    radius: 4
-                                    color: dDot.isActive ? root.accent
-                                        : (root.wsWindowCount(dDot.modelData) > 0 ? root.muted : root.overlay)
-                                    Behavior on width { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutBack } }
-                                    Behavior on color { ColorAnimation { duration: root.animMs } }
-                                }
-
-                                MouseArea {
-                                    anchors.fill: parent
-                                    anchors.margins: -4
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: root.gotoDesktop(panel.modelData.name, dDot.modelData)
-                                }
-                            }
-                        }
-                    }
-
-                    Rectangle { anchors.verticalCenter: parent.verticalCenter; width: 4; height: 4; radius: 2; color: root.muted }
 
                     // ---- Now playing (only while something has a player open) ----
                     Rectangle {
@@ -4306,7 +4267,7 @@ ShellRoot {
                             Item {
                                 id: pmTitleBox
                                 anchors.verticalCenter: parent.verticalCenter
-                                width: Math.min(pmTitle.implicitWidth, 190)
+                                width: Math.min(pmTitle.implicitWidth, 170)
                                 height: 18
                                 clip: true
                                 Text {
@@ -4410,41 +4371,6 @@ ShellRoot {
 
                     Rectangle { visible: !!root.player; anchors.verticalCenter: parent.verticalCenter; width: 4; height: 4; radius: 2; color: root.muted }
 
-                    // ---- Clock (opens the calendar) ----
-                    Item {
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: clockRow.implicitWidth
-                        height: 30
-
-                        Row {
-                            id: clockRow
-                            anchors.verticalCenter: parent.verticalCenter
-                            spacing: 7
-
-                            Text {
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: Qt.formatDateTime(clock.date, root.timePattern)
-                                color: root.fg
-                                font.pixelSize: 15
-                                font.bold: true
-                            }
-                            Text {
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: Qt.formatDateTime(clock.date, "ddd d")
-                                color: root.muted
-                                font.pixelSize: 13
-                            }
-                        }
-
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: root.openHub(3)
-                        }
-                    }
-
-                    Rectangle { anchors.verticalCenter: parent.verticalCenter; width: 4; height: 4; radius: 2; color: root.muted }
-
                     // ---- CPU and RAM ----
                     Row {
                         anchors.verticalCenter: parent.verticalCenter
@@ -4478,12 +4404,7 @@ ShellRoot {
                         }
                     }
 
-                    // ---- Status icons ----
-                    Row {
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: 15
-
-                        // recording: red dot + time, click to stop
+                    // ---- Recording: red dot + time, click to stop (only while recording) ----
                         Rectangle {
                             anchors.verticalCenter: parent.verticalCenter
                             visible: root.recording
@@ -4525,113 +4446,6 @@ ShellRoot {
                                 onClicked: root.stopRecording()
                             }
                         }
-
-                        // music note while something plays (opens Media)
-                        Text {
-                            anchors.verticalCenter: parent.verticalCenter
-                            visible: root.playing(root.player)
-                            text: ""
-                            color: root.accent
-                            font.family: root.iconFont
-                            font.pixelSize: 17
-                            SequentialAnimation on opacity {
-                                running: root.playing(root.player)
-                                loops: Animation.Infinite
-                                NumberAnimation { to: 0.45; duration: 700; easing.type: Easing.InOutSine }
-                                NumberAnimation { to: 1; duration: 700; easing.type: Easing.InOutSine }
-                            }
-                            MouseArea { anchors.fill: parent; anchors.margins: -5; cursorShape: Qt.PointingHandCursor; onClicked: root.openHub(1) }
-                        }
-
-                        Text {
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: root.netIcon()
-                            color: root.netKind === "" ? root.muted : root.fg
-                            font.family: root.iconFont
-                            font.pixelSize: 17
-                        }
-
-                        // volume: scroll to change, click to mute
-                        Text {
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: root.volIcon(root.sink ? root.sink.audio : null)
-                            color: root.fg
-                            font.family: root.iconFont
-                            font.pixelSize: 18
-                            MouseArea {
-                                anchors.fill: parent
-                                anchors.margins: -5
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: if (root.sink && root.sink.audio) root.sink.audio.muted = !root.sink.audio.muted
-                                onWheel: wheel => {
-                                    const a = root.sink ? root.sink.audio : null;
-                                    if (!a) return;
-                                    const step = wheel.angleDelta.y > 0 ? root.volumeStep : -root.volumeStep;
-                                    a.volume = Math.max(0, Math.min(1, a.volume + step));
-                                }
-                            }
-                        }
-
-                        // microphone: click to mute, scroll to change
-                        Text {
-                            anchors.verticalCenter: parent.verticalCenter
-                            visible: !!root.source
-                            text: root.source && root.source.audio && !root.source.audio.muted ? "\uf130" : "\uf131"
-                            color: root.source && root.source.audio && root.source.audio.muted ? root.danger : root.fg
-                            font.family: root.iconFont
-                            font.pixelSize: 18
-                            MouseArea {
-                                anchors.fill: parent
-                                anchors.margins: -5
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: if (root.source && root.source.audio) root.source.audio.muted = !root.source.audio.muted
-                                onWheel: wheel => {
-                                    const a = root.source ? root.source.audio : null;
-                                    if (!a) return;
-                                    const step = wheel.angleDelta.y > 0 ? root.volumeStep : -root.volumeStep;
-                                    a.volume = Math.max(0, Math.min(1, a.volume + step));
-                                }
-                            }
-                        }
-
-                        // bell with a count (opens Alerts)
-                        Item {
-                            anchors.verticalCenter: parent.verticalCenter
-                            width: bell.implicitWidth + (badge.visible ? 8 : 0)
-                            height: 18
-
-                            Text {
-                                id: bell
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: ""
-                                color: root.dnd ? root.muted : root.fg
-                                font.family: root.iconFont
-                                font.pixelSize: 17
-                            }
-                            Rectangle {
-                                id: badge
-                                visible: notifServer.trackedNotifications.values.length > 0
-                                anchors.left: bell.right
-                                anchors.leftMargin: -4
-                                anchors.top: parent.top
-                                anchors.topMargin: -3
-                                width: Math.max(14, badgeText.implicitWidth + 6)
-                                height: 14
-                                radius: 7
-                                color: root.accent
-
-                                Text {
-                                    id: badgeText
-                                    anchors.centerIn: parent
-                                    text: notifServer.trackedNotifications.values.length
-                                    color: root.bg
-                                    font.pixelSize: 9
-                                    font.bold: true
-                                }
-                            }
-                            MouseArea { anchors.fill: parent; anchors.margins: -5; cursorShape: Qt.PointingHandCursor; onClicked: root.openHub(4) }
-                        }
-                    }
                 }
             }
 
