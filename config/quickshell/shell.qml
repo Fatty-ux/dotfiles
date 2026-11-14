@@ -204,6 +204,7 @@ ShellRoot {
             property bool gameMode: false        // game mode stays on across restarts
             property bool restoreSession: true   // reopen apps on their desktops after logging in
             property bool topPillAlways: true    // the top pill stays on screen (no pull tab)
+            property bool lyricsOpen: false      // the left lyrics panel stays open across restarts
         }
     }
 
@@ -9662,6 +9663,473 @@ ShellRoot {
         }
     }
 
+    // ---------- Left lyrics panel (pull tab on the left edge) ----------
+    // Click the tab on the left edge to open big, colourful lyrics that follow Spotify.
+    // It stays on screen until you press its close button, and takes its colours from the theme.
+    readonly property bool lyricsOpen: pins.adapter.lyricsOpen
+    property string lyricsScreen: ""      // which monitor the panel is on
+    onLyricsOpenChanged: if (lyricsOpen) fetchLyrics()
+
+    // colours for the lyrics, taken from the theme (and the wallpaper on the neutral glass theme)
+    readonly property var lyricsColors: {
+        const lift = c => {
+            const col = Qt.color(c);
+            return Qt.hsla(col.hslHue < 0 ? 0 : col.hslHue, Math.max(0.45, col.hslSaturation),
+                           dark ? Math.max(0.68, col.hslLightness) : Math.min(0.40, col.hslLightness), 1);
+        };
+        if (glassTheme) {
+            const p = wallPalette;
+            if (p.length >= 2) return [dark ? "#ffffff" : "#1b1c20", lift(p[0]), lift(p[1])];
+            return [dark ? "#ffffff" : "#1b1c20", dark ? "#c9d6ff" : "#3a4a7a", dark ? "#ffd6f0" : "#7a3a5a"];
+        }
+        const l = dark ? 0.72 : 0.38, s = Math.max(0.55, sat);
+        return [accentBase, Qt.hsla((hue + 0.08) % 1, s, l, 1), Qt.hsla((hue + 0.92) % 1, s, l, 1)];
+    }
+
+    function openLyricsPanel(screenName) {
+        lyricsScreen = screenName;
+        pins.adapter.lyricsOpen = true;
+    }
+    function closeLyricsPanel() {
+        pins.adapter.lyricsOpen = false;
+    }
+    // "some words" -> each word tinted a step further along lyricsColors (as rich text)
+    function gradientWords(line) {
+        const words = line.split(" ");
+        const c = lyricsColors.map(x => Qt.color(x));
+        const mix = (a, b, f) => Qt.rgba(a.r + (b.r - a.r) * f, a.g + (b.g - a.g) * f, a.b + (b.b - a.b) * f, 1);
+        const hex = v => ("0" + Math.round(v * 255).toString(16)).slice(-2);
+        const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        const out = [];
+        for (let i = 0; i < words.length; i++) {
+            const f = words.length > 1 ? i / (words.length - 1) : 0;
+            const col = f < 0.5 ? mix(c[0], c[1], f * 2) : mix(c[1], c[2], (f - 0.5) * 2);
+            out.push('<font color="#' + hex(col.r) + hex(col.g) + hex(col.b) + '">' + esc(words[i]) + "</font>");
+        }
+        return out.join(" ");
+    }
+
+    Variants {
+        model: Quickshell.screens
+
+        Scope {
+            id: lyrScope
+            required property var modelData
+            readonly property bool here: root.lyricsOpen
+                && (root.lyricsScreen === "" ? modelData === Quickshell.screens[0] : root.lyricsScreen === modelData.name)
+
+            // ----- the tab, same look as the one for the right bar -----
+            PanelWindow {
+                id: lyrTabWin
+                screen: lyrScope.modelData
+                anchors {
+                    top: true
+                    bottom: true
+                    left: true
+                }
+                implicitWidth: 34
+                exclusionMode: ExclusionMode.Ignore
+                color: "transparent"
+                WlrLayershell.namespace: "quickshell-lyrics-tab"
+                mask: Region { item: lyrTab }
+
+                Rectangle {
+                    id: lyrTab
+                    anchors.verticalCenter: parent.verticalCenter
+                    x: lyrScope.here ? -width - 4 : -10
+                    width: lyrTabMouse.containsMouse ? 26 : 22
+                    height: Math.max(160, parent.height * 0.34) + (lyrTabMouse.containsMouse ? 24 : 0)
+                    radius: 11
+                    color: root.popupBg
+                    border.width: 1
+                    border.color: root.glassEdge
+                    Behavior on x { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutCubic } }
+                    Behavior on height { NumberAnimation { duration: root.animMs * 1.5; easing.type: Easing.OutCubic } }
+                    Behavior on width { NumberAnimation { duration: root.animMs; easing.type: Easing.OutCubic } }
+
+                    GlassShine { radius: parent.radius; dark: root.dark }
+
+                    MouseArea {
+                        id: lyrTabMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.openLyricsPanel(lyrScope.modelData.name)
+                    }
+                }
+            }
+
+            // ----- the panel -----
+            PanelWindow {
+                id: lyrWin
+                screen: lyrScope.modelData
+                visible: true
+                anchors {
+                    top: true
+                    bottom: true
+                    left: true
+                }
+                implicitWidth: 500
+                exclusionMode: ExclusionMode.Ignore
+                color: "transparent"
+                WlrLayershell.layer: WlrLayer.Top
+                WlrLayershell.namespace: "quickshell-lyrics"
+                WlrLayershell.keyboardFocus: WlrKeyboardFocus.None   // never steals your typing
+                // only the card catches the mouse; everything else goes to the windows underneath
+                readonly property bool showing: lyrScope.here || lyrCard.x > -lyrCard.width
+                mask: showing ? lyrCardMask : lyrOffMask
+                Region { id: lyrCardMask; item: lyrCard }
+                Region { id: lyrOffMask }
+
+                // Spotify only reports where it is in the song when asked
+                Timer {
+                    interval: 200
+                    repeat: true
+                    running: lyrScope.here && root.playing(root.spotify)
+                    onTriggered: root.spotify.positionChanged()
+                }
+
+                Rectangle {
+                    id: lyrCard
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 440
+                    height: Math.min(760, parent.height * 0.76)
+                    x: lyrScope.here ? 14 : -width - 30
+                    opacity: lyrScope.here ? 1 : 0
+                    radius: 30
+                    color: root.popupBg
+                    border.width: 1
+                    border.color: root.glassEdge
+                    clip: true
+                    Behavior on x { NumberAnimation { duration: root.animMs * 3; easing.type: Easing.OutBack; easing.overshoot: 0.7 } }
+                    Behavior on opacity { NumberAnimation { duration: root.animMs * 2 } }
+
+                    // soft colour glow behind the words, in the theme's colours
+                    Item {
+                        id: lyrGlow
+                        anchors.fill: parent
+                        visible: false
+                        layer.enabled: true
+                        Rectangle {
+                            width: 300; height: 300; radius: 150
+                            x: -80; y: lyrCard.height * 0.18
+                            color: root.lyricsColors[1]
+                            opacity: 0.55
+                            SequentialAnimation on x {
+                                running: lyrScope.here && root.animMs > 0
+                                loops: Animation.Infinite
+                                NumberAnimation { to: 40; duration: 9000; easing.type: Easing.InOutSine }
+                                NumberAnimation { to: -80; duration: 9000; easing.type: Easing.InOutSine }
+                            }
+                        }
+                        Rectangle {
+                            width: 280; height: 280; radius: 140
+                            x: lyrCard.width - 200; y: lyrCard.height * 0.55
+                            color: root.lyricsColors[2]
+                            opacity: 0.5
+                            SequentialAnimation on y {
+                                running: lyrScope.here && root.animMs > 0
+                                loops: Animation.Infinite
+                                NumberAnimation { to: lyrCard.height * 0.35; duration: 11000; easing.type: Easing.InOutSine }
+                                NumberAnimation { to: lyrCard.height * 0.55; duration: 11000; easing.type: Easing.InOutSine }
+                            }
+                        }
+                    }
+                    MultiEffect {
+                        anchors.fill: parent
+                        source: lyrGlow
+                        blurEnabled: true
+                        blurMax: 64
+                        blur: 1
+                        opacity: root.dark ? 0.45 : 0.35
+                    }
+
+                    GlassShine { radius: parent.radius; dark: root.dark }
+
+                    MouseArea { anchors.fill: parent }   // clicks inside don't fall through
+
+                    ColumnLayout {
+                        anchors.fill: parent
+                        anchors.margins: 20
+                        spacing: 14
+
+                        // ---- song + controls + close ----
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 12
+
+                            Item {
+                                Layout.preferredWidth: 56
+                                Layout.preferredHeight: 56
+                                Rectangle { anchors.fill: parent; radius: 14; color: root.overlay }
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: ""
+                                    color: root.muted
+                                    font.family: root.iconFont
+                                    font.pixelSize: 20
+                                    visible: lyrArt.status !== Image.Ready
+                                }
+                                Image {
+                                    id: lyrArt
+                                    anchors.fill: parent
+                                    source: root.spotify ? (root.spotify.trackArtUrl || "") : ""
+                                    sourceSize.width: 112
+                                    sourceSize.height: 112
+                                    fillMode: Image.PreserveAspectCrop
+                                    visible: false
+                                    asynchronous: true
+                                }
+                                Item {
+                                    id: lyrArtMask
+                                    anchors.fill: parent
+                                    layer.enabled: true
+                                    visible: false
+                                    Rectangle { anchors.fill: parent; radius: 14; color: "black" }
+                                }
+                                MultiEffect {
+                                    anchors.fill: parent
+                                    source: lyrArt
+                                    maskEnabled: true
+                                    maskSource: lyrArtMask
+                                    visible: lyrArt.status === Image.Ready
+                                }
+                            }
+
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 2
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: root.spotify ? (root.spotify.trackTitle || "") : "Nothing playing"
+                                    color: root.fg
+                                    font.pixelSize: 16
+                                    font.bold: true
+                                    elide: Text.ElideRight
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: root.spotify ? (root.spotify.trackArtist || "") : "Open Spotify and play a song"
+                                    color: root.lyricsColors[1]
+                                    font.pixelSize: 12
+                                    elide: Text.ElideRight
+                                }
+                            }
+
+                            // close: the only way to put it away
+                            Rectangle {
+                                Layout.preferredWidth: 34
+                                Layout.preferredHeight: 34
+                                Layout.alignment: Qt.AlignTop
+                                radius: 17
+                                color: lyrClose.containsMouse ? root.overlay : root.surface
+                                border.width: 1
+                                border.color: root.glassEdge
+                                scale: lyrClose.pressed ? 0.88 : 1
+                                Behavior on color { ColorAnimation { duration: root.animMs } }
+                                Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: ""
+                                    color: root.fg
+                                    font.family: root.iconFont
+                                    font.pixelSize: 14
+                                }
+                                MouseArea {
+                                    id: lyrClose
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: root.closeLyricsPanel()
+                                }
+                            }
+                        }
+
+                        // ---- the words ----
+                        Item {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+
+                            ListView {
+                                id: bigLyrics
+                                anchors.fill: parent
+                                clip: true
+                                spacing: 14
+                                model: lyrScope.here ? root.lyricsLines : []
+                                currentIndex: root.lyricsIndex
+                                // the line being sung sits a bit above the middle
+                                highlightRangeMode: root.lyricsSynced && root.lyricsIndex >= 0 ? ListView.ApplyRange : ListView.NoHighlightRange
+                                preferredHighlightBegin: height * 0.34
+                                preferredHighlightEnd: height * 0.46
+                                highlightMoveDuration: 500
+                                boundsBehavior: Flickable.StopAtBounds
+                                // fade the top and bottom edges
+                                layer.enabled: true
+                                layer.effect: MultiEffect {
+                                    maskEnabled: true
+                                    maskSource: lyrFade
+                                }
+
+                                delegate: Item {
+                                    id: bl
+                                    required property var modelData
+                                    required property int index
+                                    readonly property bool now: root.lyricsSynced && bl.index === root.lyricsIndex
+                                    readonly property bool past: root.lyricsSynced && bl.index < root.lyricsIndex
+                                    readonly property string words: bl.modelData.text === "" ? "♪" : bl.modelData.text
+                                    width: bigLyrics.width
+                                    height: blText.implicitHeight
+                                    opacity: !root.lyricsSynced ? 0.95 : (bl.now ? 1 : (bl.past ? 0.32 : 0.62))
+                                    scale: bl.now ? 1 : 0.94
+                                    transformOrigin: Item.Left
+                                    Behavior on opacity { NumberAnimation { duration: 300 } }
+                                    Behavior on scale { NumberAnimation { duration: 350; easing.type: Easing.OutBack } }
+
+                                    // every line: plain, in the theme's text colour
+                                    Text {
+                                        id: blText
+                                        width: parent.width
+                                        text: bl.words
+                                        wrapMode: Text.Wrap
+                                        color: root.lyricsSynced ? root.fg : root.lyricsColors[bl.index % 3]
+                                        font.pixelSize: 24
+                                        font.bold: true
+                                        visible: !bl.now
+                                    }
+                                    // the line being sung: each word coloured along the theme's colours
+                                    Text {
+                                        width: parent.width
+                                        visible: bl.now
+                                        text: bl.now ? root.gradientWords(bl.words) : ""
+                                        textFormat: Text.StyledText
+                                        wrapMode: Text.Wrap
+                                        font.pixelSize: 24
+                                        font.bold: true
+                                        style: Text.Raised
+                                        styleColor: Qt.rgba(0, 0, 0, root.dark ? 0.35 : 0.08)
+                                    }
+
+                                    // click a line to jump the song there
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        enabled: root.lyricsSynced && bl.modelData.t >= 0
+                                        cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                        onClicked: {
+                                            const p = root.spotify;
+                                            if (p && p.canSeek) p.position = bl.modelData.t;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // top and bottom fade for the list
+                            Item {
+                                id: lyrFade
+                                anchors.fill: bigLyrics
+                                visible: false
+                                layer.enabled: true
+                                Rectangle {
+                                    anchors.fill: parent
+                                    gradient: Gradient {
+                                        GradientStop { position: 0.0; color: "transparent" }
+                                        GradientStop { position: 0.10; color: "black" }
+                                        GradientStop { position: 0.88; color: "black" }
+                                        GradientStop { position: 1.0; color: "transparent" }
+                                    }
+                                }
+                            }
+
+                            // loading / nothing found
+                            Column {
+                                anchors.centerIn: parent
+                                visible: root.lyricsStatus !== "ok" || !root.spotify
+                                spacing: 10
+                                Text {
+                                    anchors.horizontalCenter: parent.horizontalCenter
+                                    text: root.lyricsStatus === "loading" ? "" : ""
+                                    color: root.lyricsColors[1]
+                                    font.family: root.iconFont
+                                    font.pixelSize: 36
+                                    RotationAnimation on rotation {
+                                        running: root.lyricsStatus === "loading"
+                                        loops: Animation.Infinite
+                                        from: 0
+                                        to: 360
+                                        duration: 1200
+                                    }
+                                }
+                                Text {
+                                    anchors.horizontalCenter: parent.horizontalCenter
+                                    horizontalAlignment: Text.AlignHCenter
+                                    text: !root.spotify ? "Play something on Spotify"
+                                        : root.lyricsStatus === "loading" ? "Finding lyrics…"
+                                        : root.lyricsStatus === "error" ? "Couldn't reach the lyrics service.\nCheck your internet."
+                                        : "No lyrics found for this song"
+                                    color: root.muted
+                                    font.pixelSize: 14
+                                }
+                            }
+                        }
+
+                        // ---- bottom: play controls ----
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 10
+                            Text {
+                                Layout.fillWidth: true
+                                text: !root.spotify ? "" : (root.lyricsSynced ? "Synced · click a line to jump to it" : (root.lyricsStatus === "ok" ? "These lyrics aren't timed" : ""))
+                                color: root.muted
+                                font.pixelSize: 11
+                                elide: Text.ElideRight
+                            }
+                            Repeater {
+                                model: [
+                                    { icon: "", act: "prev" },
+                                    { icon: "", act: "toggle" },
+                                    { icon: "", act: "next" }
+                                ]
+                                delegate: Rectangle {
+                                    id: lyrBtn
+                                    required property var modelData
+                                    readonly property bool big: modelData.act === "toggle"
+                                    Layout.preferredWidth: big ? 42 : 34
+                                    Layout.preferredHeight: big ? 42 : 34
+                                    radius: width / 2
+                                    color: big ? root.accent : (lyrBtnMouse.containsMouse ? root.overlay : root.surface)
+                                    border.width: big ? 0 : 1
+                                    border.color: root.glassEdge
+                                    opacity: root.spotify ? 1 : 0.4
+                                    scale: lyrBtnMouse.pressed ? 0.88 : 1
+                                    Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: lyrBtn.big ? (root.playing(root.spotify) ? "" : "") : lyrBtn.modelData.icon
+                                        color: lyrBtn.big ? root.bg : root.fg
+                                        font.family: root.iconFont
+                                        font.pixelSize: lyrBtn.big ? 15 : 12
+                                    }
+                                    MouseArea {
+                                        id: lyrBtnMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            const p = root.spotify;
+                                            if (!p) return;
+                                            if (lyrBtn.modelData.act === "prev") p.previous();
+                                            else if (lyrBtn.modelData.act === "next") p.next();
+                                            else p.togglePlaying();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // ---------- Right side bar: brightness, Spotify, Discord ----------
     // A glass pill on the right edge (auto-hides like the other bars): brightness, Spotify, Vesktop. Click it and it grows
     // into a panel. Brightness uses scripts/brightness.sh (ddcutil for desktop monitors).
@@ -9725,7 +10193,7 @@ ShellRoot {
     property string lyricsKey: ""
 
     readonly property string spotifyKey: spotify ? (spotify.trackArtist || "") + "|" + (spotify.trackTitle || "") : ""
-    onSpotifyKeyChanged: if (sideView === "lyrics") fetchLyrics()
+    onSpotifyKeyChanged: if (sideView === "lyrics" || lyricsOpen) fetchLyrics()
     onSideViewChanged: {
         if (sideView === "lyrics") fetchLyrics();
         if (sideView === "signalChat") sigMarkRead(sigCurrent);
