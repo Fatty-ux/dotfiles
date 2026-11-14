@@ -67,7 +67,16 @@ case "${1:-}" in
         ;;
 
     stop)
-        pkill -INT -x wf-recorder
+        # wf-recorder finishes the video when it gets Ctrl+C (SIGINT), but it sometimes waits
+        # for the screen to change first, so: ask, ask again, then insist.
+        running() { pgrep -x wf-recorder >/dev/null; }
+        waitgone() { for _ in $(seq 1 "$1"); do running || return 0; sleep 0.1; done; return 1; }
+        running || exit 0
+        pkill -INT -x wf-recorder;  waitgone 25 && exit 0
+        pkill -INT -x wf-recorder;  waitgone 25 && exit 0
+        pkill -TERM -x wf-recorder; waitgone 30 && exit 0
+        pkill -KILL -x wf-recorder
+        notify "Recording stopped" "It had to be forced, so the last moment of the video may be cut off"
         ;;
 
     *)

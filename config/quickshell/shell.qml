@@ -3262,6 +3262,14 @@ ShellRoot {
 
     function stopRecording() {
         Quickshell.execDetached(["bash", root.captureScript, "stop"]);
+        recStopGuard.restart();
+    }
+    // if the recorder is somehow still going after the stop script has had its turn,
+    // stop tracking it so the pill and the Capture tab go back to normal
+    Timer {
+        id: recStopGuard
+        interval: 9000
+        onTriggered: if (recProc.running) recProc.running = false
     }
 
     function takeScreenshot() {
