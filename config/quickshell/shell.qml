@@ -1858,7 +1858,10 @@ ShellRoot {
                     id: searchBar
                     anchors.left: parent.left
                     anchors.verticalCenter: parent.verticalCenter
-                    width: 230
+                    // turns into a round search button when the dock needs the room
+                    width: dock.searchCompact ? 48 : 230
+                    Behavior on width { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutCubic } }
+                    clip: true
                     height: 48
                     radius: 24
                     color: searchMouse.containsMouse ? root.overlay : root.popupBg
@@ -1871,7 +1874,7 @@ ShellRoot {
                     // little magnifying glass drawn from two shapes
                     Item {
                         anchors.left: parent.left
-                        anchors.leftMargin: 17
+                        anchors.leftMargin: dock.searchCompact ? 16 : 17
                         anchors.verticalCenter: parent.verticalCenter
                         width: 16
                         height: 16
@@ -1900,6 +1903,8 @@ ShellRoot {
                         anchors.left: parent.left
                         anchors.leftMargin: 44
                         anchors.verticalCenter: parent.verticalCenter
+                        opacity: dock.searchCompact ? 0 : 1
+                        Behavior on opacity { NumberAnimation { duration: root.animMs } }
                         text: "Search apps..."
                         color: root.muted
                         font.pixelSize: 14
@@ -1915,13 +1920,40 @@ ShellRoot {
                 // ---- Center: the dock, big app icons ----
                 Rectangle {
                     id: dock
-                    anchors.centerIn: parent
+                    anchors.verticalCenter: parent.verticalCenter
                     implicitWidth: dockRow.implicitWidth + 28
                     implicitHeight: root.dockIconSize + 26
-                    // with lots of apps the whole dock shrinks a little instead of running into the sides
-                    readonly property real room: barContent.width - 2 * Math.max(searchBar.width, rightIsland.width) - 48
-                    scale: room > 0 && implicitWidth > room ? Math.max(0.55, room / implicitWidth) : 1
+
+                    // ---- Making room when lots of apps are open (icons keep their full size) ----
+                    // 1. the search bar turns into a round button, 2. the dock slides off-centre
+                    // into the free space, 3. the gaps between icons get tighter.
+                    // Only if it still can't fit does the dock shrink, and never below 85%.
+                    property int itemsChanged: 0       // bumped when an icon is added or removed
+                    readonly property int nItems: {
+                        itemsChanged;
+                        let n = 0;
+                        for (let i = 0; i < pinRep.count; i++) { const it = pinRep.itemAt(i); if (it && it.visible) n++; }
+                        for (let i = 0; i < winRep.count; i++) { const it = winRep.itemAt(i); if (it && it.visible) n++; }
+                        return n;
+                    }
+                    function widthFor(pad, gap) {
+                        return nItems * (root.dockIconSize + pad) + Math.max(0, nItems - 2) * gap + 12 + 28;
+                    }
+                    readonly property real sideGap: 24
+                    readonly property real roomWith: barContent.width - 230 - rightIsland.width - 2 * sideGap
+                    readonly property bool searchCompact: widthFor(14, 8) > roomWith
+                    readonly property real room: barContent.width - (searchCompact ? 48 : 230) - rightIsland.width - 2 * sideGap
+                    readonly property bool tight: widthFor(14, 8) > room
+                    readonly property int cellPad: tight ? 4 : 14
+                    readonly property int cellGap: tight ? 2 : 8
+                    scale: widthFor(cellPad, cellGap) > room && room > 0 ? Math.max(0.85, room / widthFor(cellPad, cellGap)) : 1
                     Behavior on scale { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutCubic } }
+
+                    // centred when there's space, otherwise nudged into the free space between the sides
+                    readonly property real leftEdge: (searchCompact ? 48 : 230) + sideGap
+                    readonly property real rightEdge: barContent.width - rightIsland.width - sideGap
+                    x: Math.max(leftEdge, Math.min((barContent.width - width) / 2, rightEdge - width))
+                    Behavior on x { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutCubic } }
                     radius: 24
                     color: root.popupBg
                     border.width: 1
@@ -1937,10 +1969,13 @@ ShellRoot {
 
                         // ---- Pinned apps ----
                         Row {
-                            spacing: 8
+                            spacing: dock.cellGap
                             Layout.alignment: Qt.AlignVCenter
 
                             Repeater {
+                                id: pinRep
+                                onItemAdded: dock.itemsChanged++
+                                onItemRemoved: dock.itemsChanged++
                                 model: pins.adapter.pinned
 
                                 delegate: Item {
@@ -1961,8 +1996,9 @@ ShellRoot {
                                     }
 
                                     visible: !!entry
-                                    width: visible ? root.dockIconSize + 14 : 0
+                                    width: visible ? root.dockIconSize + dock.cellPad : 0
                                     height: root.dockIconSize + 14
+                                    Behavior on width { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutCubic } }
 
                                     function focusNext() {
                                         let next = 0;
@@ -2045,18 +2081,22 @@ ShellRoot {
 
                         // ---- Other open windows (not pinned), shown as icons ----
                         Row {
-                            spacing: 8
+                            spacing: dock.cellGap
                             Layout.alignment: Qt.AlignVCenter
 
                             Repeater {
+                                id: winRep
+                                onItemAdded: dock.itemsChanged++
+                                onItemRemoved: dock.itemsChanged++
                                 model: ToplevelManager.toplevels
 
                                 delegate: Item {
                                     id: win
                                     required property var modelData
                                     visible: root.bottomShowWindowList && !root.isPinned(modelData.appId)
-                                    width: visible ? root.dockIconSize + 14 : 0
+                                    width: visible ? root.dockIconSize + dock.cellPad : 0
                                     height: root.dockIconSize + 14
+                                    Behavior on width { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutCubic } }
 
                                     Rectangle {
                                         anchors.fill: parent
