@@ -12028,9 +12028,7 @@ ShellRoot {
                 if (mode === m) return;
                 mode = m;
                 if (m === "live") root.refreshLiveThumbs();
-                const i = currentWallIndex();
-                strip.currentIndex = i >= 0 ? i : 0;
-                strip.positionViewAtIndex(strip.currentIndex, ListView.Center);
+                startFocus();
             }
             readonly property int thumbH: 210
             readonly property real slant: 0.24     // how far the cards lean
@@ -12043,7 +12041,44 @@ ShellRoot {
                 return -1;
             }
 
+            // Jump straight to the wallpaper that's set right now. The picker opens before the
+            // list has its size (and sometimes before the folder has loaded), so this runs a few
+            // times over the first half second, unless you start moving through the list yourself.
+            property bool jumping: false
+            property int focusTries: 0
+            function focusCurrent() {
+                if (picker.src.count === 0) return;
+                const i = currentWallIndex();
+                jumping = true;
+                strip.currentIndex = i >= 0 ? i : 0;
+                strip.positionViewAtIndex(strip.currentIndex, ListView.Center);
+            }
+            function startFocus() {
+                focusTries = 0;
+                focusCurrent();
+                focusTimer.restart();
+            }
+            function stopFocus() {
+                focusTimer.stop();
+                jumping = false;
+            }
+            Timer {
+                id: focusTimer
+                interval: 60
+                repeat: true
+                onTriggered: {
+                    picker.focusCurrent();
+                    if (++picker.focusTries >= 10) picker.stopFocus();
+                }
+            }
+            Connections {
+                target: picker.src
+                ignoreUnknownSignals: true
+                function onCountChanged() { if (focusTimer.running) picker.focusCurrent(); }
+            }
+
             function step(n) {
+                picker.stopFocus();
                 if (picker.src.count === 0) return;
                 strip.currentIndex = Math.max(0, Math.min(picker.src.count - 1, strip.currentIndex + n));
             }
@@ -12060,9 +12095,7 @@ ShellRoot {
                 if (visible) {
                     mode = pins.adapter.liveWallpaper !== "" ? "live" : "pictures";
                     if (live) root.refreshLiveThumbs();
-                    const i = currentWallIndex();
-                    strip.currentIndex = i >= 0 ? i : 0;
-                    strip.positionViewAtIndex(strip.currentIndex, ListView.Center);
+                    startFocus();
                     keys.forceActiveFocus();
                 }
             }
@@ -12218,6 +12251,7 @@ ShellRoot {
                             icon: "\uf074"
                             label: "Random"
                             onClicked: mouse => {
+                                picker.stopFocus();
                                 if (picker.live) {
                                     if (picker.src.count === 0) return;
                                     strip.currentIndex = Math.floor(Math.random() * picker.src.count);
@@ -12257,8 +12291,10 @@ ShellRoot {
                             highlightRangeMode: ListView.StrictlyEnforceRange
                             preferredHighlightBegin: width / 2 - picker.thumbW / 2
                             preferredHighlightEnd: width / 2 + picker.thumbW / 2
-                            highlightMoveDuration: root.animMs * 2
+                            highlightMoveDuration: picker.jumping ? 0 : root.animMs * 2
                             snapMode: ListView.SnapToItem
+                            onWidthChanged: if (focusTimer.running) picker.focusCurrent()
+                            onMovementStarted: picker.stopFocus()
 
                             delegate: Item {
                                 id: wthumb
@@ -12356,6 +12392,7 @@ ShellRoot {
                                         cursorShape: Qt.PointingHandCursor
                                         onClicked: {
                                             // first click brings it to the middle, clicking the middle one sets it
+                                            picker.stopFocus();
                                             if (wthumb.centre) picker.applyCurrent();
                                             else strip.currentIndex = wthumb.index;
                                         }
