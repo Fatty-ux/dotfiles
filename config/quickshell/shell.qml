@@ -15,34 +15,109 @@ import Qt.labs.folderlistmodel
 ShellRoot {
     id: root
 
-    // ---------- Theme (colors are generated from the current wallpaper) ----------
+    // ---------- Theme (pick it on the Themes tab in the hub) ----------
     // 'seed' is the dominant vivid color found in the wallpaper.
     property color seed: "#89b4fa"
     property bool wallIsLight: false
-    // Theme (change it with the Theme tile in the hub):
-    //   "glass" = the dark liquid glass look, neutral black and white, whatever the wallpaper
-    //   "auto"  = colours from the wallpaper, light or dark to suit it
-    //   "dark" / "light" = colours from the wallpaper, always dark / always light
-    readonly property string themeMode: pins.adapter.themeMode
-    readonly property bool glassTheme: themeMode === "glass"
-    readonly property bool dark: glassTheme || themeMode === "dark" || (themeMode !== "light" && !wallIsLight)
+    property var wallPalette: []          // the main colours of the wallpaper, as "#rrggbb"
+    //   colorSource: "neutral" = black and white glass, "wallpaper" = colours from the wallpaper,
+    //                "custom" = the colour you picked (customColor)
+    //   themeStyle:  how the bars are drawn: "glass", "frosted", "clear", "solid" or "neon"
+    //   themeShade:  "dark", "light" or "auto" (follows how bright the wallpaper is)
+    //   themeTint:   how much the colour soaks into the glass (0 = only the accent, 1 = everything)
+    readonly property string colorSource: pins.adapter.colorSource
+    readonly property string themeStyle: pins.adapter.themeStyle
+    readonly property string themeShade: pins.adapter.themeShade
+    readonly property real themeTint: pins.adapter.themeTint
+    readonly property bool glassTheme: colorSource === "neutral"
+    readonly property bool dark: themeShade === "dark" || (themeShade !== "light" && !wallIsLight)
+    readonly property color themeSeed: colorSource === "custom" ? pins.adapter.customColor : seed
 
-    readonly property real hue: seed.hslHue < 0 ? 0.6 : seed.hslHue
-    readonly property real sat: glassTheme ? 0 : Math.max(0.35, Math.min(0.85, seed.hslSaturation))
+    readonly property real hue: themeSeed.hslHue < 0 ? 0.6 : themeSeed.hslHue
+    readonly property real sat: glassTheme ? 0
+        : colorSource === "custom" ? Math.min(0.9, themeSeed.hslSaturation)
+        : Math.max(0.35, Math.min(0.85, themeSeed.hslSaturation))
+    readonly property real tsat: sat * themeTint      // saturation used for the glass itself
 
-    property color bg: dark ? Qt.hsla(hue, sat * 0.35, 0.10, 1) : Qt.hsla(hue, sat * 0.30, 0.96, 1)
+    // see-through-ness for each style: popup, surface, overlay (dark), then the same for light, then edge
+    readonly property var styleTable: ({
+        glass:   [0.42, 0.30, 0.45, 0.50, 0.38, 0.60, 0.24],
+        frosted: [0.74, 0.46, 0.58, 0.80, 0.55, 0.72, 0.14],
+        clear:   [0.20, 0.14, 0.28, 0.26, 0.20, 0.40, 0.34],
+        solid:   [0.97, 0.92, 0.95, 0.98, 0.95, 0.97, 0.08],
+        neon:    [0.55, 0.22, 0.38, 0.60, 0.30, 0.50, 0.75]
+    })
+    readonly property var styleA: styleTable[themeStyle] || styleTable.glass
+    readonly property string customColor: pins.adapter.customColor
+
+    readonly property color accentBase: glassTheme ? (dark ? Qt.rgba(0.90, 0.92, 0.95, 1) : Qt.rgba(0.16, 0.17, 0.20, 1))
+        : colorSource === "custom"
+            ? Qt.hsla(hue, sat, dark ? Math.max(0.55, Math.min(0.85, themeSeed.hslLightness)) : Math.max(0.25, Math.min(0.45, themeSeed.hslLightness)), 1)
+            : (dark ? Qt.hsla(hue, sat, 0.72, 1) : Qt.hsla(hue, sat, 0.38, 1))
+
+    property color bg: dark ? Qt.hsla(hue, tsat * 0.35, 0.10, 1) : Qt.hsla(hue, tsat * 0.30, 0.96, 1)
     // Liquid glass: surfaces are see-through and Hyprland blurs what's behind them
-    // (layer rules in ~/.config/hypr/config/decorations.lua). Raise the last number of
-    // popupBg / surface to make the glass less see-through.
-    property color surface: dark ? Qt.hsla(hue, sat * 0.30, 0.22, 0.30) : Qt.hsla(hue, sat * 0.25, 0.99, 0.38)
-    property color overlay: dark ? Qt.hsla(hue, sat * 0.30, 0.38, 0.45) : Qt.hsla(hue, sat * 0.35, 0.86, 0.60)
-    property color popupBg: dark ? Qt.hsla(hue, sat * 0.35, 0.10, 0.42) : Qt.hsla(hue, sat * 0.25, 0.97, 0.50)
-    property color fg: dark ? Qt.hsla(hue, sat * 0.30, 0.93, 1) : Qt.hsla(hue, sat * 0.40, 0.14, 1)
-    property color muted: dark ? Qt.hsla(hue, sat * 0.20, 0.72, 1) : Qt.hsla(hue, sat * 0.25, 0.38, 1)
-    property color accent: glassTheme ? Qt.rgba(0.90, 0.92, 0.95, 1)
-        : (dark ? Qt.hsla(hue, sat, 0.72, 1) : Qt.hsla(hue, sat, 0.38, 1))
+    // (layer rules in ~/.config/hypr/config/decorations.lua). The styleTable above sets how see-through.
+    property color surface: dark ? Qt.hsla(hue, tsat * 0.30, 0.22, styleA[1]) : Qt.hsla(hue, tsat * 0.25, 0.99, styleA[4])
+    property color overlay: dark ? Qt.hsla(hue, tsat * 0.30, 0.38, styleA[2]) : Qt.hsla(hue, tsat * 0.35, 0.86, styleA[5])
+    property color popupBg: dark ? Qt.hsla(hue, tsat * 0.35, 0.10, styleA[0]) : Qt.hsla(hue, tsat * 0.25, 0.97, styleA[3])
+    property color fg: dark ? Qt.hsla(hue, tsat * 0.30, 0.93, 1) : Qt.hsla(hue, tsat * 0.40, 0.14, 1)
+    property color muted: dark ? Qt.hsla(hue, tsat * 0.20, 0.72, 1) : Qt.hsla(hue, tsat * 0.25, 0.38, 1)
+    property color accent: accentBase
     property color danger: dark ? "#f38ba8" : "#c0264a"
-    property color glassEdge: dark ? Qt.rgba(1, 1, 1, 0.24) : Qt.rgba(1, 1, 1, 0.70)
+    property color glassEdge: themeStyle === "neon" ? Qt.rgba(accentBase.r, accentBase.g, accentBase.b, styleA[6])
+        : (dark ? Qt.rgba(1, 1, 1, styleA[6]) : Qt.rgba(1, 1, 1, Math.min(0.9, styleA[6] * 2.9)))
+
+    // ---- what the Themes tab offers ----
+    readonly property var themeStyles: [
+        { id: "glass",   name: "Liquid glass", sub: "See-through and blurred" },
+        { id: "frosted", name: "Frosted",      sub: "Thicker, softer glass" },
+        { id: "clear",   name: "Crystal",      sub: "Almost invisible" },
+        { id: "solid",   name: "Solid",        sub: "No see-through" },
+        { id: "neon",    name: "Neon edge",    sub: "Glowing coloured rims" }
+    ]
+    readonly property var themePresets: [
+        { name: "Liquid glass", source: "neutral",   style: "glass",   shade: "dark",  tint: 1,   color: "#e6eaf2" },
+        { name: "Wallpaper",    source: "wallpaper", style: "glass",   shade: "auto",  tint: 1,   color: "" },
+        { name: "Paper",        source: "neutral",   style: "frosted", shade: "light", tint: 1,   color: "#ffffff" },
+        { name: "Catppuccin",   source: "custom",    style: "glass",   shade: "dark",  tint: 1,   color: "#cba6f7" },
+        { name: "Tokyo Night",  source: "custom",    style: "glass",   shade: "dark",  tint: 1,   color: "#7aa2f7" },
+        { name: "Nord",         source: "custom",    style: "frosted", shade: "dark",  tint: 1,   color: "#88c0d0" },
+        { name: "Dracula",      source: "custom",    style: "glass",   shade: "dark",  tint: 1,   color: "#bd93f9" },
+        { name: "Gruvbox",      source: "custom",    style: "solid",   shade: "dark",  tint: 1,   color: "#d79921" },
+        { name: "Rosé Pine",    source: "custom",    style: "frosted", shade: "dark",  tint: 1,   color: "#ebbcba" },
+        { name: "Everforest",   source: "custom",    style: "frosted", shade: "dark",  tint: 1,   color: "#a7c080" },
+        { name: "Sakura",       source: "custom",    style: "frosted", shade: "light", tint: 1,   color: "#f5a9c4" },
+        { name: "Ocean",        source: "custom",    style: "clear",   shade: "dark",  tint: 1,   color: "#4fc3f7" },
+        { name: "Ember",        source: "custom",    style: "neon",    shade: "dark",  tint: 0.5, color: "#ff7a45" },
+        { name: "Matrix",       source: "custom",    style: "neon",    shade: "dark",  tint: 0.5, color: "#39ff14" },
+        { name: "Synthwave",    source: "custom",    style: "neon",    shade: "dark",  tint: 1,   color: "#ff4d8d" }
+    ]
+    readonly property var themeSwatches: [
+        "#ff5555", "#e63946", "#c0392b", "#ff8a80", "#ff4d8d", "#ff79c6", "#f5a9c4", "#e91e63",
+        "#b388ff", "#cba6f7", "#bd93f9", "#9b59b6", "#7e57c2", "#5c6bc0", "#7aa2f7", "#89b4fa",
+        "#82aaff", "#3d8bff", "#1e88e5", "#4fc3f7", "#26c6da", "#00bcd4", "#88c0d0", "#94e2d5",
+        "#1abc9c", "#00e676", "#2ecc71", "#a6e3a1", "#4caf50", "#a7c080", "#39ff14", "#c6ff00",
+        "#f9e2af", "#ffd54f", "#f1c40f", "#d79921", "#fab387", "#ff9800", "#ff7a45", "#e64a19",
+        "#d4a373", "#a1887f", "#8d6e63", "#ffffff", "#cfd8dc", "#9e9e9e", "#607d8b", "#37474f"
+    ]
+
+    function setTheme(src, style, shade, tint, colorHex) {
+        if (src) pins.adapter.colorSource = src;
+        if (style) pins.adapter.themeStyle = style;
+        if (shade) pins.adapter.themeShade = shade;
+        if (tint !== undefined && tint !== null) pins.adapter.themeTint = tint;
+        if (colorHex) pins.adapter.customColor = colorHex;
+    }
+    function pickColor(hex) {
+        pins.adapter.customColor = hex;
+        pins.adapter.colorSource = "custom";
+    }
+    function themeLabel() {
+        const s = themeStyles.find(x => x.id === themeStyle);
+        const src = colorSource === "neutral" ? "Neutral" : colorSource === "wallpaper" ? "Wallpaper" : "Custom";
+        return (s ? s.name : "Glass") + " · " + src;
+    }
 
     // Colors fade smoothly when the wallpaper (or theme) changes
     Behavior on bg { ColorAnimation { duration: 700 } }
@@ -113,7 +188,13 @@ ShellRoot {
             property list<string> pinned: ["firefox", "kitty"]
             property string wallpaper: ""
             property string liveWallpaper: ""   // a video from ~/Videos/Wallpapers ("" = none)
-            property string themeMode: "glass"
+            property string themeMode: "glass"     // old setting, only read once to move you to the new ones
+            property bool themeV2: false
+            property string colorSource: "neutral"
+            property string themeStyle: "glass"
+            property string themeShade: "dark"
+            property real themeTint: 1
+            property string customColor: "#89b4fa"
             property bool glassDefaultSet: false    // switched to the glass theme once
             property string autoHide: "windows"
             property string desktopsJson: ""
@@ -489,6 +570,14 @@ ShellRoot {
         }
         let best = -1, bestW = 0;
         for (let k = 0; k < bins; k++) if (weight[k] > bestW) { bestW = weight[k]; best = k; }
+        // the wallpaper's main colours, strongest first, for the Themes tab
+        const hex = v => ("0" + Math.round(Math.max(0, Math.min(1, v)) * 255).toString(16)).slice(-2);
+        const order = [];
+        for (let k = 0; k < bins; k++) if (weight[k] > 3) order.push(k);
+        order.sort((x, y) => weight[y] - weight[x]);
+        const pal = order.slice(0, 7).map(k => "#" + hex(sr[k] / weight[k]) + hex(sg[k] / weight[k]) + hex(sb[k] / weight[k]));
+        if (count > 0) pal.push("#" + hex(ar / count) + hex(ag / count) + hex(ab / count));
+        wallPalette = pal;
         wallIsLight = count > 0 && (lum / count) > 0.6;
         if (best >= 0 && bestW > 6) {
             seed = Qt.rgba(sr[best] / weight[best], sg[best] / weight[best], sb[best] / weight[best], 1);
@@ -506,12 +595,20 @@ ShellRoot {
                 pins.adapter.themeMode = "glass";
                 pins.adapter.glassDefaultSet = true;
             }
+            // move the old theme setting over to the Themes tab settings, once
+            if (!pins.adapter.themeV2) {
+                const m = pins.adapter.themeMode;
+                if (m === "glass") root.setTheme("neutral", "glass", "dark", 1, "");
+                else root.setTheme("wallpaper", "glass", m === "light" ? "light" : (m === "dark" ? "dark" : "auto"), 1, "");
+                pins.adapter.themeV2 = true;
+            }
         }
     }
 
+    // quick toggle: step through the styles (everything else is on the Themes tab)
     function cycleTheme() {
-        const order = ["glass", "auto", "dark", "light"];
-        pins.adapter.themeMode = order[(order.indexOf(pins.adapter.themeMode) + 1) % order.length];
+        const ids = themeStyles.map(s => s.id);
+        pins.adapter.themeStyle = ids[(ids.indexOf(themeStyle) + 1) % ids.length];
     }
 
     function cycleAutoHide() {
@@ -1275,7 +1372,7 @@ ShellRoot {
         const h = hue;
         const s = sat;
         const col = (hh, sa, li) => Qt.hsla(((hh % 1) + 1) % 1, sa, li, 1).toString();
-        const accentHex = glassTheme ? "#e6eaf2" : col(h, s, d ? 0.72 : 0.38);
+        const accentHex = accentBase.toString();
         const bgc = d ? col(h, s * 0.35, 0.09) : col(h, s * 0.30, 0.97);
         // text: clearly tinted with the wallpaper colour, still easy to read
         const fgc = d ? col(h, s * 0.45, 0.88) : col(h, s * 0.55, 0.18);
@@ -1334,6 +1431,8 @@ ShellRoot {
         onTriggered: root.writeKittyTheme()
     }
     onSeedChanged: kittyTimer.restart()
+    onThemeSeedChanged: kittyTimer.restart()
+    onThemeTintChanged: kittyTimer.restart()
     onDarkChanged: kittyTimer.restart()
     onGlassThemeChanged: kittyTimer.restart()
 
@@ -3101,7 +3200,7 @@ ShellRoot {
     // A compact pill at the top centre. Click it and it grows into the hub:
     // Home, Media, Apps, Calendar, Alerts and System.
     property bool hubOpen: false
-    property int hubTab: 0           // 0 home, 1 media, 2 apps, 3 calendar, 4 alerts, 5 system, 6 capture, 7 sports
+    property int hubTab: 0           // 0 home, 1 media, 2 apps, 3 calendar, 4 alerts, 5 system, 6 capture, 7 sports, 8 themes
     property int calOffset: 0        // how many months away from this one the calendar shows
     readonly property int hubW: 900
     readonly property int hubH: 560
@@ -4529,8 +4628,8 @@ ShellRoot {
                     Keys.onPressed: event => {
                         if (event.key === Qt.Key_Escape && root.devPicker !== "") root.devPicker = "";
                         else if (event.key === Qt.Key_Escape) root.hubOpen = false;
-                        else if (event.key === Qt.Key_Tab) root.hubTab = (root.hubTab + 1) % 8;
-                        else if (event.key === Qt.Key_Backtab) root.hubTab = (root.hubTab + 7) % 8;
+                        else if (event.key === Qt.Key_Tab) root.hubTab = (root.hubTab + 1) % 9;
+                        else if (event.key === Qt.Key_Backtab) root.hubTab = (root.hubTab + 8) % 9;
                         else return;
                         event.accepted = true;
                     }
@@ -4746,7 +4845,8 @@ ShellRoot {
                                                 { name: "Alerts", icon: "" },
                                                 { name: "System", icon: "" },
                                                 { name: "Capture", icon: "" },
-                                                { name: "Sports", icon: "\udb82\udc06" }
+                                                { name: "Sports", icon: "\udb82\udc06" },
+                                                { name: "Themes", icon: "\uf53f" }
                                             ]
 
                                             delegate: Rectangle {
@@ -4757,6 +4857,7 @@ ShellRoot {
                                                 width: htabRow.implicitWidth + 20
                                                 height: 34
                                                 radius: 11
+                                                Behavior on width { NumberAnimation { duration: root.animMs; easing.type: Easing.OutCubic } }
                                                 color: htab.current ? root.accent : (htabMouse.containsMouse ? root.overlay : "transparent")
                                                 scale: htabMouse.pressed ? 0.94 : 1
                                                 Behavior on color { ColorAnimation { duration: root.animMs } }
@@ -4773,8 +4874,10 @@ ShellRoot {
                                                         font.family: root.iconFont
                                                         font.pixelSize: 13
                                                     }
+                                                    // the name shows on the open tab (and when you point at one), so all 9 fit
                                                     Text {
                                                         anchors.verticalCenter: parent.verticalCenter
+                                                        visible: htab.current || htabMouse.containsMouse
                                                         text: htab.modelData.name
                                                         color: htab.current ? root.bg : root.fg
                                                         font.pixelSize: 12
@@ -5481,9 +5584,9 @@ ShellRoot {
                                             model: [
                                                     {
                                                     icon: "", title: "Theme",
-                                                    sub: root.themeMode === "glass" ? "Glass" : root.themeMode === "auto" ? "Auto" : (root.themeMode === "dark" ? "Dark" : "Light"),
+                                                    sub: root.themeLabel(),
                                                     active: false, ok: true,
-                                                    run: () => root.cycleTheme()
+                                                    run: () => { root.hubTab = 8; }
                                                     },
                                                     {
                                                     icon: "", title: "Auto-hide bars",
@@ -7273,6 +7376,363 @@ ShellRoot {
                                         }
                                     }
                                 }
+
+                                // ===== 8: Themes =====
+                                Flickable {
+                                    id: themesPage
+                                    clip: true
+                                    contentWidth: width
+                                    contentHeight: themesCol.implicitHeight + 6
+                                    boundsBehavior: Flickable.StopAtBounds
+
+                                    ColumnLayout {
+                                        id: themesCol
+                                        width: themesPage.width
+                                        spacing: 12
+
+                                        // ---- Quick looks: one click sets everything ----
+                                        Text { text: "Quick looks"; color: root.fg; font.pixelSize: 15; font.bold: true }
+                                        Flow {
+                                            Layout.fillWidth: true
+                                            spacing: 8
+                                            Repeater {
+                                                model: root.themePresets
+                                                delegate: Rectangle {
+                                                    id: pre
+                                                    required property var modelData
+                                                    readonly property bool current: root.colorSource === modelData.source
+                                                        && root.themeStyle === modelData.style && root.themeShade === modelData.shade
+                                                        && (modelData.source !== "custom" || pins.adapter.customColor.toLowerCase() === modelData.color)
+                                                    width: preRow.implicitWidth + 24
+                                                    height: 34
+                                                    radius: 17
+                                                    color: pre.current ? root.accent : (preMouse.containsMouse ? root.overlay : root.surface)
+                                                    border.width: 1
+                                                    border.color: root.glassEdge
+                                                    scale: preMouse.pressed ? 0.94 : 1
+                                                    Behavior on color { ColorAnimation { duration: root.animMs } }
+                                                    Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+                                                    Row {
+                                                        id: preRow
+                                                        anchors.centerIn: parent
+                                                        spacing: 7
+                                                        Rectangle {
+                                                            anchors.verticalCenter: parent.verticalCenter
+                                                            width: 14; height: 14; radius: 7
+                                                            border.width: 1
+                                                            border.color: Qt.rgba(1, 1, 1, 0.5)
+                                                            color: pre.modelData.source === "wallpaper" ? root.seed
+                                                                : (pre.modelData.color || root.seed)
+                                                        }
+                                                        Text {
+                                                            anchors.verticalCenter: parent.verticalCenter
+                                                            text: pre.modelData.name
+                                                            color: pre.current ? root.bg : root.fg
+                                                            font.pixelSize: 12
+                                                            font.bold: pre.current
+                                                        }
+                                                    }
+                                                    MouseArea {
+                                                        id: preMouse
+                                                        anchors.fill: parent
+                                                        hoverEnabled: true
+                                                        cursorShape: Qt.PointingHandCursor
+                                                        onClicked: root.setTheme(pre.modelData.source, pre.modelData.style, pre.modelData.shade,
+                                                            pre.modelData.tint, pre.modelData.source === "custom" ? pre.modelData.color : "")
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // ---- Style: how the bars are drawn ----
+                                        Text { text: "Style"; color: root.fg; font.pixelSize: 15; font.bold: true; Layout.topMargin: 4 }
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 10
+                                            Repeater {
+                                                model: root.themeStyles
+                                                delegate: Rectangle {
+                                                    id: stCard
+                                                    required property var modelData
+                                                    readonly property bool current: root.themeStyle === modelData.id
+                                                    readonly property var a: root.styleTable[modelData.id]
+                                                    Layout.fillWidth: true
+                                                    Layout.preferredHeight: 92
+                                                    radius: 18
+                                                    // a colourful backdrop so you can see how see-through each style is
+                                                    gradient: Gradient {
+                                                        orientation: Gradient.Horizontal
+                                                        GradientStop { position: 0; color: root.wallPalette.length > 0 ? root.wallPalette[0] : "#5c6bc0" }
+                                                        GradientStop { position: 1; color: root.wallPalette.length > 1 ? root.wallPalette[1] : "#ff79c6" }
+                                                    }
+                                                    border.width: stCard.current ? 2 : 1
+                                                    border.color: stCard.current ? root.accent : root.glassEdge
+                                                    scale: stMouse.pressed ? 0.95 : (stMouse.containsMouse ? 1.03 : 1)
+                                                    Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+
+                                                    // a tiny pill drawn in this style
+                                                    Rectangle {
+                                                        anchors.fill: parent
+                                                        anchors.margins: 9
+                                                        radius: 13
+                                                        color: root.dark ? Qt.hsla(root.hue, root.tsat * 0.35, 0.10, stCard.a[0])
+                                                                         : Qt.hsla(root.hue, root.tsat * 0.25, 0.97, stCard.a[3])
+                                                        border.width: 1
+                                                        border.color: stCard.modelData.id === "neon"
+                                                            ? Qt.rgba(root.accentBase.r, root.accentBase.g, root.accentBase.b, stCard.a[6])
+                                                            : Qt.rgba(1, 1, 1, root.dark ? stCard.a[6] : Math.min(0.9, stCard.a[6] * 2.9))
+                                                        Column {
+                                                            anchors.centerIn: parent
+                                                            spacing: 2
+                                                            Text {
+                                                                anchors.horizontalCenter: parent.horizontalCenter
+                                                                text: stCard.modelData.name
+                                                                color: root.fg
+                                                                font.pixelSize: 13
+                                                                font.bold: true
+                                                            }
+                                                            Text {
+                                                                anchors.horizontalCenter: parent.horizontalCenter
+                                                                text: stCard.modelData.sub
+                                                                color: root.muted
+                                                                font.pixelSize: 10
+                                                            }
+                                                        }
+                                                    }
+                                                    Rectangle {
+                                                        visible: stCard.current
+                                                        anchors.top: parent.top
+                                                        anchors.right: parent.right
+                                                        anchors.margins: 5
+                                                        width: 18; height: 18; radius: 9
+                                                        color: root.accent
+                                                        Text { anchors.centerIn: parent; text: ""; font.family: root.iconFont; font.pixelSize: 9; color: root.bg }
+                                                    }
+                                                    MouseArea {
+                                                        id: stMouse
+                                                        anchors.fill: parent
+                                                        hoverEnabled: true
+                                                        cursorShape: Qt.PointingHandCursor
+                                                        onClicked: pins.adapter.themeStyle = stCard.modelData.id
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // ---- Colours from / brightness / how strong ----
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            Layout.topMargin: 4
+                                            spacing: 18
+
+                                            Column {
+                                                spacing: 6
+                                                Text { text: "Colours from"; color: root.muted; font.pixelSize: 11 }
+                                                Row {
+                                                    spacing: 6
+                                                    Repeater {
+                                                        model: [ { id: "neutral", name: "Neutral", icon: "" },
+                                                                 { id: "wallpaper", name: "Wallpaper", icon: "" },
+                                                                 { id: "custom", name: "My colour", icon: "" } ]
+                                                        delegate: SportChip {
+                                                            required property var modelData
+                                                            theme: root
+                                                            label: modelData.name
+                                                            icon: modelData.icon
+                                                            active: root.colorSource === modelData.id
+                                                            onClicked: pins.adapter.colorSource = modelData.id
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            Column {
+                                                spacing: 6
+                                                Text { text: "Brightness"; color: root.muted; font.pixelSize: 11 }
+                                                Row {
+                                                    spacing: 6
+                                                    Repeater {
+                                                        model: [ { id: "dark", name: "Dark", icon: "" },
+                                                                 { id: "light", name: "Light", icon: "" },
+                                                                 { id: "auto", name: "Auto", icon: "" } ]
+                                                        delegate: SportChip {
+                                                            required property var modelData
+                                                            theme: root
+                                                            label: modelData.name
+                                                            icon: modelData.icon
+                                                            active: root.themeShade === modelData.id
+                                                            onClicked: pins.adapter.themeShade = modelData.id
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            Column {
+                                                spacing: 6
+                                                opacity: root.glassTheme ? 0.4 : 1
+                                                Text { text: "Colour strength"; color: root.muted; font.pixelSize: 11 }
+                                                Row {
+                                                    spacing: 6
+                                                    Repeater {
+                                                        model: [ { v: 0, name: "Accent only" }, { v: 0.5, name: "Subtle" }, { v: 1, name: "Full" } ]
+                                                        delegate: SportChip {
+                                                            required property var modelData
+                                                            theme: root
+                                                            label: modelData.name
+                                                            active: Math.abs(root.themeTint - modelData.v) < 0.01
+                                                            onClicked: pins.adapter.themeTint = modelData.v
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            Item { Layout.fillWidth: true }
+                                        }
+
+                                        // ---- Colours in your wallpaper ----
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            Layout.topMargin: 4
+                                            spacing: 10
+                                            Text { text: "From your wallpaper"; color: root.fg; font.pixelSize: 15; font.bold: true }
+                                            Item { Layout.fillWidth: true }
+                                            SportChip {
+                                                theme: root
+                                                label: "Match my wallpaper"
+                                                icon: ""
+                                                active: root.colorSource === "wallpaper"
+                                                onClicked: pins.adapter.colorSource = "wallpaper"
+                                            }
+                                        }
+                                        Row {
+                                            spacing: 10
+                                            Repeater {
+                                                model: root.wallPalette
+                                                delegate: Rectangle {
+                                                    id: sw
+                                                    required property string modelData
+                                                    readonly property bool current: root.colorSource === "custom" && root.customColor.toLowerCase() === sw.modelData.toLowerCase()
+                                                    width: 40
+                                                    height: 40
+                                                    radius: 40 / 2
+                                                    color: sw.modelData
+                                                    border.width: sw.current ? 3 : 1
+                                                    border.color: sw.current ? root.fg : Qt.rgba(1, 1, 1, 0.35)
+                                                    scale: swMouse.pressed ? 0.85 : (swMouse.containsMouse ? 1.15 : 1)
+                                                    Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutBack } }
+                                                    Text {
+                                                        anchors.centerIn: parent
+                                                        visible: sw.current
+                                                        text: "\uf00c"
+                                                        font.family: root.iconFont
+                                                        font.pixelSize: 40 * 0.38
+                                                        color: sw.color.hslLightness > 0.6 ? "#1b1b1f" : "white"
+                                                    }
+                                                    MouseArea {
+                                                        id: swMouse
+                                                        anchors.fill: parent
+                                                        hoverEnabled: true
+                                                        cursorShape: Qt.PointingHandCursor
+                                                        onClicked: root.pickColor(sw.modelData)
+                                                    }
+                                                }
+                                            }
+                                            Text {
+                                                visible: root.wallPalette.length === 0
+                                                text: "Pick a wallpaper and its colours show up here"
+                                                color: root.muted
+                                                font.pixelSize: 12
+                                            }
+                                        }
+
+                                        // ---- Lots of colours to pick from ----
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            Layout.topMargin: 4
+                                            spacing: 10
+                                            Text { text: "Colours"; color: root.fg; font.pixelSize: 15; font.bold: true }
+                                            Item { Layout.fillWidth: true }
+                                            // type your own: #ff8800
+                                            Rectangle {
+                                                implicitWidth: 150
+                                                implicitHeight: 32
+                                                radius: 16
+                                                color: root.surface
+                                                border.width: 1
+                                                border.color: hexIn.activeFocus ? root.accent : root.glassEdge
+                                                Rectangle {
+                                                    id: hexDot
+                                                    anchors.left: parent.left
+                                                    anchors.leftMargin: 8
+                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    width: 18; height: 18; radius: 9
+                                                    color: pins.adapter.customColor
+                                                    border.width: 1
+                                                    border.color: Qt.rgba(1, 1, 1, 0.5)
+                                                }
+                                                TextInput {
+                                                    id: hexIn
+                                                    anchors.left: hexDot.right
+                                                    anchors.leftMargin: 8
+                                                    anchors.right: parent.right
+                                                    anchors.rightMargin: 10
+                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    color: root.fg
+                                                    font.pixelSize: 13
+                                                    font.family: "JetBrainsMono Nerd Font"
+                                                    clip: true
+                                                    maximumLength: 7
+                                                    validator: RegularExpressionValidator { regularExpression: /#?[0-9a-fA-F]{0,6}/ }
+                                                    onAccepted: {
+                                                        let v = text.trim();
+                                                        if (v[0] !== "#") v = "#" + v;
+                                                        if (/^#[0-9a-fA-F]{6}$/.test(v)) { root.pickColor(v.toLowerCase()); text = ""; }
+                                                    }
+                                                    Keys.onEscapePressed: { text = ""; hubKeys.forceActiveFocus(); }
+                                                    Text {
+                                                        anchors.verticalCenter: parent.verticalCenter
+                                                        visible: hexIn.text === ""
+                                                        text: "#hex + Enter"
+                                                        color: root.muted
+                                                        font.pixelSize: 12
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Flow {
+                                            Layout.fillWidth: true
+                                            spacing: 9
+                                            Repeater {
+                                                model: root.themeSwatches
+                                                delegate: Rectangle {
+                                                    id: sw
+                                                    required property string modelData
+                                                    readonly property bool current: root.colorSource === "custom" && root.customColor.toLowerCase() === sw.modelData.toLowerCase()
+                                                    width: 32
+                                                    height: 32
+                                                    radius: 32 / 2
+                                                    color: sw.modelData
+                                                    border.width: sw.current ? 3 : 1
+                                                    border.color: sw.current ? root.fg : Qt.rgba(1, 1, 1, 0.35)
+                                                    scale: swMouse.pressed ? 0.85 : (swMouse.containsMouse ? 1.15 : 1)
+                                                    Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutBack } }
+                                                    Text {
+                                                        anchors.centerIn: parent
+                                                        visible: sw.current
+                                                        text: "\uf00c"
+                                                        font.family: root.iconFont
+                                                        font.pixelSize: 32 * 0.38
+                                                        color: sw.color.hslLightness > 0.6 ? "#1b1b1f" : "white"
+                                                    }
+                                                    MouseArea {
+                                                        id: swMouse
+                                                        anchors.fill: parent
+                                                        hoverEnabled: true
+                                                        cursorShape: Qt.PointingHandCursor
+                                                        onClicked: root.pickColor(sw.modelData)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -7728,8 +8188,7 @@ ShellRoot {
                 readonly property var tiles: [
                     {
                         title: "Theme",
-                        sub: root.themeMode === "glass" ? "Glass" : root.themeMode === "auto" ? "Auto (" + (root.dark ? "dark" : "light") + ")"
-                            : (root.themeMode === "dark" ? "Dark" : "Light"),
+                        sub: root.themeLabel(),
                         active: false,
                         run: () => root.cycleTheme()
                     },
