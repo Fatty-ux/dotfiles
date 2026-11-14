@@ -6,3 +6,7 @@ hl.config({
         no_warps = true,
     },
 })
+
+-- JoeOS Qt theme: KDE/Qt apps (Dolphin...) use qt6ct -> Kvantum glass + Papirus icons
+hl.env("QT_QPA_PLATFORMTHEME", "qt6ct")
+hl.env("QT_STYLE_OVERRIDE", "kvantum")

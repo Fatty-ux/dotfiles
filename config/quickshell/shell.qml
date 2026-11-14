@@ -2573,6 +2573,37 @@ ShellRoot {
         onTriggered: root.sessionFinish()
     }
 
+    // ---------- Log out / Reboot / Shut down ----------
+    // Saves the open apps first (for "Reopen apps"), then tries each way in turn. If something
+    // blocks it, a notification says why (also logged to ~/.cache/joeos/power.log).
+    function powerAction(action) {
+        hubOpen = false;
+        panelOpen = false;
+        if (sessionReady && pins.adapter.restoreSession) sessionSnap.running = true;
+        powerTimer.action = action;
+        powerTimer.restart();
+    }
+    Timer {
+        id: powerTimer
+        property string action: ""
+        interval: 700           // a moment for the save to finish
+        onTriggered: Quickshell.execDetached(["sh", "-c",
+            'a="$1"; log="$HOME/.cache/joeos/power.log"; mkdir -p "${log%/*}"; '
+            + 'fail() { echo "$(date) $a: $1" >> "$log"; notify-send -a JoeOS "Could not $a" "$1" 2>/dev/null; }; '
+            + 'case "$a" in '
+            + '  logout) '
+            + '    if command -v hyprshutdown >/dev/null 2>&1; then hyprshutdown && exit 0; fi; '
+            + '    if command -v uwsm >/dev/null 2>&1 && uwsm check is-active >/dev/null 2>&1; then uwsm stop && exit 0; fi; '
+            + '    out=$(hyprctl dispatch "hl.dsp.exit()" 2>&1); [ "$(printf "%s\\n" "$out" | tail -n 1)" = ok ] && exit 0; '
+            + '    [ -n "$XDG_SESSION_ID" ] && loginctl terminate-session "$XDG_SESSION_ID" 2>/dev/null && exit 0; '
+            + '    fail "$out" ;; '
+            + '  reboot|poweroff) '
+            + '    out=$(systemctl "$a" 2>&1) && exit 0; '
+            + '    out2=$(systemctl "$a" --check-inhibitors=no 2>&1) && exit 0; '
+            + '    fail "${out2:-$out}" ;; '
+            + 'esac', "sh", action])
+    }
+
     // ---------- Game mode ----------
     // Turns off blur, shadows, see-through windows and animations (in Hyprland and in the bars)
     // and pauses a live wallpaper, for more FPS. Turning it off reloads your normal Hyprland config.
@@ -5552,19 +5583,19 @@ ShellRoot {
                                             theme: root
                                             Layout.fillWidth: true
                                             label: "Log out"
-                                            onConfirmed: Quickshell.execDetached(["hyprctl", "dispatch", "exit"])
+                                            onConfirmed: root.powerAction("logout")
                                         }
                                         ConfirmButton {
                                             theme: root
                                             Layout.fillWidth: true
                                             label: "Reboot"
-                                            onConfirmed: Quickshell.execDetached(["systemctl", "reboot"])
+                                            onConfirmed: root.powerAction("reboot")
                                         }
                                         ConfirmButton {
                                             theme: root
                                             Layout.fillWidth: true
                                             label: "Shut down"
-                                            onConfirmed: Quickshell.execDetached(["systemctl", "poweroff"])
+                                            onConfirmed: root.powerAction("poweroff")
                                         }
                                     }
                                 }
