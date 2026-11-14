@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# Gives Dolphin (and other KDE/Qt apps) the JoeOS liquid glass look on Hyprland:
+#   - Kvantum theme "JoeOSGlass": see-through dark glass, same colours as the bars
+#   - Papirus-Dark icons instead of the plain document icons
+#   - qt6ct tells Qt/KDE apps to use both (Hyprland isn't the KDE desktop, so they need telling)
+# Safe to run again. Undo: delete ~/.config/Kvantum/JoeOSGlass and the "JoeOS Qt theme"
+# lines at the end of ~/.config/hypr/decorations.lua.
+
+set -u
+say()  { printf '\e[1;34m::\e[0m %s\n' "$*"; }
+warn() { printf '\e[1;33m!!\e[0m %s\n' "$*"; }
+
+say "Installing Kvantum, qt6ct and Papirus icons"
+sudo pacman -S --needed --noconfirm kvantum qt6ct papirus-icon-theme python || { warn "Install failed."; exit 1; }
+
+# ---- 1. the Kvantum theme, built from KvRoughGlass (rounded, pill-shaped glass that ships
+#         with Kvantum), with every colour turned neutral grey like the bars ----
+base=""
+for t in KvRoughGlass KvGlass KvSimplicityDark KvFlat KvGnomeDark KvDark KvArcDark; do
+    [ -d "/usr/share/Kvantum/$t" ] && { base="$t"; break; }
+done
+[ -n "$base" ] || { warn "Couldn't find a Kvantum base theme in /usr/share/Kvantum."; exit 1; }
+say "Building JoeOSGlass from $base"
+T="$HOME/.config/Kvantum/JoeOSGlass"
+mkdir -p "$T"
+# neutral glass: every colour in the theme's drawings becomes the same-brightness grey
+python3 - "/usr/share/Kvantum/$base/$base.svg" "$T/JoeOSGlass.svg" <<'PY'
+import re, sys
+svg = open(sys.argv[1], encoding="utf-8").read()
+def grey(r, g, b):
+    y = round(0.299 * r + 0.587 * g + 0.114 * b)
+    # a hint of cool white, like the bars' glass edge
+    return min(255, y), min(255, y + 1), min(255, y + 3)
+def hex6(m):
+    h = m.group(1)
+    if len(h) == 3: h = "".join(c * 2 for c in h)
+    r, g, b = grey(int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+    return "#%02x%02x%02x" % (r, g, b)
+svg = re.sub(r"#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b", hex6, svg)
+svg = re.sub(r"rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)",
+             lambda m: "rgb(%d,%d,%d)" % grey(*map(int, m.groups())), svg)
+open(sys.argv[2], "w", encoding="utf-8").write(svg)
+PY
+
+python3 - "/usr/share/Kvantum/$base/$base.kvconfig" "$T/JoeOSGlass.kvconfig" <<'PY'
+import sys, configparser
+src, dst = sys.argv[1], sys.argv[2]
+c = configparser.RawConfigParser(strict=False)
+c.optionxform = str
+c.read(src)
+def put(sec, vals):
+    if not c.has_section(sec): c.add_section(sec)
+    for k, v in vals.items(): c.set(sec, k, v)
+put('%General', {
+    'author': 'JoeOS', 'comment': 'Liquid glass to match the JoeOS bars',
+    'composite': 'true', 'translucent_windows': 'true', 'reduce_window_opacity': '45',
+    'blurring': 'true', 'popup_blurring': 'true', 'reduce_menu_opacity': '35',
+    'transparent_dolphin_view': 'true', 'transparent_menutitle': 'true',
+    'menu_shadow_depth': '6', 'tooltip_shadow_depth': '4', 'animate_states': 'true',
+})
+put('GeneralColors', {
+    'window.color': '#121317', 'base.color': '#16171c', 'alt.base.color': '#1b1c22',
+    'button.color': '#22242b', 'light.color': '#2c2e36', 'mid.light.color': '#26282f',
+    'dark.color': '#0b0c0f', 'mid.color': '#1a1b20', 'shadow.color': '#000000',
+    'highlight.color': '#e6eaf2', 'inactive.highlight.color': '#8f96a3',
+    'text.color': '#f2f3f5', 'window.text.color': '#f2f3f5', 'button.text.color': '#f2f3f5',
+    'disabled.text.color': '#6b707a', 'tooltip.text.color': '#f2f3f5',
+    'highlight.text.color': '#0d0d0f', 'link.color': '#cfe3ff', 'link.visited.color': '#b8c4e0',
+    'progress.indicator.text.color': '#0d0d0f',
+})
+with open(dst, 'w') as f:
+    c.write(f, space_around_delimiters=False)
+PY
+printf '[General]\ntheme=JoeOSGlass\n' > "$HOME/.config/Kvantum/kvantum.kvconfig"
+
+# ---- 2. qt6ct: use Kvantum + Papirus ----
+mkdir -p "$HOME/.config/qt6ct"
+python3 - "$HOME/.config/qt6ct/qt6ct.conf" <<'PY'
+import sys, configparser, os
+p = sys.argv[1]
+c = configparser.RawConfigParser(strict=False); c.optionxform = str
+if os.path.exists(p): c.read(p)
+if not c.has_section('Appearance'): c.add_section('Appearance')
+for k, v in {'style': 'kvantum', 'icon_theme': 'Papirus-Dark', 'custom_palette': 'false', 'standard_dialogs': 'default'}.items():
+    c.set('Appearance', k, v)
+with open(p, 'w') as f: c.write(f, space_around_delimiters=False)
+PY
+
+# ---- 3. KDE's own colour settings (selection, sidebar) to match: white instead of teal ----
+if command -v kwriteconfig6 >/dev/null; then
+    kw() { kwriteconfig6 --file kdeglobals --group "$1" --key "$2" "$3"; }
+    kw General ColorScheme JoeOSGlass
+    kw Icons Theme Papirus-Dark
+    kw KDE widgetStyle kvantum
+    for g in "Colors:View" "Colors:Window" "Colors:Button" "Colors:Header" "Colors:Tooltip" "Colors:Complementary"; do
+        kw "$g" ForegroundNormal "242,243,245"
+        kw "$g" ForegroundInactive "168,173,184"
+        kw "$g" DecorationFocus "230,234,242"
+        kw "$g" DecorationHover "200,205,214"
+    done
+    kw "Colors:View" BackgroundNormal "22,23,28";   kw "Colors:View" BackgroundAlternate "27,28,34"
+    kw "Colors:Window" BackgroundNormal "18,19,23"; kw "Colors:Window" BackgroundAlternate "22,23,28"
+    kw "Colors:Button" BackgroundNormal "34,36,43"; kw "Colors:Button" BackgroundAlternate "40,42,50"
+    kw "Colors:Header" BackgroundNormal "18,19,23"; kw "Colors:Tooltip" BackgroundNormal "18,19,23"
+    kw "Colors:Selection" BackgroundNormal "230,234,242"
+    kw "Colors:Selection" BackgroundAlternate "200,205,214"
+    kw "Colors:Selection" ForegroundNormal "13,13,15"
+    kw "Colors:Selection" DecorationFocus "230,234,242"
+    kw "Colors:Selection" DecorationHover "200,205,214"
+fi
+
+# ---- 4. tell Hyprland's apps to use qt6ct (takes effect after logging in again) ----
+dec="$HOME/.config/hypr/decorations.lua"
+if [ -f "$dec" ] && ! grep -q "JoeOS Qt theme" "$dec"; then
+    printf '\n-- JoeOS Qt theme: KDE/Qt apps (Dolphin...) use qt6ct -> Kvantum glass + Papirus icons\nhl.env("QT_QPA_PLATFORMTHEME", "qt6ct")\nhl.env("QT_STYLE_OVERRIDE", "kvantum")\n' >> "$dec"
+    say "Added the Qt theme settings to $dec"
+fi
+# (also for uwsm-started sessions, which read this file instead)
+mkdir -p "$HOME/.config/uwsm"
+grep -q "QT_QPA_PLATFORMTHEME" "$HOME/.config/uwsm/env" 2>/dev/null \
+    || printf 'export QT_QPA_PLATFORMTHEME=qt6ct\nexport QT_STYLE_OVERRIDE=kvantum\n' >> "$HOME/.config/uwsm/env"
+
+say "Done! Log out and back in, then open Dolphin."
+say "Want a sneak peek right now? Run:  QT_QPA_PLATFORMTHEME=qt6ct QT_STYLE_OVERRIDE=kvantum dolphin"

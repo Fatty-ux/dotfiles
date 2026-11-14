@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# Swap Dolphin for Thunar, styled like the JoeOS bars (see-through glass, pill buttons).
+#   - installs Thunar + thumbnails, archive and USB-drive support, Papirus icons
+#   - puts the theme in ~/.config/gtk-3.0/thunar.css (from ~/Downloads/thunar.css)
+#   - makes Thunar the default for folders, swaps it in for Dolphin in your Hyprland
+#     shortcuts and on the dock, then removes Dolphin
+# Safe to run again.
+
+set -u
+say()  { printf '\e[1;34m::\e[0m %s\n' "$*"; }
+warn() { printf '\e[1;33m!!\e[0m %s\n' "$*"; }
+
+css_src="${1:-$HOME/Downloads/thunar.css}"
+[ -f "$css_src" ] || { warn "Can't find thunar.css (looked for $css_src). Download it first."; exit 1; }
+
+say "Installing Thunar and friends"
+sudo pacman -S --needed --noconfirm thunar thunar-volman thunar-archive-plugin xarchiver \
+    gvfs tumbler ffmpegthumbnailer papirus-icon-theme python || { warn "Install failed."; exit 1; }
+
+# ---- the theme ----
+G="$HOME/.config/gtk-3.0"
+mkdir -p "$G"
+cp "$css_src" "$G/thunar.css"
+touch "$G/gtk.css"
+grep -q 'thunar.css' "$G/gtk.css" || printf '@import url("thunar.css");\n' >> "$G/gtk.css"
+python3 - "$G/settings.ini" <<'PY'
+import sys, os, configparser
+p = sys.argv[1]
+c = configparser.RawConfigParser(strict=False); c.optionxform = str
+if os.path.exists(p): c.read(p)
+if not c.has_section('Settings'): c.add_section('Settings')
+c.set('Settings', 'gtk-application-prefer-dark-theme', '1')
+c.set('Settings', 'gtk-icon-theme-name', 'Papirus-Dark')
+with open(p, 'w') as f: c.write(f, space_around_delimiters=False)
+PY
+if command -v gsettings >/dev/null; then
+    gsettings set org.gnome.desktop.interface color-scheme prefer-dark 2>/dev/null
+    gsettings set org.gnome.desktop.interface icon-theme Papirus-Dark 2>/dev/null
+fi
+say "Theme installed"
+
+# ---- Thunar's own settings: clean toolbar, thumbnails, tabs ----
+if command -v xfconf-query >/dev/null; then
+    xq() { xfconf-query -c thunar -p "$1" -n -t "$2" -s "$3" 2>/dev/null; }
+    xq /last-menubar-visible bool false                 # File/Edit/View bar off (a menu button replaces it)
+    xq /last-statusbar-visible bool true
+    xq /last-location-bar string ThunarLocationButtons  # Home › Pictures pills
+    xq /misc-thumbnail-mode string THUNAR_THUMBNAIL_MODE_ALWAYS
+    xq /misc-middle-click-in-tab bool true
+    xq /misc-show-delete-action bool true
+    xq /last-icon-view-zoom-level string THUNAR_ZOOM_LEVEL_150_PERCENT
+    say "Thunar settings applied"
+fi
+
+# ---- default for folders everywhere ----
+xdg-mime default thunar.desktop inode/directory
+xdg-mime default thunar.desktop application/x-gnome-saved-search 2>/dev/null
+say "Thunar is now the default file manager"
+
+# ---- swap Dolphin out of Hyprland shortcuts and the dock ----
+for f in "$HOME"/.config/hypr/*.lua; do
+    [ -f "$f" ] || continue
+    if grep -qi 'dolphin' "$f"; then
+        sed -i 's/org\.kde\.dolphin/thunar/g; s/\bdolphin\b/thunar/g' "$f"
+        say "Switched Dolphin -> Thunar in $(basename "$f")"
+    fi
+done
+pins="$HOME/.local/state/quickshell-pins.json"
+if [ -f "$pins" ] && grep -q 'dolphin' "$pins"; then
+    pkill -x quickshell; pkill -x qs; sleep 1          # the bar would write its old copy back otherwise
+    sed -i 's/org\.kde\.dolphin\.desktop/thunar.desktop/g; s/org\.kde\.dolphin/thunar/g' "$pins"
+    setsid -f quickshell >/dev/null 2>&1
+    say "Swapped Dolphin for Thunar on the dock"
+fi
+
+# ---- remove Dolphin ----
+if pacman -Qq dolphin >/dev/null 2>&1; then
+    pkill -x dolphin
+    if sudo pacman -Rns --noconfirm dolphin; then
+        say "Dolphin removed"
+    else
+        warn "Couldn't remove Dolphin (something else needs it); it's left installed but no longer the default."
+    fi
+fi
+
+thunar -q 2>/dev/null
+say "Done! Open Thunar (from the dock, the launcher or any 'open folder' button)."

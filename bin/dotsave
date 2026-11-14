@@ -44,6 +44,16 @@ copy "$HOME/.config/fastfetch"  "config/fastfetch"
 copy "$HOME/.config/fish/config.fish" "config/fish/config.fish"
 [ -n "$(command -v pokefetch)" ] && copy "$(command -v pokefetch)" "bin/pokefetch"
 [ -n "$(command -v dotsave)" ]   && copy "$(command -v dotsave)"   "bin/dotsave"
+# app themes (Thunar glass, Qt/Kvantum glass)
+copy "$HOME/.config/gtk-3.0/thunar.css"   "config/gtk-3.0/thunar.css"
+copy "$HOME/.config/gtk-3.0/gtk.css"      "config/gtk-3.0/gtk.css"
+copy "$HOME/.config/gtk-3.0/settings.ini" "config/gtk-3.0/settings.ini"
+copy "$HOME/.config/Kvantum"              "config/Kvantum"
+copy "$HOME/.config/qt6ct"                "config/qt6ct"
+# the JoeOS setup scripts
+for s in login-wallpaper-setup dolphin-glass-setup thunar-setup; do
+    [ -n "$(command -v "$s")" ] && copy "$(command -v "$s")" "bin/$s"
+done
 
 # LibreWolf: only the theme and settings, never the rest of the profile
 prefs="$(find "$HOME/.librewolf" "$HOME/.config/librewolf" "$HOME/.var/app/io.gitlab.librewolf-community" \

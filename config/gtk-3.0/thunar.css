@@ -1,0 +1,267 @@
+/* ==========================================================================
+   JoeOS liquid glass for Thunar
+   Same look as the bars: see-through dark glass (Hyprland blurs the wallpaper
+   behind it), pill-shaped buttons, a thin white glass edge, white accent.
+   Lives in ~/.config/gtk-3.0/thunar.css (gtk.css imports it).
+   After editing:  thunar -q   then open Thunar again.
+   ========================================================================== */
+
+@define-color joe_glass   rgba(14, 15, 19, 0.52);
+@define-color joe_side    rgba(14, 15, 19, 0.30);
+@define-color joe_surface rgba(255, 255, 255, 0.06);
+@define-color joe_hover   rgba(255, 255, 255, 0.12);
+@define-color joe_press   rgba(255, 255, 255, 0.18);
+@define-color joe_edge    rgba(255, 255, 255, 0.18);
+@define-color joe_fg      #f2f3f5;
+@define-color joe_muted   #a8adb8;
+@define-color joe_accent  #e6eaf2;
+@define-color joe_on_accent #0d0d0f;
+
+/* ---------- the window: one sheet of glass ---------- */
+.thunar,
+.thunar.background {
+    background-color: @joe_glass;
+    color: @joe_fg;
+}
+.thunar grid,
+.thunar paned,
+.thunar box,
+.thunar notebook,
+.thunar notebook > stack,
+.thunar scrolledwindow,
+.thunar viewport,
+.thunar .frame,
+.thunar frame > border {
+    background-color: transparent;
+    background-image: none;
+    border-color: transparent;
+    box-shadow: none;
+}
+.thunar paned > separator,
+.thunar paned > separator.wide {
+    background-color: transparent;
+    background-image: none;
+    border: none;
+    box-shadow: none;
+    min-width: 6px;
+}
+
+/* ---------- toolbar: round glass buttons, pill address bar ---------- */
+.thunar menubar,
+.thunar toolbar,
+.thunar .toolbar {
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    padding: 6px 10px;
+}
+.thunar toolbar button,
+.thunar .toolbar button,
+.thunar button.flat {
+    border-radius: 999px;
+    background: transparent;
+    border: 1px solid transparent;
+    box-shadow: none;
+    min-width: 30px;
+    min-height: 30px;
+    padding: 2px 8px;
+    color: @joe_fg;
+    transition: background-color 150ms ease, border-color 150ms ease;
+}
+.thunar toolbar button:hover,
+.thunar .toolbar button:hover,
+.thunar button.flat:hover {
+    background-color: @joe_hover;
+    border-color: @joe_edge;
+}
+.thunar toolbar button:active,
+.thunar toolbar button:checked,
+.thunar .toolbar button:checked {
+    background-color: @joe_press;
+}
+
+/* the address bar (typed) */
+.thunar entry {
+    border-radius: 999px;
+    background-color: @joe_surface;
+    border: 1px solid @joe_edge;
+    box-shadow: none;
+    color: @joe_fg;
+    padding: 4px 14px;
+    min-height: 30px;
+    caret-color: @joe_accent;
+}
+.thunar entry:focus {
+    border-color: rgba(255, 255, 255, 0.40);
+    background-color: rgba(255, 255, 255, 0.09);
+}
+.thunar entry selection {
+    background-color: @joe_accent;
+    color: @joe_on_accent;
+}
+
+/* the address bar (buttons: Home › Pictures › …) */
+.thunar .path-bar button,
+.thunar .linked button {
+    border-radius: 999px;
+    background-color: @joe_surface;
+    border: 1px solid @joe_edge;
+    box-shadow: none;
+    color: @joe_fg;
+    padding: 2px 12px;
+    margin: 0 2px;
+}
+.thunar .path-bar button:hover,
+.thunar .linked button:hover { background-color: @joe_hover; }
+.thunar .path-bar button:checked,
+.thunar .linked button:checked {
+    background-color: @joe_accent;
+    color: @joe_on_accent;
+    border-color: transparent;
+}
+
+/* ---------- sidebar ---------- */
+.thunar .sidebar,
+.thunar .shortcuts-pane,
+.thunar .sidebar .view,
+.thunar .shortcuts-pane .view {
+    background-color: @joe_side;
+    color: @joe_fg;
+    border: none;
+}
+.thunar .sidebar .view,
+.thunar .shortcuts-pane .view {
+    padding: 2px 4px;
+}
+.thunar .sidebar .view:hover,
+.thunar .shortcuts-pane .view:hover {
+    background-color: @joe_hover;
+}
+.thunar .sidebar .view:selected,
+.thunar .shortcuts-pane .view:selected {
+    background-color: @joe_accent;
+    color: @joe_on_accent;
+    border-radius: 999px;
+}
+/* section headers ("Places", "Devices") */
+.thunar .sidebar .view:disabled,
+.thunar .shortcuts-pane .view:disabled {
+    color: @joe_muted;
+}
+
+/* ---------- files ---------- */
+.thunar .standard-view,
+.thunar .standard-view .view,
+.thunar .standard-view widget {
+    background-color: transparent;
+    color: @joe_fg;
+}
+.thunar .standard-view .view:hover {
+    background-color: @joe_hover;
+    border-radius: 14px;
+}
+.thunar .standard-view .view:selected,
+.thunar .standard-view .view:selected:focus {
+    background-color: rgba(230, 234, 242, 0.92);
+    color: @joe_on_accent;
+    border-radius: 14px;
+}
+.thunar .standard-view:backdrop .view:selected {
+    background-color: rgba(230, 234, 242, 0.55);
+}
+/* list (details) view: column headers */
+.thunar treeview header button {
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid @joe_edge;
+    color: @joe_muted;
+    box-shadow: none;
+}
+.thunar .standard-view rubberband,
+.thunar rubberband {
+    background-color: rgba(230, 234, 242, 0.18);
+    border: 1px solid rgba(230, 234, 242, 0.6);
+    border-radius: 8px;
+}
+
+/* ---------- tabs ---------- */
+.thunar notebook > header {
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    padding: 4px 8px;
+}
+.thunar notebook > header tab {
+    border-radius: 999px;
+    border: 1px solid transparent;
+    background: transparent;
+    padding: 4px 14px;
+    margin: 0 3px;
+    color: @joe_muted;
+    box-shadow: none;
+}
+.thunar notebook > header tab:hover { background-color: @joe_hover; }
+.thunar notebook > header tab:checked {
+    background-color: @joe_surface;
+    border-color: @joe_edge;
+    color: @joe_fg;
+}
+
+/* ---------- status bar + scrollbars ---------- */
+.thunar statusbar,
+.thunar .statusbar {
+    background: transparent;
+    color: @joe_muted;
+    padding: 2px 12px;
+    border: none;
+}
+.thunar scrollbar,
+.thunar scrollbar trough {
+    background: transparent;
+    border: none;
+}
+.thunar scrollbar slider {
+    min-width: 6px;
+    min-height: 6px;
+    border-radius: 999px;
+    background-color: rgba(255, 255, 255, 0.22);
+    border: none;
+}
+.thunar scrollbar slider:hover { background-color: rgba(255, 255, 255, 0.40); }
+
+/* ---------- menus (right-click, Thunar's menu button) ---------- */
+/* Menus are their own little windows, so these apply to all GTK3 menus. */
+menu,
+.menu,
+.context-menu,
+window.popup.background {
+    background-color: rgba(16, 17, 21, 0.86);
+    color: @joe_fg;
+    border: 1px solid @joe_edge;
+    border-radius: 14px;
+    padding: 6px;
+}
+menu menuitem,
+.menu menuitem {
+    border-radius: 8px;
+    padding: 6px 12px;
+    min-height: 22px;
+}
+menu menuitem:hover,
+.menu menuitem:hover {
+    background-color: @joe_hover;
+    color: @joe_fg;
+}
+menu separator,
+.menu separator {
+    background-color: rgba(255, 255, 255, 0.08);
+    margin: 4px 8px;
+    min-height: 1px;
+}
+tooltip,
+tooltip.background {
+    background-color: rgba(16, 17, 21, 0.92);
+    color: @joe_fg;
+    border: 1px solid @joe_edge;
+    border-radius: 10px;
+}

@@ -4440,6 +4440,56 @@ ShellRoot {
                         }
                     }
 
+                    // ---- Screenshot + record (click: drag a box · right-click: the whole screen) ----
+                    Row {
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 4
+
+                        Repeater {
+                            model: [
+                                { icon: "", kind: "shot" },
+                                { icon: "", kind: "rec" }
+                            ]
+                            delegate: Rectangle {
+                                id: capBtn
+                                required property var modelData
+                                readonly property bool isRec: modelData.kind === "rec"
+                                visible: !isRec || (!root.recording && root.canRecord)
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 26
+                                height: 26
+                                radius: 13
+                                color: capMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.14) : Qt.rgba(1, 1, 1, 0.05)
+                                border.width: 1
+                                border.color: capMouse.containsMouse ? root.glassEdge : "transparent"
+                                scale: capMouse.pressed ? 0.85 : 1
+                                Behavior on color { ColorAnimation { duration: root.animMs } }
+                                Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: capBtn.modelData.icon
+                                    color: capBtn.isRec ? root.danger : root.fg
+                                    font.family: root.iconFont
+                                    font.pixelSize: capBtn.isRec ? 10 : 12
+                                }
+
+                                MouseArea {
+                                    id: capMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                    onClicked: mouse => {
+                                        const mode = mouse.button === Qt.RightButton ? "screen" : "area";
+                                        if (capBtn.isRec) root.record(mode);
+                                        else root.shot(mode);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // ---- Recording: red dot + time, click to stop (only while recording) ----
                         Rectangle {
                             anchors.verticalCenter: parent.verticalCenter
