@@ -1662,29 +1662,31 @@ ShellRoot {
             // everything else passes straight through to the windows underneath
             mask: Region { item: bottomHot }
 
-            // The tab stays out of sight until the mouse touches the bottom edge near the middle
+            // The tab stays out of sight until the mouse touches the bottom edge of the screen
+            // (anywhere along it). It stays while you're near it, then tucks away.
             property bool tabPeek: false
             Item {
                 id: bottomHot
                 anchors.bottom: parent.bottom
-                anchors.horizontalCenter: parent.horizontalCenter
-                width: bottomTab.width + 160
-                height: panel.tabPeek ? parent.height : 4      // a thin strip at the edge until it's out
-                HoverHandler {
-                    id: bottomHotHover
-                    onHoveredChanged: {
-                        if (hovered) {
-                            tabHideTimer.stop();
-                            panel.tabPeek = true;
-                        } else {
-                            tabHideTimer.restart();
-                        }
+                // the whole bottom edge listens; once the tab is out, only the area around it does
+                width: panel.tabPeek ? bottomTab.width + 200 : parent.width
+                x: (parent.width - width) / 2
+                height: panel.tabPeek ? parent.height : root.hotZoneSize
+            }
+            Connections {
+                target: barHover
+                function onHoveredChanged() {
+                    if (barHover.hovered) {
+                        tabHideTimer.stop();
+                        panel.tabPeek = true;
+                    } else {
+                        tabHideTimer.restart();
                     }
                 }
             }
             Timer {
                 id: tabHideTimer
-                interval: 500
+                interval: 1500      // time to reach the tab after it pops up
                 onTriggered: panel.tabPeek = false
             }
             Region { id: edgeMask; item: hotStrip }
