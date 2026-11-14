@@ -1,0 +1,37 @@
+/* JoeOS: the new tab page is see-through glass too, with nothing on it but search.
+   Lives in:  <your LibreWolf profile>/chrome/userContent.css */
+
+@-moz-document url("about:newtab"), url("about:home"), url("about:blank"), url("about:privatebrowsing") {
+  html:root,
+  body {
+    background: transparent !important;
+    color-scheme: dark !important;
+  }
+
+  /* hide the logo, shortcuts, stories and the settings cog */
+  .logo-and-wordmark,
+  .logo-and-wordmark-wrapper,
+  .top-sites,
+  .top-sites-list,
+  .ds-outer-wrapper-breakpoint-override,
+  .personalize-button,
+  .weatherInfoLink,
+  .weather,
+  .wordmark,
+  #customize-menu {
+    display: none !important;
+  }
+
+  /* centre the search box like a glass pill */
+  .search-wrapper {
+    padding-top: 30vh !important;
+  }
+  .search-handoff-button,
+  .search-inner-wrapper input {
+    background-color: rgba(255, 255, 255, 0.06) !important;
+    border: 1px solid rgba(255, 255, 255, 0.18) !important;
+    border-radius: 16px !important;
+    box-shadow: none !important;
+    color: #f2f3f5 !important;
+  }
+}

@@ -9,6 +9,7 @@ import Quickshell.Services.Pipewire
 import Quickshell.Services.Notifications
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Effects
 import Qt.labs.folderlistmodel
 
 ShellRoot {
@@ -60,7 +61,7 @@ ShellRoot {
     readonly property bool hoverZoom: true          // pinned icons grow when hovered
     readonly property string iconFont: "JetBrainsMono Nerd Font"   // font the bar icons come from
     // Clock
-    readonly property bool use24h: true
+    readonly property bool use24h: false     // false = 12-hour time with AM/PM
     readonly property bool showSeconds: false
     readonly property string timePattern: (use24h ? "hh:mm" : "h:mm") + (showSeconds ? ":ss" : "") + (use24h ? "" : " AP")
     // Behavior
@@ -117,6 +118,8 @@ ShellRoot {
             property string autoHide: "windows"
             property string desktopsJson: ""
             property string historyJson: ""     // which apps were opened, how often and when (launcher tabs)
+            property string sportsLeague: "nba"  // league shown on the Sports tab
+            property string sportsFav: ""        // favourite team: "league|teamId|ABBR"
         }
     }
 
@@ -373,6 +376,48 @@ ShellRoot {
         return list.length > 0 ? list[0] : null;
     }
 
+    // The PipeWire audio stream belonging to a media player (Spotify, Firefox, mpv...)
+    function playerStream(p) {
+        if (!p) return null;
+        const who = ((p.identity || "") + " " + (p.desktopEntry || "")).toLowerCase();
+        const list = audioStreams;
+        for (let i = 0; i < list.length; i++) {
+            const pr = list[i].properties || {};
+            const app = (pr["application.name"] || "").toLowerCase();
+            const bin = (pr["application.process.binary"] || "").toLowerCase();
+            if ((app && who.indexOf(app) >= 0) || (bin && who.indexOf(bin) >= 0)) return list[i];
+        }
+        return null;
+    }
+
+    // Volume for one player: its own audio stream, else the player's own volume, else the speakers
+    function mediaVolume(p) {
+        const st = playerStream(p);
+        if (st && st.audio) return st.audio.volume;
+        if (p && p.volumeSupported) return p.volume;
+        return sink && sink.audio ? sink.audio.volume : 0;
+    }
+
+    function setMediaVolume(p, v) {
+        v = Math.max(0, Math.min(1, v));
+        const st = playerStream(p);
+        if (st && st.audio) st.audio.volume = v;
+        else if (p && p.volumeSupported) p.volume = v;
+        else if (sink && sink.audio) sink.audio.volume = v;
+    }
+
+    function mediaMuted(p) {
+        const st = playerStream(p);
+        if (st && st.audio) return st.audio.muted;
+        return sink && sink.audio ? sink.audio.muted : false;
+    }
+
+    function toggleMediaMute(p) {
+        const st = playerStream(p);
+        if (st && st.audio) st.audio.muted = !st.audio.muted;
+        else if (sink && sink.audio) sink.audio.muted = !sink.audio.muted;
+    }
+
     function fmt(sec) {
         if (!isFinite(sec) || sec < 0) return "0:00";
         const s = Math.floor(sec);
@@ -527,6 +572,7 @@ ShellRoot {
             root.toastSeq += 1;
             toastModel.append({
                 tid: root.toastSeq,
+                nid: n.id,
                 summary: n.summary,
                 body: n.body,
                 appName: n.appName,
@@ -534,6 +580,75 @@ ShellRoot {
             });
             while (toastModel.count > 4) toastModel.remove(0);
         }
+    }
+
+    // ---- Clicking a notification opens the app it came from ----
+    function notifById(id) {
+        const list = notifServer.trackedNotifications.values;
+        for (let i = 0; i < list.length; i++) if (list[i].id === id) return list[i];
+        return null;
+    }
+
+    // names an app might go by: "Vesktop", "vesktop", "com.spotify.Client" -> "spotify", ...
+    function appKeys(n) {
+        const keys = [];
+        const add = v => {
+            if (!v) return;
+            v = String(v).toLowerCase().replace(/\.desktop$/, "");
+            for (const k of [v, v.replace(/ /g, "-"), v.replace(/ /g, ""), v.split(".").pop()])
+                if (k && keys.indexOf(k) < 0) keys.push(k);
+        };
+        add(n.desktopEntry);
+        add(n.appName);
+        const e = DesktopEntries.heuristicLookup(n.desktopEntry || n.appName);
+        if (e) {
+            add(e.id);
+            add(e.startupClass);
+            add(e.name);
+        }
+        return keys;
+    }
+
+    // the open window of the app that sent it (prefers one whose title mentions the message)
+    function windowForNotif(n) {
+        const keys = appKeys(n);
+        const list = ToplevelManager.toplevels.values;
+        let best = null, bestScore = 0;
+        for (let i = 0; i < list.length; i++) {
+            const id = (list[i].appId || "").toLowerCase();
+            const last = id.split(".").pop();
+            let score = 0;
+            for (const k of keys) {
+                if (id === k) score = Math.max(score, 3);
+                else if (last === k || last === k.split(".").pop()) score = Math.max(score, 2);
+                else if (k.length > 3 && (id.indexOf(k) >= 0 || k.indexOf(last) >= 0)) score = Math.max(score, 1);
+            }
+            if (score > 0 && n.summary && (list[i].title || "").toLowerCase().indexOf(n.summary.toLowerCase()) >= 0) score += 0.5;
+            if (score > bestScore) { best = list[i]; bestScore = score; }
+        }
+        return best;
+    }
+
+    function openNotification(n) {
+        if (!n) return;
+        // work out the window first: invoking the notification can make it disappear
+        const win = windowForNotif(n);
+        const entry = DesktopEntries.heuristicLookup(n.desktopEntry || n.appName);
+        let def = null;
+        const acts = n.actions || [];
+        for (let i = 0; i < acts.length; i++) if (acts[i].identifier === "default") def = acts[i];
+
+        // 1. let the app jump to the exact chat / email / tab (its own "default" action)
+        if (def) def.invoke();
+        // 2. bring its window to the front, switching desktop if it's on another one
+        if (win) win.activate();
+        // 3. not open at all? start it
+        else if (!def && entry) entry.execute();
+        // 4. it's been seen: clear it (invoking already does this for most apps)
+        if (!def) n.dismiss();
+
+        hubOpen = false;
+        panelOpen = false;
     }
 
     function removeToast(tid) {
@@ -799,12 +914,15 @@ ShellRoot {
         }
     }
 
-    // Runs each Lua dispatcher through hyprctl, one after the other
+    // Runs each Lua dispatcher through hyprctl, one after the other.
+    // Switching monitors makes Hyprland move the mouse, so it's noted first and put back after.
     function hyprList(exprs) {
-        const parts = [];
+        const parts = ['pos=$(hyprctl cursorpos 2>/dev/null)'];
         for (let i = 0; i < exprs.length; i++)
             parts.push("hyprctl dispatch '" + exprs[i] + "'");
-        Quickshell.execDetached(["sh", "-c", parts.join("; ")]);
+        parts.push('case "$pos" in *,*) x=${pos%%,*}; y=${pos##*,}; '
+            + 'hyprctl dispatch "hl.dsp.cursor.move({ x = ${x% *}, y = ${y# } })" ;; esac');
+        Quickshell.execDetached(["sh", "-c", parts.join("; ") + " >/dev/null 2>&1"]);
     }
 
     function workspaceById(id) {
@@ -1551,10 +1669,20 @@ ShellRoot {
                 anchor.window: panel
                 anchor.edges: Edges.Top
                 anchor.gravity: Edges.Top
-                implicitWidth: 340
-                implicitHeight: content.implicitHeight + 24
+                implicitWidth: dockNowPlaying.implicitWidth + 44
+                implicitHeight: dockNowPlaying.implicitHeight + 52
                 color: "transparent"
                 visible: false
+
+                // if the card ever changes size while open, re-attach "click away to close"
+                property bool rearming: false
+                onImplicitHeightChanged: if (visible) { rearming = true; rearmTimer.restart(); }
+                onImplicitWidthChanged: if (visible) { rearming = true; rearmTimer.restart(); }
+                Timer {
+                    id: rearmTimer
+                    interval: 80
+                    onTriggered: mediaPopup.rearming = false
+                }
 
                 // Position only updates when asked, so poll while it's open
                 Timer {
@@ -1572,196 +1700,37 @@ ShellRoot {
                 }
 
                 Rectangle {
+                    id: mediaCard
                     opacity: 0
                     scale: 0.96
-                    NumberAnimation on opacity { running: mediaPopup.visible; from: 0; to: 1; duration: root.animMs; easing.type: Easing.OutCubic }
-                    NumberAnimation on scale { running: mediaPopup.visible; from: 0.96; to: 1; duration: root.animMs; easing.type: Easing.OutCubic }
+                    NumberAnimation on opacity { running: mediaPopup.visible; from: 0; to: 1; duration: root.animMs * 1.5; easing.type: Easing.OutCubic }
+                    NumberAnimation on scale { running: mediaPopup.visible; from: 0.96; to: 1; duration: root.animMs * 2; easing.type: Easing.OutBack }
                     anchors.fill: parent
-                    radius: 14
+                    anchors.bottomMargin: 8
+                    radius: 28
                     color: root.popupBg
-                    border.color: root.overlay
+                    border.color: root.glassEdge
                     border.width: 1
+                    clip: true
 
                     GlassShine { radius: parent.radius; dark: root.dark }
 
-                    ColumnLayout {
-                        id: content
-                        anchors.fill: parent
-                        anchors.margins: 12
-                        spacing: 10
-
-                        // Cover art + title
-                        RowLayout {
-                            spacing: 12
-
-                            Rectangle {
-                                Layout.preferredWidth: 60
-                                Layout.preferredHeight: 60
-                                radius: 8
-                                color: root.overlay
-                                clip: true
-
-                                Image {
-                                    anchors.fill: parent
-                                    source: mediaPopup.p ? mediaPopup.p.trackArtUrl : ""
-                                    fillMode: Image.PreserveAspectCrop
-                                    visible: status === Image.Ready
-                                }
-
-                                Text {
-                                    anchors.centerIn: parent
-                                    text: "♪"
-                                    color: root.muted
-                                    font.pixelSize: 24
-                                }
-                            }
-
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                spacing: 2
-
-                                Text {
-                                    Layout.fillWidth: true
-                                    text: mediaPopup.p ? (mediaPopup.p.trackTitle || "Unknown title") : ""
-                                    color: root.fg
-                                    font.pixelSize: 14
-                                    font.bold: true
-                                    elide: Text.ElideRight
-                                }
-                                Text {
-                                    Layout.fillWidth: true
-                                    text: mediaPopup.p ? mediaPopup.p.trackArtist : ""
-                                    color: root.muted
-                                    font.pixelSize: 12
-                                    elide: Text.ElideRight
-                                }
-                                Text {
-                                    Layout.fillWidth: true
-                                    text: mediaPopup.p ? mediaPopup.p.identity : ""
-                                    color: root.muted
-                                    font.pixelSize: 11
-                                    elide: Text.ElideRight
-                                }
-                            }
-                        }
-
-                        // Seek bar
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 2
-
-                            ValueBar {
-                                theme: root
-                                Layout.fillWidth: true
-                                value: mediaPopup.p && mediaPopup.p.length > 0
-                                    ? mediaPopup.p.position / mediaPopup.p.length : 0
-                                onMoved: v => {
-                                    const p = mediaPopup.p;
-                                    if (p && p.canSeek && p.length > 0) p.position = v * p.length;
-                                }
-                            }
-
-                            RowLayout {
-                                Layout.fillWidth: true
-                                Text {
-                                    text: root.fmt(mediaPopup.p ? mediaPopup.p.position : 0)
-                                    color: root.muted
-                                    font.pixelSize: 11
-                                }
-                                Item { Layout.fillWidth: true }
-                                Text {
-                                    text: root.fmt(mediaPopup.p ? mediaPopup.p.length : 0)
-                                    color: root.muted
-                                    font.pixelSize: 11
-                                }
-                            }
-                        }
-
-                        // Transport controls
-                        RowLayout {
-                            Layout.alignment: Qt.AlignHCenter
-                            spacing: 8
-
-                            IconButton {
-                                theme: root
-                                label: "|◀"
-                                dim: !(mediaPopup.p && mediaPopup.p.canGoPrevious)
-                                onClicked: if (mediaPopup.p && mediaPopup.p.canGoPrevious) mediaPopup.p.previous()
-                            }
-                            IconButton {
-                                theme: root
-                                implicitWidth: 56
-                                label: root.playing(mediaPopup.p) ? "❚❚" : "▶"
-                                dim: !(mediaPopup.p && mediaPopup.p.canTogglePlaying)
-                                onClicked: if (mediaPopup.p && mediaPopup.p.canTogglePlaying) mediaPopup.p.togglePlaying()
-                            }
-                            IconButton {
-                                theme: root
-                                label: "▶|"
-                                dim: !(mediaPopup.p && mediaPopup.p.canGoNext)
-                                onClicked: if (mediaPopup.p && mediaPopup.p.canGoNext) mediaPopup.p.next()
-                            }
-                        }
-
-                        // Player's own volume (not every player supports this)
-                        RowLayout {
-                            Layout.fillWidth: true
-                            visible: mediaPopup.p && mediaPopup.p.volumeSupported
-                            spacing: 8
-
-                            Text {
-                                Layout.preferredWidth: 52
-                                text: "Player"
-                                color: root.muted
-                                font.pixelSize: 12
-                            }
-                            ValueBar {
-                                theme: root
-                                Layout.fillWidth: true
-                                value: mediaPopup.p ? mediaPopup.p.volume : 0
-                                onMoved: v => {
-                                    if (mediaPopup.p && mediaPopup.p.volumeSupported) mediaPopup.p.volume = v;
-                                }
-                            }
-                            Item { Layout.preferredWidth: 60 }
-                        }
-
-                        // System volume (works for any app, including browser video)
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: 8
-
-                            Text {
-                                Layout.preferredWidth: 52
-                                text: "System"
-                                color: root.muted
-                                font.pixelSize: 12
-                            }
-                            ValueBar {
-                                theme: root
-                                Layout.fillWidth: true
-                                value: root.sink && root.sink.audio ? root.sink.audio.volume : 0
-                                onMoved: v => {
-                                    if (root.sink && root.sink.audio) root.sink.audio.volume = v;
-                                }
-                            }
-                            IconButton {
-                                theme: root
-                                implicitWidth: 60
-                                implicitHeight: 28
-                                label: root.sink && root.sink.audio && root.sink.audio.muted ? "Unmute" : "Mute"
-                                onClicked: {
-                                    if (root.sink && root.sink.audio) root.sink.audio.muted = !root.sink.audio.muted;
-                                }
-                            }
-                        }
+                    NowPlaying {
+                        id: dockNowPlaying
+                        theme: root
+                        player: mediaPopup.p
+                        artSize: 300
+                        wide: false
+                        backdropMargin: 22
+                        x: 22
+                        y: 22
                     }
                 }
             }
 
             HyprlandFocusGrab {
                 windows: [mediaPopup]
-                active: mediaPopup.visible
+                active: mediaPopup.visible && !mediaPopup.rearming
                 onCleared: {
                     root.closeAll();
                     mediaPopup.visible = false;
@@ -2347,11 +2316,316 @@ ShellRoot {
         }
     }
 
+    // ---------- Sports tab (basketball scores, standings, teams, players) ----------
+    // Everything comes from ESPN's public scores feed: no account or key needed.
+    readonly property var sportsLeagues: [
+        { id: "nba", name: "NBA" },
+        { id: "wnba", name: "WNBA" },
+        { id: "mens-college-basketball", name: "NCAA M" },
+        { id: "womens-college-basketball", name: "NCAA W" }
+    ]
+    readonly property string sportsLeague: pins.adapter.sportsLeague || "nba"
+    property string sportsView: "games"      // games, standings, teams, team, player
+    property string sportsBackTo: "games"    // where Back goes from a team page
+    property int sportsDay: 0                // days away from today on the Games page
+    property var sportsGames: []
+    property var sportsConfs: []             // standings, one entry per conference
+    property int sportsConf: 0
+    property string sportsTeamFilter: ""
+    property var sportsTeam: null
+    property var sportsRoster: []
+    property var sportsRecent: []
+    property var sportsUpcoming: []
+    property var sportsPlayer: null
+    property var sportsPlayerStats: null
+    property string sportsStatus: ""
+    property int sportsPending: 0
+    readonly property bool sportsLoading: sportsPending > 0
+    property int sportsGen: 0                // bumped on league change so late answers are ignored
+    property double sportsUpdated: 0
+    readonly property bool sportsVisible: hubOpen && hubTab === 7
+    readonly property bool sportsAnyLive: {
+        for (let i = 0; i < sportsGames.length; i++) if (sportsGames[i].state === "in") return true;
+        for (let i = 0; i < sportsUpcoming.length; i++) if (sportsUpcoming[i].state === "in") return true;
+        return false;
+    }
+
+    // favourite team (only for the league it belongs to)
+    readonly property var sportsFavParts: (pins.adapter.sportsFav || "").split("|")
+    readonly property string sportsFavId: sportsFavParts.length === 3 && sportsFavParts[0] === sportsLeague ? sportsFavParts[1] : ""
+    readonly property string sportsFavAbbr: sportsFavId !== "" ? sportsFavParts[2] : ""
+    function sportsToggleFav() {
+        if (!sportsTeam) return;
+        pins.adapter.sportsFav = sportsFavId === sportsTeam.id ? "" : sportsLeague + "|" + sportsTeam.id + "|" + (sportsTeam.abbr || "");
+        sportsSortGames();
+    }
+
+    readonly property var sportsDayDate: {
+        const d = new Date();
+        d.setHours(12, 0, 0, 0);
+        d.setDate(d.getDate() + sportsDay);
+        return d;
+    }
+    readonly property string sportsDayLabel: {
+        const names = { "-1": "Yesterday", "0": "Today", "1": "Tomorrow" };
+        const pre = names[String(sportsDay)];
+        return (pre ? pre + "  ·  " : "") + Qt.formatDate(sportsDayDate, "dddd, MMMM d");
+    }
+    onSportsDayChanged: sportsLoadGames()
+    onSportsVisibleChanged: {
+        if (sportsVisible && (Date.now() - sportsUpdated > 60000 || sportsGames.length === 0)) sportsRefresh();
+    }
+
+    // keeps scores fresh while the tab is open (every 20 s when a game is live)
+    Timer {
+        interval: root.sportsAnyLive ? 20000 : 120000
+        running: root.sportsVisible
+        repeat: true
+        onTriggered: root.sportsRefresh()
+    }
+
+    function sportsTime(iso) {
+        return Qt.formatDateTime(new Date(iso), root.use24h ? "HH:mm" : "h:mm AP");
+    }
+    function sportsBase() {
+        return "https://site.api.espn.com/apis/site/v2/sports/basketball/" + sportsLeague;
+    }
+    function sportsLogo(t) {
+        if (!t) return "";
+        if (t.logos && t.logos.length) {
+            for (let i = 0; i < t.logos.length; i++)
+                if (t.logos[i].rel && t.logos[i].rel.indexOf("dark") >= 0) return t.logos[i].href;
+            return t.logos[0].href;
+        }
+        return t.logo || "";
+    }
+    function sportsScore(sc) {
+        if (sc === undefined || sc === null) return "";
+        return typeof sc === "object" ? (sc.displayValue || "") : String(sc);
+    }
+
+    function sportsGet(url, done) {
+        const gen = sportsGen;
+        const xhr = new XMLHttpRequest();
+        xhr.onreadystatechange = function () {
+            if (xhr.readyState !== XMLHttpRequest.DONE) return;
+            root.sportsPending = Math.max(0, root.sportsPending - 1);
+            if (gen !== root.sportsGen) return;
+            if (xhr.status === 200) {
+                try {
+                    done(JSON.parse(xhr.responseText));
+                    root.sportsStatus = "";
+                    root.sportsUpdated = Date.now();
+                } catch (e) {
+                    root.sportsStatus = "Couldn't read the sports data";
+                    console.warn("sports:", e);
+                }
+            } else {
+                root.sportsStatus = xhr.status === 0 ? "Can't reach ESPN right now (no internet?)" : "ESPN error " + xhr.status;
+            }
+        };
+        sportsPending += 1;
+        xhr.open("GET", url);
+        xhr.send();
+    }
+
+    function sportsRefresh() {
+        if (sportsView === "games") sportsLoadGames();
+        else if (sportsView === "standings" || sportsView === "teams") sportsLoadStandings();
+        else if (sportsView === "team" && sportsTeam) sportsLoadTeam(sportsTeam.id);
+        else if (sportsView === "player" && sportsPlayer) sportsLoadPlayer(sportsPlayer);
+    }
+
+    function sportsShow(view) {
+        sportsView = view;
+        if (view === "games") sportsLoadGames();
+        else if (sportsConfs.length === 0) sportsLoadStandings();
+    }
+
+    function sportsSetLeague(id) {
+        if (id === sportsLeague) return;
+        sportsGen += 1;
+        pins.adapter.sportsLeague = id;
+        sportsGames = [];
+        sportsConfs = [];
+        sportsConf = 0;
+        sportsTeam = null;
+        sportsPlayer = null;
+        sportsStatus = "";
+        sportsTeamFilter = "";
+        if (sportsView === "team" || sportsView === "player") sportsView = "games";
+        Qt.callLater(sportsRefresh);
+    }
+
+    // ---- Games on one day ----
+    function sportsLoadGames() {
+        let url = sportsBase() + "/scoreboard?dates=" + Qt.formatDate(sportsDayDate, "yyyyMMdd");
+        if (sportsLeague.indexOf("college") >= 0) url += "&groups=50&limit=300";
+        sportsGet(url, function (j) {
+            const out = [];
+            const evs = j.events || [];
+            for (let i = 0; i < evs.length; i++) {
+                const ev = evs[i], c = ev.competitions[0], st = ev.status || c.status;
+                const side = {};
+                for (let k = 0; k < c.competitors.length; k++) {
+                    const t = c.competitors[k], tm = t.team || {};
+                    side[t.homeAway] = {
+                        id: String(tm.id),
+                        abbr: tm.abbreviation || "",
+                        name: tm.shortDisplayName || tm.displayName || "",
+                        logo: root.sportsLogo(tm),
+                        score: root.sportsScore(t.score),
+                        record: t.records && t.records.length ? t.records[0].summary : "",
+                        winner: t.winner === true
+                    };
+                }
+                if (!side.home || !side.away) continue;
+                const tv = [];
+                (c.broadcasts || []).forEach(b => (b.names || []).forEach(n => { if (tv.indexOf(n) < 0) tv.push(n); }));
+                out.push({
+                    id: ev.id, date: ev.date, state: st.type.state, detail: st.type.shortDetail || "",
+                    tv: tv.join(", "), away: side.away, home: side.home
+                });
+            }
+            root.sportsGames = out;
+            root.sportsSortGames();
+        });
+    }
+    function sportsSortGames() {
+        const order = { "in": 0, "pre": 1, "post": 2 };
+        const fav = sportsFavId;
+        const g = sportsGames.slice();
+        g.sort((a, b) => {
+            const fa = fav !== "" && (a.home.id === fav || a.away.id === fav) ? 0 : 1;
+            const fb = fav !== "" && (b.home.id === fav || b.away.id === fav) ? 0 : 1;
+            if (fa !== fb) return fa - fb;
+            if (order[a.state] !== order[b.state]) return order[a.state] - order[b.state];
+            return a.date < b.date ? -1 : a.date > b.date ? 1 : 0;
+        });
+        sportsGames = g;
+    }
+
+    // ---- Standings (also gives the list of teams) ----
+    function sportsLoadStandings() {
+        sportsGet("https://site.api.espn.com/apis/v2/sports/basketball/" + sportsLeague + "/standings", function (j) {
+            const groups = j.children && j.children.length ? j.children : [j];
+            const confs = [];
+            for (let i = 0; i < groups.length; i++) {
+                const g = groups[i], s = g.standings;
+                if (!s || !s.entries || !s.entries.length) continue;
+                const rows = s.entries.map(e => {
+                    const st = {};
+                    (e.stats || []).forEach(x => {
+                        const v = x.displayValue !== undefined ? x.displayValue : x.summary;
+                        if (x.name) st[x.name] = v;
+                        if (x.type && st[x.type] === undefined) st[x.type] = v;
+                        if (x.name === "playoffSeed") st.seedNum = x.value;
+                        if (x.name === "winPercent") st.pctNum = x.value;
+                    });
+                    const t = e.team || {};
+                    return {
+                        id: String(t.id), name: t.displayName || "", short: t.shortDisplayName || t.name || t.displayName || "",
+                        abbr: t.abbreviation || "", logo: root.sportsLogo(t),
+                        w: st.wins || "0", l: st.losses || "0", pct: st.winPercent || "", gb: st.gamesBehind || "-",
+                        strk: st.streak || "", l10: st.lasttengames || st["Last Ten Games"] || "",
+                        seed: st.seedNum || 0, pctNum: st.pctNum || 0
+                    };
+                });
+                rows.sort((a, b) => (a.seed && b.seed) ? a.seed - b.seed : b.pctNum - a.pctNum);
+                confs.push({ name: g.abbreviation || g.shortName || g.name || "Standings", rows: rows });
+            }
+            root.sportsConfs = confs;
+            if (root.sportsConf >= confs.length) root.sportsConf = 0;
+        });
+    }
+    readonly property var sportsAllTeams: {
+        const out = [], f = sportsTeamFilter.toLowerCase();
+        for (let i = 0; i < sportsConfs.length; i++)
+            for (let k = 0; k < sportsConfs[i].rows.length; k++) {
+                const r = sportsConfs[i].rows[k];
+                if (f === "" || r.name.toLowerCase().indexOf(f) >= 0 || r.abbr.toLowerCase().indexOf(f) >= 0) out.push(r);
+            }
+        out.sort((a, b) => a.name.localeCompare(b.name));
+        return out;
+    }
+
+    // ---- One team: roster + schedule ----
+    function sportsOpenTeam(id) {
+        if (sportsView === "games" || sportsView === "standings" || sportsView === "teams") sportsBackTo = sportsView;
+        sportsTeam = { id: String(id) };
+        sportsRoster = [];
+        sportsRecent = [];
+        sportsUpcoming = [];
+        sportsView = "team";
+        sportsLoadTeam(String(id));
+    }
+    function sportsLoadTeam(id) {
+        sportsGet(sportsBase() + "/teams/" + id + "/roster", function (j) {
+            const t = j.team || {};
+            root.sportsTeam = {
+                id: String(id), name: t.displayName || "", abbr: t.abbreviation || "",
+                logo: root.sportsLogo(t), color: t.color ? "#" + t.color : "",
+                record: t.recordSummary || "", standing: t.standingSummary || ""
+            };
+            let list = j.athletes || [];
+            if (list.length && list[0].items) {         // some leagues group players by position
+                let flat = [];
+                list.forEach(g => flat = flat.concat(g.items || []));
+                list = flat;
+            }
+            root.sportsRoster = list.map(a => ({
+                id: String(a.id), name: a.displayName || a.fullName || "", jersey: a.jersey || "",
+                pos: a.position ? (a.position.abbreviation || "") : "",
+                height: a.displayHeight || "", weight: a.displayWeight || "",
+                age: a.age ? String(a.age) : "",
+                exp: a.experience && a.experience.years !== undefined ? String(a.experience.years) : "",
+                headshot: a.headshot ? a.headshot.href : "",
+                injury: a.injuries && a.injuries.length ? (a.injuries[0].status || "Injured") : ""
+            })).sort((a, b) => (parseInt(a.jersey) || 99) - (parseInt(b.jersey) || 99));
+        });
+        sportsGet(sportsBase() + "/teams/" + id + "/schedule", function (j) {
+            const done = [], next = [];
+            (j.events || []).forEach(ev => {
+                const c = ev.competitions[0], st = c.status || ev.status;
+                let us = null, them = null;
+                c.competitors.forEach(x => { if (String(x.team.id) === String(id)) us = x; else them = x; });
+                if (!us || !them) return;
+                const g = {
+                    id: ev.id, date: ev.date, state: st.type.state, detail: st.type.shortDetail || "",
+                    home: us.homeAway === "home", opp: them.team.abbreviation || "",
+                    oppName: them.team.shortDisplayName || them.team.displayName || "",
+                    oppId: String(them.team.id), oppLogo: root.sportsLogo(them.team),
+                    us: root.sportsScore(us.score), them: root.sportsScore(them.score), won: us.winner === true
+                };
+                if (g.state === "post") done.push(g); else next.push(g);
+            });
+            root.sportsRecent = done.slice(-4).reverse();
+            root.sportsUpcoming = next.slice(0, 5);
+        });
+    }
+
+    // ---- One player ----
+    function sportsOpenPlayer(p) {
+        sportsPlayer = p;
+        sportsView = "player";
+        sportsLoadPlayer(p);
+    }
+    function sportsLoadPlayer(p) {
+        sportsPlayerStats = null;
+        sportsGet("https://site.web.api.espn.com/apis/common/v3/sports/basketball/" + sportsLeague + "/athletes/" + p.id + "/overview", function (j) {
+            const s = j.statistics;
+            root.sportsPlayerStats = s && s.labels ? {
+                labels: s.labels,
+                rows: (s.splits || []).map(x => ({ name: x.displayName || "", stats: x.stats || [] }))
+            } : { labels: [], rows: [] };
+        });
+    }
+
     // ---------- Top bar: the island ----------
     // A compact pill at the top centre. Click it and it grows into the hub:
     // Home, Media, Apps, Calendar, Alerts and System.
     property bool hubOpen: false
-    property int hubTab: 0           // 0 home, 1 media, 2 apps, 3 calendar, 4 alerts, 5 system, 6 capture
+    property int hubTab: 0           // 0 home, 1 media, 2 apps, 3 calendar, 4 alerts, 5 system, 6 capture, 7 sports
     property int calOffset: 0        // how many months away from this one the calendar shows
     readonly property int hubW: 900
     readonly property int hubH: 560
@@ -2601,12 +2875,13 @@ ShellRoot {
     }
 
     // ---------- Stickers ----------
-    // Drop .png / .webp images into ~/Pictures/Stickers and they show up in the little sticker
+    // Drop .png / .webp / .gif images into ~/Pictures/Stickers (animated GIFs and WebPs play)
+    // and they show up in the little sticker
     // spots around the setup. With the folder empty, the spots show the droplet buddy instead.
     FolderListModel {
         id: stickerModel
         folder: "file://" + Quickshell.env("HOME") + "/Pictures/Stickers"
-        nameFilters: ["*.png", "*.webp", "*.jpg", "*.jpeg"]
+        nameFilters: ["*.png", "*.webp", "*.gif", "*.jpg", "*.jpeg", "*.PNG", "*.WEBP", "*.GIF", "*.JPG", "*.JPEG"]
         showDirs: false
         sortField: FolderListModel.Name
     }
@@ -2640,15 +2915,14 @@ ShellRoot {
             NumberAnimation { from: -2; to: 0; duration: 1300 + bud.slot * 90; easing.type: Easing.InOutSine }
         }
 
-        Image {
+        // AnimatedImage plays GIFs and animated WebPs, and shows still pictures normally
+        AnimatedImage {
             visible: bud.img !== ""
             anchors.fill: parent
             source: bud.img
+            playing: visible
             fillMode: Image.PreserveAspectFit
             smooth: true
-            mipmap: true
-            sourceSize.width: bud.size * 2
-            sourceSize.height: bud.size * 2
             transform: Translate { y: bud.bob }
         }
 
@@ -2737,6 +3011,389 @@ ShellRoot {
                 c.lineWidth = Math.max(1, w * 0.045);
                 c.stroke();
             }
+        }
+    }
+
+    // Now playing: a big square picture of the song / video, with everything lined up to its width.
+    //   wide: false = controls under the picture (bottom dock pop-up)
+    //   wide: true  = controls beside the picture, matching its top and bottom (hub Media tab)
+    component NowPlaying: Item {
+        id: np
+        property var theme: null
+        property var player: null
+        property int artSize: 280
+        property bool wide: false
+        property real backdropMargin: 20       // how far the blurred art spreads into the card around it
+        readonly property bool isPlaying: np.theme ? np.theme.playing(np.player) : false
+        readonly property int infoWidth: np.wide ? Math.round(np.artSize * 1.2) : np.artSize
+        implicitWidth: npGrid.implicitWidth
+        implicitHeight: npGrid.implicitHeight
+
+        // position only updates when asked
+        Timer {
+            interval: 1000
+            repeat: true
+            running: np.visible && np.isPlaying
+            onTriggered: if (np.player) np.player.positionChanged()
+        }
+
+        // soft blurred copy of the art behind everything (tiny image scaled up = blur)
+        Item {
+            anchors.fill: parent
+            anchors.margins: -np.backdropMargin
+            clip: true
+            z: -1
+            Image {
+                id: npBackdrop
+                anchors.fill: parent
+                source: np.player ? np.player.trackArtUrl : ""
+                sourceSize.width: 96
+                sourceSize.height: 96
+                fillMode: Image.PreserveAspectCrop
+                visible: false
+            }
+            MultiEffect {
+                anchors.fill: parent
+                source: npBackdrop
+                blurEnabled: true
+                blur: 1.0
+                blurMax: 64
+                saturation: 0.15
+                opacity: npBackdrop.status === Image.Ready ? 0.5 : 0
+                Behavior on opacity { NumberAnimation { duration: 400 } }
+            }
+            Rectangle {
+                anchors.fill: parent
+                color: np.theme ? Qt.rgba(np.theme.bg.r, np.theme.bg.g, np.theme.bg.b, 0.35) : "transparent"
+            }
+        }
+
+        GridLayout {
+            id: npGrid
+            columns: np.wide ? 2 : 1
+            columnSpacing: 28
+            rowSpacing: 16
+
+            // ---- the picture ----
+            Rectangle {
+                Layout.preferredWidth: np.artSize
+                Layout.preferredHeight: np.artSize
+                radius: Math.round(np.artSize * 0.08)
+                color: np.theme ? np.theme.overlay : "#333"
+
+                Image {
+                    id: npArt
+                    anchors.fill: parent
+                    source: np.player ? np.player.trackArtUrl : ""
+                    sourceSize.width: np.artSize * 2
+                    fillMode: Image.PreserveAspectCrop
+                    smooth: true
+                    visible: false
+                }
+                // the rounded shape the picture is cut to
+                Item {
+                    id: npArtMask
+                    anchors.fill: parent
+                    layer.enabled: true
+                    visible: false
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: Math.round(np.artSize * 0.08)
+                        color: "black"
+                    }
+                }
+                MultiEffect {
+                    anchors.fill: parent
+                    source: npArt
+                    maskEnabled: true
+                    maskSource: npArtMask
+                    visible: npArt.status === Image.Ready
+                }
+                Text {
+                    anchors.centerIn: parent
+                    visible: npArt.status !== Image.Ready
+                    text: "\uf001"
+                    color: np.theme ? np.theme.muted : "grey"
+                    font.family: np.theme ? np.theme.iconFont : ""
+                    font.pixelSize: np.artSize * 0.25
+                }
+                GlassShine { radius: parent.radius; dark: np.theme ? np.theme.dark : true; strength: 0.7 }
+                Rectangle {
+                    anchors.fill: parent
+                    radius: parent.radius
+                    color: "transparent"
+                    border.width: 1
+                    border.color: np.theme ? np.theme.glassEdge : "transparent"
+                }
+            }
+
+            // ---- everything else, exactly as wide as the picture (or a bit wider beside it) ----
+            ColumnLayout {
+                Layout.preferredWidth: np.infoWidth
+                Layout.preferredHeight: np.wide ? np.artSize : -1
+                spacing: np.wide ? 8 : 6
+
+                Text {
+                    Layout.fillWidth: true
+                    text: np.player ? (np.player.trackTitle || np.player.identity || "Unknown") : "Nothing playing"
+                    color: np.theme ? np.theme.fg : "white"
+                    font.pixelSize: np.wide ? 26 : 18
+                    font.bold: true
+                    wrapMode: Text.Wrap
+                    maximumLineCount: np.wide ? 2 : 1      // the dock card keeps one size
+                    elide: Text.ElideRight
+                }
+                Text {
+                    Layout.fillWidth: true
+                    visible: np.wide ? text !== " " : true
+                    text: np.player && np.player.trackArtist ? np.player.trackArtist : " "
+                    color: np.theme ? np.theme.muted : "grey"
+                    font.pixelSize: np.wide ? 16 : 13
+                    elide: Text.ElideRight
+                }
+                Text {
+                    Layout.fillWidth: true
+                    text: np.player ? np.player.identity : ""
+                    color: np.theme ? np.theme.accent : "white"
+                    font.pixelSize: 11
+                    opacity: 0.85
+                    elide: Text.ElideRight
+                }
+
+                // beside the picture: push the controls down to line up with its bottom edge
+                Item {
+                    Layout.fillHeight: np.wide
+                    Layout.preferredHeight: np.wide ? -1 : 4
+                }
+
+                // ---- seek bar + times ----
+                ValueBar {
+                    theme: np.theme
+                    Layout.fillWidth: true
+                    value: np.player && np.player.length > 0 ? np.player.position / np.player.length : 0
+                    onMoved: v => {
+                        const p = np.player;
+                        if (p && p.canSeek && p.length > 0) p.position = v * p.length;
+                    }
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    Text {
+                        text: np.theme ? np.theme.fmt(np.player ? np.player.position : 0) : ""
+                        color: np.theme ? np.theme.muted : "grey"
+                        font.pixelSize: 11
+                    }
+                    Item { Layout.fillWidth: true }
+                    Text {
+                        text: np.theme ? np.theme.fmt(np.player ? np.player.length : 0) : ""
+                        color: np.theme ? np.theme.muted : "grey"
+                        font.pixelSize: 11
+                    }
+                }
+
+                // ---- five evenly spaced buttons across the full width ----
+                Row {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 60
+
+                    Repeater {
+                        model: [
+                            { key: "shuffle", icon: "\uf074" },
+                            { key: "prev", icon: "\uf048" },
+                            { key: "play", icon: "" },
+                            { key: "next", icon: "\uf051" },
+                            { key: "repeat", icon: "\uf01e" }
+                        ]
+                        delegate: Item {
+                            id: npCell
+                            required property var modelData
+                            readonly property var p: np.player
+                            readonly property bool big: npCell.modelData.key === "play"
+                            readonly property bool lit: npCell.modelData.key === "shuffle" ? !!(npCell.p && npCell.p.shuffle)
+                                : npCell.modelData.key === "repeat" ? !!(npCell.p && npCell.p.loopState !== MprisLoopState.None)
+                                : false
+                            readonly property bool ok: !npCell.p ? false
+                                : npCell.modelData.key === "shuffle" ? npCell.p.shuffleSupported
+                                : npCell.modelData.key === "repeat" ? npCell.p.loopSupported
+                                : npCell.modelData.key === "prev" ? npCell.p.canGoPrevious
+                                : npCell.modelData.key === "next" ? npCell.p.canGoNext
+                                : npCell.p.canTogglePlaying
+                            width: np.infoWidth / 5
+                            height: 60
+
+                            Rectangle {
+                                anchors.centerIn: parent
+                                width: npCell.big ? 58 : 42
+                                height: width
+                                radius: width / 2
+                                opacity: npCell.ok ? 1 : 0.35
+                                color: npCell.big ? (np.theme ? np.theme.fg : "white")
+                                    : npCell.lit ? (np.theme ? np.theme.accent : "white")
+                                    : (npMouse.containsMouse && np.theme ? np.theme.overlay : "transparent")
+                                border.width: npCell.big ? 0 : 1
+                                border.color: npMouse.containsMouse || npCell.lit ? (np.theme ? np.theme.glassEdge : "transparent") : "transparent"
+                                scale: npMouse.pressed ? 0.9 : (npMouse.containsMouse ? 1.06 : 1)
+                                Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutBack } }
+                                Behavior on color { ColorAnimation { duration: 150 } }
+
+                                Text {
+                                    anchors.centerIn: parent
+                                    anchors.horizontalCenterOffset: npCell.big && !np.isPlaying ? 2 : 0
+                                    text: npCell.big ? (np.isPlaying ? "\uf04c" : "\uf04b") : npCell.modelData.icon
+                                    color: npCell.big || npCell.lit ? (np.theme ? np.theme.bg : "black") : (np.theme ? np.theme.fg : "white")
+                                    font.family: np.theme ? np.theme.iconFont : ""
+                                    font.pixelSize: npCell.big ? 22 : 16
+                                }
+                                // "1" when repeating one song
+                                Rectangle {
+                                    visible: npCell.modelData.key === "repeat" && !!npCell.p && npCell.p.loopState === MprisLoopState.Track
+                                    anchors.right: parent.right
+                                    anchors.top: parent.top
+                                    width: 14
+                                    height: 14
+                                    radius: 7
+                                    color: np.theme ? np.theme.bg : "black"
+                                    Text { anchors.centerIn: parent; text: "1"; color: np.theme ? np.theme.accent : "white"; font.pixelSize: 9; font.bold: true }
+                                }
+
+                                MouseArea {
+                                    id: npMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: npCell.ok ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                    onClicked: {
+                                        const p = npCell.p;
+                                        if (!p || !npCell.ok) return;
+                                        const k = npCell.modelData.key;
+                                        if (k === "play") p.togglePlaying();
+                                        else if (k === "prev") p.previous();
+                                        else if (k === "next") p.next();
+                                        else if (k === "shuffle") p.shuffle = !p.shuffle;
+                                        else if (k === "repeat")
+                                            p.loopState = p.loopState === MprisLoopState.None ? MprisLoopState.Playlist
+                                                : (p.loopState === MprisLoopState.Playlist ? MprisLoopState.Track : MprisLoopState.None);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ---- volume, same width ----
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 10
+                    Text {
+                        text: np.theme ? (np.theme.mediaMuted(np.player) ? "\uf026" : np.theme.volIcon({ volume: np.theme.mediaVolume(np.player), muted: false })) : ""
+                        color: np.theme ? np.theme.fg : "white"
+                        font.family: np.theme ? np.theme.iconFont : ""
+                        font.pixelSize: 15
+                        MouseArea {
+                            anchors.fill: parent
+                            anchors.margins: -6
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: if (np.theme) np.theme.toggleMediaMute(np.player)
+                        }
+                    }
+                    ValueBar {
+                        theme: np.theme
+                        Layout.fillWidth: true
+                        value: np.theme ? np.theme.mediaVolume(np.player) : 0
+                        onMoved: v => { if (np.theme) np.theme.setMediaVolume(np.player, v); }
+                    }
+                    Text {
+                        Layout.preferredWidth: 36
+                        horizontalAlignment: Text.AlignRight
+                        text: np.theme ? Math.round(np.theme.mediaVolume(np.player) * 100) + "%" : ""
+                        color: np.theme ? np.theme.muted : "grey"
+                        font.pixelSize: 11
+                    }
+                }
+            }
+        }
+    }
+
+    // Small rounded switch used on the Sports tab (Games / Standings / NBA ...)
+    component SportChip: Rectangle {
+        id: sc
+        property var theme: null
+        property string label: ""
+        property string icon: ""
+        property bool active: false
+        signal clicked()
+        implicitWidth: scRow.implicitWidth + (sc.label === "" ? 20 : 24)
+        implicitHeight: 32
+        radius: 10
+        color: sc.active ? (sc.theme ? sc.theme.accent : "white") : (scMouse.containsMouse && sc.theme ? sc.theme.overlay : "transparent")
+        border.width: sc.active ? 0 : 1
+        border.color: sc.theme ? sc.theme.glassEdge : "transparent"
+        scale: scMouse.pressed ? 0.94 : 1
+        Behavior on color { ColorAnimation { duration: 150 } }
+        Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutBack } }
+
+        Row {
+            id: scRow
+            anchors.centerIn: parent
+            spacing: 6
+            Text {
+                visible: sc.icon !== ""
+                anchors.verticalCenter: parent.verticalCenter
+                text: sc.icon
+                font.family: sc.theme ? sc.theme.iconFont : ""
+                font.pixelSize: 13
+                color: sc.active ? (sc.theme ? sc.theme.bg : "black") : (sc.theme ? sc.theme.accent : "white")
+            }
+            Text {
+                visible: sc.label !== ""
+                anchors.verticalCenter: parent.verticalCenter
+                text: sc.label
+                font.pixelSize: 12
+                font.bold: sc.active
+                color: sc.active ? (sc.theme ? sc.theme.bg : "black") : (sc.theme ? sc.theme.fg : "white")
+            }
+        }
+
+        MouseArea {
+            id: scMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: sc.clicked()
+        }
+    }
+
+    // A team logo from ESPN; shows the team's letters in a circle until (or if) the picture loads
+    component TeamLogo: Item {
+        id: tl
+        property var theme: null
+        property string source: ""
+        property string abbr: ""
+        implicitWidth: 32
+        implicitHeight: 32
+
+        Rectangle {
+            anchors.fill: parent
+            radius: width / 2
+            visible: tlImg.status !== Image.Ready
+            color: tl.theme ? tl.theme.overlay : "#444"
+            Text {
+                anchors.centerIn: parent
+                text: tl.abbr
+                color: tl.theme ? tl.theme.fg : "white"
+                font.pixelSize: Math.max(8, Math.round(tl.width * 0.28))
+                font.bold: true
+            }
+        }
+        Image {
+            id: tlImg
+            anchors.fill: parent
+            source: tl.source
+            sourceSize.width: 160
+            sourceSize.height: 160
+            fillMode: Image.PreserveAspectFit
+            asynchronous: true
+            smooth: true
+            mipmap: true
         }
     }
 
@@ -3354,8 +4011,8 @@ ShellRoot {
                     Keys.onPressed: event => {
                         if (event.key === Qt.Key_Escape && root.devPicker !== "") root.devPicker = "";
                         else if (event.key === Qt.Key_Escape) root.hubOpen = false;
-                        else if (event.key === Qt.Key_Tab) root.hubTab = (root.hubTab + 1) % 7;
-                        else if (event.key === Qt.Key_Backtab) root.hubTab = (root.hubTab + 6) % 7;
+                        else if (event.key === Qt.Key_Tab) root.hubTab = (root.hubTab + 1) % 8;
+                        else if (event.key === Qt.Key_Backtab) root.hubTab = (root.hubTab + 7) % 8;
                         else return;
                         event.accepted = true;
                     }
@@ -3570,7 +4227,8 @@ ShellRoot {
                                                 { name: "Calendar", icon: "" },
                                                 { name: "Alerts", icon: "" },
                                                 { name: "System", icon: "" },
-                                                { name: "Capture", icon: "" }
+                                                { name: "Capture", icon: "" },
+                                                { name: "Sports", icon: "\udb82\udc06" }
                                             ]
 
                                             delegate: Rectangle {
@@ -3957,153 +4615,16 @@ ShellRoot {
                                 // ===== 1: Media =====
                                 HubCard {
                                     theme: root
+                                    clip: true
 
-                                    RowLayout {
-                                        anchors.fill: parent
-                                        anchors.margins: 24
-                                        spacing: 26
+                                    NowPlaying {
+                                        theme: root
+                                        player: root.player
                                         visible: root.player !== null
-
-                                        Rectangle {
-                                            Layout.preferredWidth: 260
-                                            Layout.preferredHeight: 260
-                                            radius: 24
-                                            color: root.overlay
-                                            clip: true
-                                            Image {
-                                                anchors.fill: parent
-                                                source: root.player ? root.player.trackArtUrl : ""
-                                                fillMode: Image.PreserveAspectCrop
-                                                visible: status === Image.Ready
-                                            }
-                                            Text {
-                                                anchors.centerIn: parent
-                                                visible: !root.player || root.player.trackArtUrl === ""
-                                                text: ""
-                                                color: root.muted
-                                                font.family: root.iconFont
-                                                font.pixelSize: 60
-                                            }
-                                            Rectangle {
-                                                anchors.fill: parent
-                                                radius: parent.radius
-                                                gradient: Gradient {
-                                                    GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, 0.18) }
-                                                    GradientStop { position: 0.4; color: Qt.rgba(1, 1, 1, 0) }
-                                                }
-                                            }
-                                        }
-
-                                        ColumnLayout {
-                                            Layout.fillWidth: true
-                                            spacing: 6
-
-                                            Text {
-                                                Layout.fillWidth: true
-                                                text: root.player ? (root.player.trackTitle || "Unknown title") : ""
-                                                color: root.fg
-                                                font.pixelSize: 22
-                                                font.bold: true
-                                                wrapMode: Text.Wrap
-                                                maximumLineCount: 2
-                                                elide: Text.ElideRight
-                                            }
-                                            Text {
-                                                Layout.fillWidth: true
-                                                text: root.player ? root.player.trackArtist : ""
-                                                color: root.muted
-                                                font.pixelSize: 15
-                                                elide: Text.ElideRight
-                                            }
-                                            Text {
-                                                Layout.fillWidth: true
-                                                text: root.player ? root.player.identity : ""
-                                                color: root.accent
-                                                font.pixelSize: 12
-                                            }
-
-                                            Item { Layout.preferredHeight: 18 }
-
-                                            // seek bar (position only updates when asked, so poll while visible)
-                                            Timer {
-                                                interval: 1000
-                                                repeat: true
-                                                running: panel.hubHere && root.hubTab === 1 && root.playing(root.player)
-                                                onTriggered: root.player.positionChanged()
-                                            }
-                                            ValueBar {
-                                                theme: root
-                                                Layout.fillWidth: true
-                                                value: root.player && root.player.length > 0 ? root.player.position / root.player.length : 0
-                                                onMoved: v => {
-                                                    const p = root.player;
-                                                    if (p && p.canSeek && p.length > 0) p.position = v * p.length;
-                                                }
-                                            }
-                                            RowLayout {
-                                                Layout.fillWidth: true
-                                                Text {
-                                                    text: root.fmt(root.player ? root.player.position : 0)
-                                                    color: root.muted
-                                                    font.pixelSize: 11
-                                                }
-                                                Item { Layout.fillWidth: true }
-                                                Text {
-                                                    text: root.fmt(root.player ? root.player.length : 0)
-                                                    color: root.muted
-                                                    font.pixelSize: 11
-                                                }
-                                            }
-
-                                            RowLayout {
-                                                Layout.alignment: Qt.AlignHCenter
-                                                spacing: 12
-                                                IconButton {
-                                                    theme: root
-                                                    implicitWidth: 60
-                                                    implicitHeight: 46
-                                                    label: "|◀"
-                                                    dim: !(root.player && root.player.canGoPrevious)
-                                                    onClicked: if (root.player && root.player.canGoPrevious) root.player.previous()
-                                                }
-                                                IconButton {
-                                                    theme: root
-                                                    implicitWidth: 76
-                                                    implicitHeight: 46
-                                                    label: root.playing(root.player) ? "❚❚" : "▶"
-                                                    dim: !(root.player && root.player.canTogglePlaying)
-                                                    onClicked: if (root.player && root.player.canTogglePlaying) root.player.togglePlaying()
-                                                }
-                                                IconButton {
-                                                    theme: root
-                                                    implicitWidth: 60
-                                                    implicitHeight: 46
-                                                    label: "▶|"
-                                                    dim: !(root.player && root.player.canGoNext)
-                                                    onClicked: if (root.player && root.player.canGoNext) root.player.next()
-                                                }
-                                            }
-
-                                            RowLayout {
-                                                Layout.fillWidth: true
-                                                visible: root.player && root.player.volumeSupported
-                                                spacing: 10
-                                                Text {
-                                                    text: "Player"
-                                                    color: root.muted
-                                                    font.pixelSize: 12
-                                                }
-                                                ValueBar {
-                                                    theme: root
-                                                    Layout.fillWidth: true
-                                                    value: root.player ? root.player.volume : 0
-                                                    onMoved: v => {
-                                                        if (root.player && root.player.volumeSupported) root.player.volume = v;
-                                                    }
-                                                }
-                                            }
-                                            Item { Layout.fillHeight: true }
-                                        }
+                                        artSize: 360
+                                        wide: true
+                                        backdropMargin: 40
+                                        anchors.centerIn: parent
                                     }
 
                                     Column {
@@ -4112,7 +4633,7 @@ ShellRoot {
                                         spacing: 8
                                         Text {
                                             anchors.horizontalCenter: parent.horizontalCenter
-                                            text: ""
+                                            text: "\uf001"
                                             color: root.muted
                                             font.family: root.iconFont
                                             font.pixelSize: 44
@@ -4400,6 +4921,16 @@ ShellRoot {
                                                 width: hubNotifs.width
                                                 height: hnCol.implicitHeight + 24
                                                 border.color: hn.modelData.urgency === NotificationUrgency.Critical ? root.danger : root.glassEdge
+                                                color: hnOpen.containsMouse ? root.overlay : root.surface
+
+                                                // click anywhere on it: open the app it came from
+                                                MouseArea {
+                                                    id: hnOpen
+                                                    anchors.fill: parent
+                                                    hoverEnabled: true
+                                                    cursorShape: Qt.PointingHandCursor
+                                                    onClicked: root.openNotification(hn.modelData)
+                                                }
 
                                                 ColumnLayout {
                                                     id: hnCol
@@ -4938,6 +5469,966 @@ ShellRoot {
                                                     icon: "\uf07b"
                                                     label: "Recordings"
                                                     onClicked: mouse => { root.hubOpen = false; Quickshell.execDetached(["sh", "-c", "mkdir -p \"$HOME/Videos/Recordings\" && xdg-open \"$HOME/Videos/Recordings\""]); }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // ===== 7: Sports =====
+                                ColumnLayout {
+                                    spacing: 10
+
+                                    // ---- top row: pages, favourite team, leagues, refresh ----
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 6
+
+                                        Repeater {
+                                            model: [
+                                                { id: "games", name: "Games", icon: "" },
+                                                { id: "standings", name: "Standings", icon: "" },
+                                                { id: "teams", name: "Teams", icon: "" }
+                                            ]
+                                            delegate: SportChip {
+                                                required property var modelData
+                                                theme: root
+                                                icon: modelData.icon
+                                                label: modelData.name
+                                                active: root.sportsView === modelData.id
+                                                onClicked: root.sportsShow(modelData.id)
+                                            }
+                                        }
+
+                                        SportChip {
+                                            visible: root.sportsFavId !== ""
+                                            theme: root
+                                            icon: ""
+                                            label: root.sportsFavAbbr
+                                            active: root.sportsView === "team" && root.sportsTeam !== null && root.sportsTeam.id === root.sportsFavId
+                                            onClicked: root.sportsOpenTeam(root.sportsFavId)
+                                        }
+
+                                        Item { Layout.fillWidth: true }
+
+                                        Repeater {
+                                            model: root.sportsLeagues
+                                            delegate: SportChip {
+                                                required property var modelData
+                                                theme: root
+                                                label: modelData.name
+                                                active: root.sportsLeague === modelData.id
+                                                onClicked: root.sportsSetLeague(modelData.id)
+                                            }
+                                        }
+
+                                        SportChip {
+                                            id: sportsRefreshBtn
+                                            theme: root
+                                            icon: ""
+                                            onClicked: root.sportsRefresh()
+                                            RotationAnimation {
+                                                target: sportsRefreshBtn
+                                                running: root.sportsLoading
+                                                from: 0
+                                                to: 360
+                                                duration: 900
+                                                loops: Animation.Infinite
+                                                onStopped: sportsRefreshBtn.rotation = 0
+                                            }
+                                        }
+                                    }
+
+                                    // ---- the page for the chosen view ----
+                                    StackLayout {
+                                        Layout.fillWidth: true
+                                        Layout.fillHeight: true
+                                        currentIndex: ["games", "standings", "teams", "team", "player"].indexOf(root.sportsView)
+
+                                        // =========== Games ===========
+                                        ColumnLayout {
+                                            spacing: 8
+
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 6
+                                                SportChip { theme: root; icon: ""; onClicked: root.sportsDay -= 1 }
+                                                Text {
+                                                    Layout.fillWidth: true
+                                                    horizontalAlignment: Text.AlignHCenter
+                                                    text: root.sportsDayLabel
+                                                    color: root.fg
+                                                    font.pixelSize: 15
+                                                    font.bold: true
+                                                }
+                                                SportChip { theme: root; label: "Today"; visible: root.sportsDay !== 0; onClicked: root.sportsDay = 0 }
+                                                SportChip { theme: root; icon: ""; onClicked: root.sportsDay += 1 }
+                                            }
+
+                                            Item {
+                                                Layout.fillWidth: true
+                                                Layout.fillHeight: true
+
+                                                GridView {
+                                                    id: gamesGrid
+                                                    anchors.fill: parent
+                                                    clip: true
+                                                    cellWidth: Math.floor(width / 2)
+                                                    cellHeight: 122
+                                                    boundsBehavior: Flickable.StopAtBounds
+                                                    model: root.sportsGames
+
+                                                    delegate: Item {
+                                                        id: gameCard
+                                                        required property var modelData
+                                                        readonly property var g: modelData
+                                                        readonly property bool live: g.state === "in"
+                                                        readonly property bool fav: root.sportsFavId !== "" && (g.home.id === root.sportsFavId || g.away.id === root.sportsFavId)
+                                                        width: gamesGrid.cellWidth
+                                                        height: gamesGrid.cellHeight
+
+                                                        HubCard {
+                                                            theme: root
+                                                            anchors.fill: parent
+                                                            anchors.margins: 5
+                                                            radius: 16
+                                                            border.color: gameCard.fav ? root.accent : root.glassEdge
+
+                                                            ColumnLayout {
+                                                                anchors.fill: parent
+                                                                anchors.leftMargin: 14
+                                                                anchors.rightMargin: 14
+                                                                anchors.topMargin: 10
+                                                                anchors.bottomMargin: 10
+                                                                spacing: 2
+
+                                                                Repeater {
+                                                                    model: [gameCard.g.away, gameCard.g.home]
+                                                                    delegate: Item {
+                                                                        id: gt
+                                                                        required property var modelData
+                                                                        readonly property bool lost: gameCard.g.state === "post" && !modelData.winner
+                                                                        Layout.fillWidth: true
+                                                                        Layout.preferredHeight: 32
+
+                                                                        RowLayout {
+                                                                            anchors.fill: parent
+                                                                            spacing: 10
+                                                                            TeamLogo {
+                                                                                theme: root
+                                                                                Layout.preferredWidth: 28
+                                                                                Layout.preferredHeight: 28
+                                                                                source: gt.modelData.logo
+                                                                                abbr: gt.modelData.abbr
+                                                                            }
+                                                                            Text {
+                                                                                text: gt.modelData.name
+                                                                                color: gt.lost ? root.muted : root.fg
+                                                                                font.pixelSize: 14
+                                                                                font.bold: !gt.lost
+                                                                                elide: Text.ElideRight
+                                                                                Layout.maximumWidth: 170
+                                                                            }
+                                                                            Text {
+                                                                                text: gt.modelData.record
+                                                                                color: root.muted
+                                                                                font.pixelSize: 11
+                                                                            }
+                                                                            Item { Layout.fillWidth: true }
+                                                                            Text {
+                                                                                text: gt.modelData.score
+                                                                                color: gt.lost ? root.muted : root.fg
+                                                                                font.pixelSize: 20
+                                                                                font.bold: true
+                                                                            }
+                                                                        }
+                                                                        MouseArea {
+                                                                            anchors.fill: parent
+                                                                            cursorShape: Qt.PointingHandCursor
+                                                                            onClicked: root.sportsOpenTeam(gt.modelData.id)
+                                                                        }
+                                                                    }
+                                                                }
+
+                                                                // status line
+                                                                RowLayout {
+                                                                    Layout.fillWidth: true
+                                                                    Layout.topMargin: 4
+                                                                    spacing: 6
+                                                                    Rectangle {
+                                                                        visible: gameCard.live
+                                                                        Layout.preferredWidth: 8
+                                                                        Layout.preferredHeight: 8
+                                                                        radius: 4
+                                                                        color: root.danger
+                                                                        SequentialAnimation on opacity {
+                                                                            running: gameCard.live && root.sportsVisible
+                                                                            loops: Animation.Infinite
+                                                                            NumberAnimation { to: 0.25; duration: 700 }
+                                                                            NumberAnimation { to: 1; duration: 700 }
+                                                                        }
+                                                                    }
+                                                                    Text {
+                                                                        text: gameCard.g.state === "pre" ? root.sportsTime(gameCard.g.date) : gameCard.g.detail
+                                                                        color: gameCard.live ? root.danger : root.muted
+                                                                        font.pixelSize: 12
+                                                                        font.bold: gameCard.live
+                                                                    }
+                                                                    Item { Layout.fillWidth: true }
+                                                                    Text {
+                                                                        text: gameCard.g.tv
+                                                                        color: root.muted
+                                                                        font.pixelSize: 11
+                                                                        elide: Text.ElideRight
+                                                                        Layout.maximumWidth: 180
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                Column {
+                                                    anchors.centerIn: parent
+                                                    spacing: 8
+                                                    visible: root.sportsGames.length === 0
+                                                    Text {
+                                                        anchors.horizontalCenter: parent.horizontalCenter
+                                                        text: "󰠆"
+                                                        color: root.muted
+                                                        font.family: root.iconFont
+                                                        font.pixelSize: 40
+                                                    }
+                                                    Text {
+                                                        anchors.horizontalCenter: parent.horizontalCenter
+                                                        text: root.sportsLoading ? "Loading games…" : (root.sportsStatus || "No games on this day")
+                                                        color: root.muted
+                                                        font.pixelSize: 14
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // =========== Standings ===========
+                                        ColumnLayout {
+                                            spacing: 8
+
+                                            ListView {
+                                                Layout.fillWidth: true
+                                                Layout.preferredHeight: 32
+                                                orientation: ListView.Horizontal
+                                                spacing: 6
+                                                clip: true
+                                                boundsBehavior: Flickable.StopAtBounds
+                                                model: root.sportsConfs
+                                                delegate: SportChip {
+                                                    required property var modelData
+                                                    required property int index
+                                                    theme: root
+                                                    label: modelData.name
+                                                    active: root.sportsConf === index
+                                                    onClicked: root.sportsConf = index
+                                                }
+                                            }
+
+                                            HubCard {
+                                                theme: root
+                                                Layout.fillWidth: true
+                                                Layout.fillHeight: true
+                                                clip: true
+
+                                                ColumnLayout {
+                                                    anchors.fill: parent
+                                                    anchors.margins: 12
+                                                    spacing: 4
+
+                                                    // column headings (same widths as the rows below)
+                                                    RowLayout {
+                                                        Layout.fillWidth: true
+                                                        Layout.leftMargin: 8
+                                                        Layout.rightMargin: 8
+                                                        spacing: 0
+                                                        Repeater {
+                                                            model: [
+                                                                { t: "#", w: 34, a: Text.AlignLeft },
+                                                                { t: "Team", w: -1, a: Text.AlignLeft },
+                                                                { t: "W", w: 52, a: Text.AlignRight },
+                                                                { t: "L", w: 52, a: Text.AlignRight },
+                                                                { t: "PCT", w: 64, a: Text.AlignRight },
+                                                                { t: "GB", w: 56, a: Text.AlignRight },
+                                                                { t: "STRK", w: 64, a: Text.AlignRight },
+                                                                { t: "L10", w: 64, a: Text.AlignRight }
+                                                            ]
+                                                            delegate: Text {
+                                                                required property var modelData
+                                                                Layout.preferredWidth: modelData.w > 0 ? modelData.w : -1
+                                                                Layout.fillWidth: modelData.w < 0
+                                                                horizontalAlignment: modelData.a
+                                                                text: modelData.t
+                                                                color: root.muted
+                                                                font.pixelSize: 11
+                                                                font.bold: true
+                                                            }
+                                                        }
+                                                    }
+
+                                                    ListView {
+                                                        id: standList
+                                                        Layout.fillWidth: true
+                                                        Layout.fillHeight: true
+                                                        clip: true
+                                                        boundsBehavior: Flickable.StopAtBounds
+                                                        model: root.sportsConfs.length > root.sportsConf ? root.sportsConfs[root.sportsConf].rows : []
+
+                                                        delegate: Rectangle {
+                                                            id: sr
+                                                            required property var modelData
+                                                            required property int index
+                                                            readonly property bool fav: modelData.id === root.sportsFavId
+                                                            width: standList.width
+                                                            height: 38
+                                                            radius: 10
+                                                            color: srMouse.containsMouse ? root.overlay : (sr.index % 2 === 0 ? Qt.rgba(1, 1, 1, 0.04) : "transparent")
+                                                            border.width: sr.fav ? 1 : 0
+                                                            border.color: root.accent
+
+                                                            // NBA: line under 6th (playoffs) and 10th (play-in)
+                                                            Rectangle {
+                                                                visible: root.sportsLeague === "nba" && (sr.index === 5 || sr.index === 9)
+                                                                anchors.bottom: parent.bottom
+                                                                anchors.left: parent.left
+                                                                anchors.right: parent.right
+                                                                anchors.leftMargin: 8
+                                                                anchors.rightMargin: 8
+                                                                height: 1
+                                                                color: root.glassEdge
+                                                            }
+
+                                                            RowLayout {
+                                                                anchors.fill: parent
+                                                                anchors.leftMargin: 8
+                                                                anchors.rightMargin: 8
+                                                                spacing: 0
+                                                                Text { Layout.preferredWidth: 34; text: sr.index + 1; color: root.muted; font.pixelSize: 13 }
+                                                                RowLayout {
+                                                                    Layout.fillWidth: true
+                                                                    spacing: 10
+                                                                    TeamLogo {
+                                                                        theme: root
+                                                                        Layout.preferredWidth: 24
+                                                                        Layout.preferredHeight: 24
+                                                                        source: sr.modelData.logo
+                                                                        abbr: sr.modelData.abbr
+                                                                    }
+                                                                    Text {
+                                                                        Layout.fillWidth: true
+                                                                        text: sr.modelData.name
+                                                                        color: root.fg
+                                                                        font.pixelSize: 13
+                                                                        font.bold: sr.fav
+                                                                        elide: Text.ElideRight
+                                                                    }
+                                                                }
+                                                                Text { Layout.preferredWidth: 52; horizontalAlignment: Text.AlignRight; text: sr.modelData.w; color: root.fg; font.pixelSize: 13; font.bold: true }
+                                                                Text { Layout.preferredWidth: 52; horizontalAlignment: Text.AlignRight; text: sr.modelData.l; color: root.fg; font.pixelSize: 13 }
+                                                                Text { Layout.preferredWidth: 64; horizontalAlignment: Text.AlignRight; text: sr.modelData.pct; color: root.muted; font.pixelSize: 13 }
+                                                                Text { Layout.preferredWidth: 56; horizontalAlignment: Text.AlignRight; text: sr.modelData.gb; color: root.muted; font.pixelSize: 13 }
+                                                                Text {
+                                                                    Layout.preferredWidth: 64
+                                                                    horizontalAlignment: Text.AlignRight
+                                                                    text: sr.modelData.strk
+                                                                    color: sr.modelData.strk.charAt(0) === "W" ? root.fg : root.muted
+                                                                    font.pixelSize: 13
+                                                                }
+                                                                Text { Layout.preferredWidth: 64; horizontalAlignment: Text.AlignRight; text: sr.modelData.l10; color: root.muted; font.pixelSize: 13 }
+                                                            }
+                                                            MouseArea {
+                                                                id: srMouse
+                                                                anchors.fill: parent
+                                                                hoverEnabled: true
+                                                                cursorShape: Qt.PointingHandCursor
+                                                                onClicked: root.sportsOpenTeam(sr.modelData.id)
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                Text {
+                                                    anchors.centerIn: parent
+                                                    visible: root.sportsConfs.length === 0
+                                                    text: root.sportsLoading ? "Loading standings…" : (root.sportsStatus || "No standings yet")
+                                                    color: root.muted
+                                                    font.pixelSize: 14
+                                                }
+                                            }
+                                        }
+
+                                        // =========== Teams ===========
+                                        ColumnLayout {
+                                            spacing: 8
+
+                                            // search
+                                            Rectangle {
+                                                Layout.fillWidth: true
+                                                Layout.preferredHeight: 36
+                                                radius: 12
+                                                color: root.surface
+                                                border.width: 1
+                                                border.color: teamSearch.activeFocus ? root.accent : root.glassEdge
+                                                Text {
+                                                    id: teamSearchIcon
+                                                    anchors.left: parent.left
+                                                    anchors.leftMargin: 12
+                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    text: ""
+                                                    font.family: root.iconFont
+                                                    font.pixelSize: 13
+                                                    color: root.muted
+                                                }
+                                                TextInput {
+                                                    id: teamSearch
+                                                    anchors.left: teamSearchIcon.right
+                                                    anchors.leftMargin: 10
+                                                    anchors.right: parent.right
+                                                    anchors.rightMargin: 12
+                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    color: root.fg
+                                                    font.pixelSize: 13
+                                                    clip: true
+                                                    text: root.sportsTeamFilter
+                                                    onTextEdited: root.sportsTeamFilter = text
+                                                    Keys.onEscapePressed: { text = ""; root.sportsTeamFilter = ""; hubKeys.forceActiveFocus(); }
+                                                    Text {
+                                                        anchors.verticalCenter: parent.verticalCenter
+                                                        visible: teamSearch.text === ""
+                                                        text: "Find a team"
+                                                        color: root.muted
+                                                        font.pixelSize: 13
+                                                    }
+                                                }
+                                            }
+
+                                            Item {
+                                                Layout.fillWidth: true
+                                                Layout.fillHeight: true
+
+                                                GridView {
+                                                    id: teamGrid
+                                                    anchors.fill: parent
+                                                    clip: true
+                                                    cellWidth: Math.floor(width / 6)
+                                                    cellHeight: 112
+                                                    boundsBehavior: Flickable.StopAtBounds
+                                                    model: root.sportsAllTeams
+
+                                                    delegate: Item {
+                                                        id: tc
+                                                        required property var modelData
+                                                        width: teamGrid.cellWidth
+                                                        height: teamGrid.cellHeight
+
+                                                        Rectangle {
+                                                            anchors.fill: parent
+                                                            anchors.margins: 4
+                                                            radius: 16
+                                                            color: tcMouse.containsMouse ? root.overlay : root.surface
+                                                            border.width: 1
+                                                            border.color: tc.modelData.id === root.sportsFavId ? root.accent : root.glassEdge
+                                                            scale: tcMouse.pressed ? 0.95 : 1
+                                                            Behavior on color { ColorAnimation { duration: 120 } }
+                                                            Behavior on scale { NumberAnimation { duration: 120 } }
+
+                                                            Column {
+                                                                anchors.centerIn: parent
+                                                                width: parent.width - 16
+                                                                spacing: 8
+                                                                TeamLogo {
+                                                                    theme: root
+                                                                    anchors.horizontalCenter: parent.horizontalCenter
+                                                                    width: 46
+                                                                    height: 46
+                                                                    source: tc.modelData.logo
+                                                                    abbr: tc.modelData.abbr
+                                                                }
+                                                                Text {
+                                                                    width: parent.width
+                                                                    horizontalAlignment: Text.AlignHCenter
+                                                                    text: tc.modelData.short
+                                                                    color: root.fg
+                                                                    font.pixelSize: 12
+                                                                    font.bold: true
+                                                                    elide: Text.ElideRight
+                                                                }
+                                                            }
+                                                            MouseArea {
+                                                                id: tcMouse
+                                                                anchors.fill: parent
+                                                                hoverEnabled: true
+                                                                cursorShape: Qt.PointingHandCursor
+                                                                onClicked: root.sportsOpenTeam(tc.modelData.id)
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                Text {
+                                                    anchors.centerIn: parent
+                                                    visible: root.sportsAllTeams.length === 0
+                                                    text: root.sportsLoading ? "Loading teams…" : (root.sportsStatus || "No teams match")
+                                                    color: root.muted
+                                                    font.pixelSize: 14
+                                                }
+                                            }
+                                        }
+
+                                        // =========== One team ===========
+                                        ColumnLayout {
+                                            spacing: 10
+
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 12
+                                                SportChip { theme: root; icon: ""; label: "Back"; onClicked: root.sportsShow(root.sportsBackTo) }
+                                                TeamLogo {
+                                                    theme: root
+                                                    Layout.preferredWidth: 48
+                                                    Layout.preferredHeight: 48
+                                                    source: root.sportsTeam ? (root.sportsTeam.logo || "") : ""
+                                                    abbr: root.sportsTeam ? (root.sportsTeam.abbr || "") : ""
+                                                }
+                                                Column {
+                                                    Layout.fillWidth: true
+                                                    spacing: 2
+                                                    Text {
+                                                        text: root.sportsTeam ? (root.sportsTeam.name || "Loading…") : ""
+                                                        color: root.fg
+                                                        font.pixelSize: 20
+                                                        font.bold: true
+                                                    }
+                                                    Text {
+                                                        text: root.sportsTeam ? [root.sportsTeam.record, root.sportsTeam.standing].filter(x => x).join("  ·  ") : ""
+                                                        color: root.muted
+                                                        font.pixelSize: 12
+                                                    }
+                                                }
+                                                SportChip {
+                                                    theme: root
+                                                    icon: ""
+                                                    label: root.sportsTeam && root.sportsTeam.id === root.sportsFavId ? "My team" : "Set as my team"
+                                                    active: root.sportsTeam !== null && root.sportsTeam.id === root.sportsFavId
+                                                    onClicked: root.sportsToggleFav()
+                                                }
+                                            }
+
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                Layout.fillHeight: true
+                                                spacing: 12
+
+                                                // ---- roster ----
+                                                HubCard {
+                                                    theme: root
+                                                    Layout.fillWidth: true
+                                                    Layout.fillHeight: true
+                                                    Layout.preferredWidth: 3
+                                                    clip: true
+
+                                                    ColumnLayout {
+                                                        anchors.fill: parent
+                                                        anchors.margins: 12
+                                                        spacing: 6
+                                                        Text { text: "Roster"; color: root.fg; font.pixelSize: 14; font.bold: true }
+
+                                                        ListView {
+                                                            id: rosterList
+                                                            Layout.fillWidth: true
+                                                            Layout.fillHeight: true
+                                                            clip: true
+                                                            spacing: 2
+                                                            boundsBehavior: Flickable.StopAtBounds
+                                                            model: root.sportsRoster
+
+                                                            delegate: Rectangle {
+                                                                id: rp
+                                                                required property var modelData
+                                                                width: rosterList.width
+                                                                height: 40
+                                                                radius: 10
+                                                                color: rpMouse.containsMouse ? root.overlay : "transparent"
+
+                                                                RowLayout {
+                                                                    anchors.fill: parent
+                                                                    anchors.leftMargin: 6
+                                                                    anchors.rightMargin: 10
+                                                                    spacing: 10
+                                                                    Rectangle {
+                                                                        Layout.preferredWidth: 30
+                                                                        Layout.preferredHeight: 30
+                                                                        radius: 15
+                                                                        color: root.overlay
+                                                                        Text {
+                                                                            anchors.centerIn: parent
+                                                                            text: rp.modelData.jersey || "–"
+                                                                            color: root.fg
+                                                                            font.pixelSize: 12
+                                                                            font.bold: true
+                                                                        }
+                                                                    }
+                                                                    Text {
+                                                                        Layout.fillWidth: true
+                                                                        text: rp.modelData.name
+                                                                        color: root.fg
+                                                                        font.pixelSize: 13
+                                                                        elide: Text.ElideRight
+                                                                    }
+                                                                    Text {
+                                                                        visible: rp.modelData.injury !== ""
+                                                                        text: rp.modelData.injury
+                                                                        color: root.danger
+                                                                        font.pixelSize: 11
+                                                                        font.bold: true
+                                                                    }
+                                                                    Text { text: rp.modelData.pos; color: root.muted; font.pixelSize: 12; Layout.preferredWidth: 28 }
+                                                                    Text { text: rp.modelData.height; color: root.muted; font.pixelSize: 12; Layout.preferredWidth: 48; horizontalAlignment: Text.AlignRight }
+                                                                }
+                                                                MouseArea {
+                                                                    id: rpMouse
+                                                                    anchors.fill: parent
+                                                                    hoverEnabled: true
+                                                                    cursorShape: Qt.PointingHandCursor
+                                                                    onClicked: root.sportsOpenPlayer(rp.modelData)
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    Text {
+                                                        anchors.centerIn: parent
+                                                        visible: root.sportsRoster.length === 0
+                                                        text: root.sportsLoading ? "Loading roster…" : "No roster"
+                                                        color: root.muted
+                                                        font.pixelSize: 13
+                                                    }
+                                                }
+
+                                                // ---- schedule ----
+                                                HubCard {
+                                                    theme: root
+                                                    Layout.fillWidth: true
+                                                    Layout.fillHeight: true
+                                                    Layout.preferredWidth: 2
+                                                    clip: true
+
+                                                    Flickable {
+                                                        anchors.fill: parent
+                                                        anchors.margins: 12
+                                                        contentHeight: schedCol.implicitHeight
+                                                        clip: true
+                                                        boundsBehavior: Flickable.StopAtBounds
+
+                                                        Column {
+                                                            id: schedCol
+                                                            width: parent.width
+                                                            spacing: 6
+
+                                                            Repeater {
+                                                                model: [
+                                                                    { title: "Coming up", list: root.sportsUpcoming },
+                                                                    { title: "Recent", list: root.sportsRecent }
+                                                                ]
+                                                                delegate: Column {
+                                                                    id: sec
+                                                                    required property var modelData
+                                                                    width: schedCol.width
+                                                                    spacing: 4
+                                                                    visible: modelData.list.length > 0
+                                                                    topPadding: 4
+                                                                    Text { text: sec.modelData.title; color: root.fg; font.pixelSize: 14; font.bold: true; bottomPadding: 2 }
+
+                                                                    Repeater {
+                                                                        model: sec.modelData.list
+                                                                        delegate: Rectangle {
+                                                                            id: sg
+                                                                            required property var modelData
+                                                                            readonly property bool live: modelData.state === "in"
+                                                                            width: sec.width
+                                                                            height: 38
+                                                                            radius: 10
+                                                                            color: sgMouse.containsMouse ? root.overlay : Qt.rgba(1, 1, 1, 0.04)
+
+                                                                            RowLayout {
+                                                                                anchors.fill: parent
+                                                                                anchors.leftMargin: 8
+                                                                                anchors.rightMargin: 10
+                                                                                spacing: 8
+                                                                                // W / L badge, or the date
+                                                                                Rectangle {
+                                                                                    visible: sg.modelData.state === "post"
+                                                                                    Layout.preferredWidth: 22
+                                                                                    Layout.preferredHeight: 22
+                                                                                    radius: 7
+                                                                                    color: sg.modelData.won ? root.accent : root.overlay
+                                                                                    Text {
+                                                                                        anchors.centerIn: parent
+                                                                                        text: sg.modelData.won ? "W" : "L"
+                                                                                        color: sg.modelData.won ? root.bg : root.fg
+                                                                                        font.pixelSize: 11
+                                                                                        font.bold: true
+                                                                                    }
+                                                                                }
+                                                                                Text {
+                                                                                    visible: sg.modelData.state !== "post"
+                                                                                    Layout.preferredWidth: 54
+                                                                                    text: sg.live ? "LIVE" : Qt.formatDate(new Date(sg.modelData.date), "ddd d")
+                                                                                    color: sg.live ? root.danger : root.muted
+                                                                                    font.pixelSize: 12
+                                                                                    font.bold: sg.live
+                                                                                }
+                                                                                Text {
+                                                                                    text: sg.modelData.home ? "vs" : "@"
+                                                                                    color: root.muted
+                                                                                    font.pixelSize: 11
+                                                                                }
+                                                                                TeamLogo {
+                                                                                    theme: root
+                                                                                    Layout.preferredWidth: 22
+                                                                                    Layout.preferredHeight: 22
+                                                                                    source: sg.modelData.oppLogo
+                                                                                    abbr: sg.modelData.opp
+                                                                                }
+                                                                                Text {
+                                                                                    Layout.fillWidth: true
+                                                                                    text: sg.modelData.oppName
+                                                                                    color: root.fg
+                                                                                    font.pixelSize: 13
+                                                                                    elide: Text.ElideRight
+                                                                                }
+                                                                                Text {
+                                                                                    text: sg.modelData.state === "pre" ? root.sportsTime(sg.modelData.date)
+                                                                                        : sg.modelData.us + "–" + sg.modelData.them
+                                                                                    color: sg.live ? root.danger : root.muted
+                                                                                    font.pixelSize: 12
+                                                                                    font.bold: sg.modelData.state !== "pre"
+                                                                                }
+                                                                            }
+                                                                            MouseArea {
+                                                                                id: sgMouse
+                                                                                anchors.fill: parent
+                                                                                hoverEnabled: true
+                                                                                cursorShape: Qt.PointingHandCursor
+                                                                                onClicked: root.sportsOpenTeam(sg.modelData.oppId)
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    Text {
+                                                        anchors.centerIn: parent
+                                                        visible: root.sportsUpcoming.length === 0 && root.sportsRecent.length === 0
+                                                        text: root.sportsLoading ? "Loading schedule…" : "No games scheduled"
+                                                        color: root.muted
+                                                        font.pixelSize: 13
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // =========== One player ===========
+                                        ColumnLayout {
+                                            spacing: 10
+
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 12
+                                                SportChip {
+                                                    theme: root
+                                                    icon: ""
+                                                    label: root.sportsTeam && root.sportsTeam.abbr ? root.sportsTeam.abbr : "Back"
+                                                    onClicked: root.sportsView = "team"
+                                                }
+                                                Item { Layout.fillWidth: true }
+                                            }
+
+                                            HubCard {
+                                                theme: root
+                                                Layout.fillWidth: true
+                                                Layout.fillHeight: true
+                                                clip: true
+
+                                                ColumnLayout {
+                                                    anchors.fill: parent
+                                                    anchors.margins: 18
+                                                    spacing: 16
+
+                                                    RowLayout {
+                                                        Layout.fillWidth: true
+                                                        spacing: 22
+
+                                                        // headshot on a soft team-coloured card
+                                                        Rectangle {
+                                                            id: shotCard
+                                                            Layout.preferredWidth: 170
+                                                            Layout.preferredHeight: 170
+                                                            radius: 22
+                                                            color: root.overlay
+                                                            border.width: 1
+                                                            border.color: root.glassEdge
+                                                            clip: true
+                                                            Rectangle {
+                                                                anchors.fill: parent
+                                                                radius: parent.radius
+                                                                visible: root.sportsTeam !== null && (root.sportsTeam.color || "") !== ""
+                                                                color: root.sportsTeam && root.sportsTeam.color ? root.sportsTeam.color : "transparent"
+                                                                opacity: 0.45
+                                                            }
+                                                            Image {
+                                                                id: shotImg
+                                                                anchors.fill: parent
+                                                                anchors.topMargin: 10
+                                                                source: root.sportsPlayer ? root.sportsPlayer.headshot : ""
+                                                                sourceSize.width: 340
+                                                                fillMode: Image.PreserveAspectCrop
+                                                                verticalAlignment: Image.AlignBottom
+                                                                asynchronous: true
+                                                                smooth: true
+                                                                mipmap: true
+                                                            }
+                                                            Text {
+                                                                anchors.centerIn: parent
+                                                                visible: shotImg.status !== Image.Ready
+                                                                text: root.sportsPlayer ? (root.sportsPlayer.jersey || "") : ""
+                                                                color: root.fg
+                                                                font.pixelSize: 54
+                                                                font.bold: true
+                                                            }
+                                                        }
+
+                                                        ColumnLayout {
+                                                            Layout.fillWidth: true
+                                                            spacing: 6
+                                                            Text {
+                                                                text: root.sportsPlayer ? root.sportsPlayer.name : ""
+                                                                color: root.fg
+                                                                font.pixelSize: 26
+                                                                font.bold: true
+                                                            }
+                                                            Text {
+                                                                text: root.sportsPlayer ? ["#" + (root.sportsPlayer.jersey || "–"), root.sportsPlayer.pos,
+                                                                    root.sportsTeam ? root.sportsTeam.name : ""].filter(x => x).join("  ·  ") : ""
+                                                                color: root.muted
+                                                                font.pixelSize: 14
+                                                            }
+                                                            Text {
+                                                                visible: root.sportsPlayer !== null && root.sportsPlayer.injury !== ""
+                                                                text: root.sportsPlayer ? root.sportsPlayer.injury : ""
+                                                                color: root.danger
+                                                                font.pixelSize: 13
+                                                                font.bold: true
+                                                            }
+
+                                                            Row {
+                                                                Layout.topMargin: 10
+                                                                spacing: 10
+                                                                Repeater {
+                                                                    model: root.sportsPlayer ? [
+                                                                        { k: "Height", v: root.sportsPlayer.height },
+                                                                        { k: "Weight", v: root.sportsPlayer.weight },
+                                                                        { k: "Age", v: root.sportsPlayer.age },
+                                                                        { k: "Seasons", v: root.sportsPlayer.exp }
+                                                                    ].filter(x => x.v) : []
+                                                                    delegate: Rectangle {
+                                                                        id: bio
+                                                                        required property var modelData
+                                                                        width: 104
+                                                                        height: 58
+                                                                        radius: 14
+                                                                        color: Qt.rgba(1, 1, 1, 0.05)
+                                                                        border.width: 1
+                                                                        border.color: root.glassEdge
+                                                                        Column {
+                                                                            anchors.centerIn: parent
+                                                                            spacing: 3
+                                                                            Text { anchors.horizontalCenter: parent.horizontalCenter; text: bio.modelData.v; color: root.fg; font.pixelSize: 15; font.bold: true }
+                                                                            Text { anchors.horizontalCenter: parent.horizontalCenter; text: bio.modelData.k; color: root.muted; font.pixelSize: 11 }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+
+                                                    // ---- stats table ----
+                                                    ColumnLayout {
+                                                        Layout.fillWidth: true
+                                                        Layout.fillHeight: true
+                                                        spacing: 4
+                                                        visible: root.sportsPlayerStats !== null && root.sportsPlayerStats.labels.length > 0
+
+                                                        RowLayout {
+                                                            Layout.fillWidth: true
+                                                            Layout.leftMargin: 10
+                                                            Layout.rightMargin: 10
+                                                            spacing: 0
+                                                            Text { Layout.preferredWidth: 130; text: "Averages"; color: root.muted; font.pixelSize: 11; font.bold: true }
+                                                            Repeater {
+                                                                model: root.sportsPlayerStats ? root.sportsPlayerStats.labels : []
+                                                                delegate: Text {
+                                                                    required property var modelData
+                                                                    Layout.fillWidth: true
+                                                                    Layout.preferredWidth: 1
+                                                                    horizontalAlignment: Text.AlignRight
+                                                                    text: modelData
+                                                                    color: root.muted
+                                                                    font.pixelSize: 11
+                                                                    font.bold: true
+                                                                }
+                                                            }
+                                                        }
+                                                        Repeater {
+                                                            model: root.sportsPlayerStats ? root.sportsPlayerStats.rows : []
+                                                            delegate: Rectangle {
+                                                                id: srow
+                                                                required property var modelData
+                                                                required property int index
+                                                                Layout.fillWidth: true
+                                                                Layout.preferredHeight: 36
+                                                                radius: 10
+                                                                color: srow.index % 2 === 0 ? Qt.rgba(1, 1, 1, 0.05) : "transparent"
+                                                                RowLayout {
+                                                                    anchors.fill: parent
+                                                                    anchors.leftMargin: 10
+                                                                    anchors.rightMargin: 10
+                                                                    spacing: 0
+                                                                    Text { Layout.preferredWidth: 130; text: srow.modelData.name; color: root.fg; font.pixelSize: 13; font.bold: true; elide: Text.ElideRight }
+                                                                    Repeater {
+                                                                        model: srow.modelData.stats
+                                                                        delegate: Text {
+                                                                            required property var modelData
+                                                                            Layout.fillWidth: true
+                                                                            Layout.preferredWidth: 1
+                                                                            horizontalAlignment: Text.AlignRight
+                                                                            text: modelData
+                                                                            color: root.fg
+                                                                            font.pixelSize: 13
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                        Item { Layout.fillHeight: true }
+                                                    }
+
+                                                    Text {
+                                                        Layout.fillWidth: true
+                                                        Layout.fillHeight: true
+                                                        horizontalAlignment: Text.AlignHCenter
+                                                        verticalAlignment: Text.AlignVCenter
+                                                        visible: root.sportsPlayerStats === null || root.sportsPlayerStats.labels.length === 0
+                                                        text: root.sportsPlayerStats === null ? "Loading stats…" : "No stats for this player yet"
+                                                        color: root.muted
+                                                        font.pixelSize: 13
+                                                    }
                                                 }
                                             }
                                         }
@@ -5826,9 +7317,18 @@ ShellRoot {
                                 width: notifList.width
                                 height: nCol.implicitHeight + 20
                                 radius: 14
-                                color: root.surface
                                 border.width: nCard.modelData.urgency === NotificationUrgency.Critical ? 1 : 0
                                 border.color: root.danger
+                                color: nOpen.containsMouse ? root.overlay : root.surface
+
+                                // click anywhere on it: open the app it came from
+                                MouseArea {
+                                    id: nOpen
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: root.openNotification(nCard.modelData)
+                                }
 
                                 ColumnLayout {
                                     id: nCol
@@ -5924,6 +7424,7 @@ ShellRoot {
                 delegate: Item {
                     id: toast
                     required property int tid
+                    required property int nid
                     required property string summary
                     required property string body
                     required property string appName
@@ -6031,10 +7532,40 @@ ShellRoot {
                             }
                         }
 
+                        // click: open the app it came from
                         MouseArea {
                             anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
-                            onClicked: root.removeToast(toast.tid)
+                            onClicked: {
+                                root.openNotification(root.notifById(toast.nid));
+                                root.removeToast(toast.tid);
+                            }
+                        }
+
+                        // small × in the corner: just close the pop-up
+                        Rectangle {
+                            anchors.top: parent.top
+                            anchors.right: parent.right
+                            anchors.margins: 10
+                            width: 22
+                            height: 22
+                            radius: 11
+                            visible: toastHover.hovered
+                            color: toastX.containsMouse ? root.overlay : "transparent"
+                            Text {
+                                anchors.centerIn: parent
+                                text: "\uf00d"
+                                color: root.muted
+                                font.family: root.iconFont
+                                font.pixelSize: 11
+                            }
+                            MouseArea {
+                                id: toastX
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.removeToast(toast.tid)
+                            }
                         }
                     }
 
@@ -7381,7 +8912,7 @@ ShellRoot {
     function sigTime(ts) {
         if (!ts) return "";
         const d = new Date(ts), now = new Date();
-        return d.toDateString() === now.toDateString() ? Qt.formatTime(d, "hh:mm") : Qt.formatDate(d, "MMM d");
+        return d.toDateString() === now.toDateString() ? Qt.formatTime(d, root.use24h ? "hh:mm" : "h:mm AP") : Qt.formatDate(d, "MMM d");
     }
 
     function openSignal() {
@@ -9114,8 +10645,34 @@ ShellRoot {
             required property var modelData
             screen: modelData
 
-            visible: root.wallPickerOpen
-                && (!Hyprland.focusedMonitor || Hyprland.focusedMonitor.name === modelData.name)
+            // stays up for a moment after closing so it can fade out
+            property bool shown: false
+            property real k: 0          // 0 = hidden, 1 = fully open
+            visible: shown && (!Hyprland.focusedMonitor || Hyprland.focusedMonitor.name === modelData.name)
+
+            Connections {
+                target: root
+                function onWallPickerOpenChanged() {
+                    if (root.wallPickerOpen) {
+                        picker.shown = true;
+                        pickHide.stop();
+                        pickShow.restart();
+                    } else {
+                        pickShow.stop();
+                        pickHide.restart();
+                    }
+                }
+            }
+            NumberAnimation { id: pickShow; target: picker; property: "k"; to: 1; duration: 320; easing.type: Easing.OutCubic }
+            NumberAnimation {
+                id: pickHide
+                target: picker
+                property: "k"
+                to: 0
+                duration: 220
+                easing.type: Easing.InCubic
+                onFinished: picker.shown = false
+            }
 
             WlrLayershell.layer: WlrLayer.Overlay
             WlrLayershell.namespace: "quickshell-wallpicker"
@@ -9127,9 +10684,9 @@ ShellRoot {
                 left: true
                 right: true
             }
-            color: "#30000000"
+            color: Qt.rgba(0, 0, 0, 0.30 * picker.k)
 
-            readonly property int thumbW: 340
+            readonly property int thumbW: 360
             // which list the carousel shows: still pictures or live (video) wallpapers
             property string mode: "pictures"
             readonly property bool live: mode === "live"
@@ -9144,7 +10701,8 @@ ShellRoot {
                 strip.currentIndex = i >= 0 ? i : 0;
                 strip.positionViewAtIndex(strip.currentIndex, ListView.Center);
             }
-            readonly property int thumbH: 200
+            readonly property int thumbH: 210
+            readonly property real slant: 0.24     // how far the cards lean
             property real wheelAcc: 0
 
             // Index of the wallpaper that's set right now (-1 if none)
@@ -9164,6 +10722,7 @@ ShellRoot {
                 const url = picker.src.get(strip.currentIndex, "fileUrl").toString();
                 if (picker.live) root.setLiveWallpaper(url, picker.src.get(strip.currentIndex, "fileName"));
                 else root.setWallpaper(url);
+                root.wallPickerOpen = false;
             }
 
             onVisibleChanged: {
@@ -9204,43 +10763,34 @@ ShellRoot {
                 }
             }
 
-            Rectangle {
+            Item {
                 id: wcardPick
-                opacity: 0
-                scale: 0.94
-                NumberAnimation on opacity { running: picker.visible; from: 0; to: 1; duration: root.animMs * 1.5; easing.type: Easing.OutCubic }
-                NumberAnimation on scale { running: picker.visible; from: 0.94; to: 1; duration: root.animMs * 2; easing.type: Easing.OutBack }
+                opacity: picker.k
+                scale: 0.96 + 0.04 * picker.k
 
-                width: Math.min(picker.width - 80, 1240)
-                height: 470
+                width: Math.min(picker.width - 40, 1700)
+                height: 560
                 anchors.centerIn: parent
-                radius: 28
-                color: root.popupBg
-                border.color: root.glassEdge
-                border.width: 1
-                clip: true
-
-                GlassShine { radius: parent.radius; dark: root.dark }
-                Rectangle {
-                    anchors.fill: parent
-                    radius: parent.radius
-                    gradient: Gradient {
-                        GradientStop { position: 0.55; color: "transparent" }
-                        GradientStop { position: 1.0; color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, root.dark ? 0.12 : 0.08) }
-                    }
-                }
-
-                // Swallow clicks inside the card
-                MouseArea { anchors.fill: parent }
 
                 ColumnLayout {
                     anchors.fill: parent
-                    anchors.margins: 22
-                    spacing: 10
+                    spacing: 14
 
-                    // ---- Header ----
+                    // ---- Header: a glass pill above the cards ----
+                    Rectangle {
+                        Layout.alignment: Qt.AlignHCenter
+                        implicitWidth: pickHead.implicitWidth + 28
+                        implicitHeight: pickHead.implicitHeight + 16
+                        radius: height / 2
+                        color: root.popupBg
+                        border.width: 1
+                        border.color: root.glassEdge
+                        GlassShine { radius: parent.radius; dark: root.dark; strength: 0.7 }
+                        MouseArea { anchors.fill: parent }    // clicks here don't close the picker
+
                     RowLayout {
-                        Layout.fillWidth: true
+                        id: pickHead
+                        anchors.centerIn: parent
                         spacing: 10
 
                         Text {
@@ -9355,6 +10905,7 @@ ShellRoot {
                             onClicked: mouse => root.setWallpaper("")
                         }
                     }
+                    }
 
                     // ---- The carousel ----
                     Item {
@@ -9366,7 +10917,8 @@ ShellRoot {
                             anchors.fill: parent
                             orientation: ListView.Horizontal
                             model: picker.src
-                            spacing: 18
+                            spacing: -64                        // side cards tuck behind the middle one
+                            transform: Translate { x: (1 - picker.k) * 220 }   // cards slide in from the right
                             clip: false
                             interactive: true
                             boundsBehavior: Flickable.StopAtBounds
@@ -9393,33 +10945,57 @@ ShellRoot {
                                     anchors.centerIn: parent
                                     width: picker.thumbW
                                     height: picker.thumbH
-                                    radius: 20
+                                    radius: 4
                                     color: root.overlay
+                                    clip: true
                                     border.width: wthumb.isSet ? 3 : (wthumb.centre ? 2 : 1)
                                     border.color: wthumb.isSet ? root.accent : (wthumb.centre ? root.fg : root.glassEdge)
-                                    scale: wthumb.centre ? (thumbMouse.containsMouse ? 1.32 : 1.28) : (thumbMouse.containsMouse ? 0.9 : 0.84)
-                                    opacity: wthumb.centre ? 1 : 0.55
-                                    Behavior on scale { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutBack } }
-                                    Behavior on opacity { NumberAnimation { duration: root.animMs * 2 } }
+                                    scale: wthumb.centre ? (thumbMouse.containsMouse ? 1.40 : 1.36) : (thumbMouse.containsMouse ? 0.80 : 0.74)
+                                    opacity: wthumb.centre ? 1 : 0.5
+                                    Behavior on scale { NumberAnimation { duration: root.animMs * 2.4; easing.type: Easing.OutCubic } }
+                                    Behavior on opacity { NumberAnimation { duration: root.animMs * 2.4 } }
 
+                                    // lean the card (top pushed right), like a parallelogram
+                                    transform: Matrix4x4 {
+                                        matrix: Qt.matrix4x4(1, -picker.slant, 0, picker.slant * picker.thumbH / 2,
+                                                             0, 1, 0, 0,
+                                                             0, 0, 1, 0,
+                                                             0, 0, 0, 1)
+                                    }
+
+                                    // the picture leans back the other way so it isn't stretched
                                     Image {
-                                        anchors.fill: parent
-                                        anchors.margins: 4
+                                        width: parent.width + picker.slant * parent.height
+                                        height: parent.height
+                                        x: -picker.slant * parent.height / 2
                                         source: picker.live ? root.liveThumbFor(wthumb.fileName) : wthumb.fileUrl
                                         asynchronous: true
                                         fillMode: Image.PreserveAspectCrop
-                                        sourceSize.width: 640
+                                        sourceSize.width: 720
+                                        transform: Matrix4x4 {
+                                            matrix: Qt.matrix4x4(1, picker.slant, 0, -picker.slant * picker.thumbH / 2,
+                                                                 0, 1, 0, 0,
+                                                                 0, 0, 1, 0,
+                                                                 0, 0, 0, 1)
+                                        }
                                     }
 
-                                    // glossy highlight across the top of each picture
+                                    // soft shine along the top edge
                                     Rectangle {
                                         anchors.fill: parent
-                                        anchors.margins: 4
-                                        radius: 16
                                         gradient: Gradient {
-                                            GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, 0.22) }
-                                            GradientStop { position: 0.35; color: Qt.rgba(1, 1, 1, 0) }
+                                            GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, 0.16) }
+                                            GradientStop { position: 0.3; color: Qt.rgba(1, 1, 1, 0) }
                                         }
+                                    }
+
+                                    // the border drawn on top of the picture
+                                    Rectangle {
+                                        anchors.fill: parent
+                                        color: "transparent"
+                                        radius: parent.radius
+                                        border.width: parent.border.width
+                                        border.color: parent.border.color
                                     }
 
                                     // tick on the wallpaper that's set now
@@ -9528,24 +11104,93 @@ ShellRoot {
             }
             color: root.bg
 
-            // Crossfades to the new wallpaper instead of snapping
+            // Changing wallpaper: outlines of the new picture sketch themselves in, then it
+            // spreads out like ink from the picture's subject (shaders/ink.frag).
+            // Two images take turns being the one on screen, so nothing reloads or flickers.
             Item {
                 id: wp
                 anchors.fill: parent
                 readonly property string target: pins.adapter.wallpaper
+                property bool aFront: true
+                property bool running: false
+                property bool pending: false
+                readonly property Image front: aFront ? imgA : imgB
+                readonly property Image back: aFront ? imgB : imgA
+                // where the ink starts: the busiest, most detailed part of the picture
+                property point inkFrom: Qt.point(0.5, 0.45)
+                property string focusSrc: ""
 
                 onTargetChanged: {
-                    if (target === "") {
-                        baseImg.source = "";
-                        topImg.source = "";
-                        topImg.opacity = 0;
-                    } else if (baseImg.source == "") {
-                        baseImg.source = target;
-                    } else {
-                        topImg.source = target;
+                    if (running) {
+                        inkAnim.stop();
+                        finish();
                     }
+                    if (target === "") {
+                        imgA.source = "";
+                        imgB.source = "";
+                        pending = false;
+                        return;
+                    }
+                    if (front.source == "") {
+                        front.source = target;
+                        return;
+                    }
+                    if (front.source == target) return;
+                    pending = true;
+                    focusWait.restart();
+                    back.source = target;
+                    tryBegin();
                 }
-                Component.onCompleted: if (target !== "") baseImg.source = target
+                Component.onCompleted: if (target !== "") front.source = target
+
+                function tryBegin() {
+                    if (!pending || back.status !== Image.Ready) return;
+                    if (focusSrc !== target && focusWait.running) return;   // give the focus finder a moment
+                    pending = false;
+                    if (root.animMs === 0) {
+                        finish();
+                        return;
+                    }
+                    ink.seed = Math.random() * 100;
+                    ink.origin = focusSrc === target ? inkFrom : Qt.point(0.5, 0.45);
+                    ink.progress = 0;
+                    running = true;
+                    inkAnim.restart();
+                }
+
+                function finish() {
+                    running = false;
+                    aFront = !aFront;
+                    const old = back;
+                    Qt.callLater(() => { if (!wp.running && !wp.pending) old.source = ""; });   // free the old picture
+                }
+
+                Timer {
+                    id: focusWait
+                    interval: 350
+                    onTriggered: wp.tryBegin()
+                }
+
+                // Finds the most detailed area of a 48×48 copy of the picture (leaning toward
+                // the middle), which is usually where the person or main thing is.
+                function findFocus(px, w, h) {
+                    const lum = new Array(w * h);
+                    for (let i = 0; i < w * h; i++)
+                        lum[i] = 0.299 * px[i * 4] + 0.587 * px[i * 4 + 1] + 0.114 * px[i * 4 + 2];
+                    let sx = 0, sy = 0, sw = 0;
+                    for (let y = 1; y < h - 1; y++)
+                        for (let x = 1; x < w - 1; x++) {
+                            const gx = lum[y * w + x + 1] - lum[y * w + x - 1];
+                            const gy = lum[(y + 1) * w + x] - lum[(y - 1) * w + x];
+                            const nx = x / w - 0.5, ny = y / h - 0.5;
+                            const wgt = (gx * gx + gy * gy) * Math.max(0.15, 1 - 1.6 * Math.sqrt(nx * nx + ny * ny));
+                            sx += wgt * x;
+                            sy += wgt * y;
+                            sw += wgt;
+                        }
+                    if (sw <= 0) return Qt.point(0.5, 0.45);
+                    return Qt.point(Math.max(0.12, Math.min(0.88, sx / sw / w)), Math.max(0.12, Math.min(0.88, sy / sw / h)));
+                }
 
                 // Tiny hidden copy of the wallpaper used to pick the theme colors
                 Canvas {
@@ -9571,24 +11216,63 @@ ShellRoot {
                         const ctx = getContext("2d");
                         ctx.clearRect(0, 0, width, height);
                         ctx.drawImage(src, 0, 0, width, height);
-                        root.applyPalette(ctx.getImageData(0, 0, width, height).data);
+                        const px = ctx.getImageData(0, 0, width, height).data;
+                        root.applyPalette(px);
+                        wp.inkFrom = wp.findFocus(px, width, height);
+                        wp.focusSrc = src;
+                        wp.tryBegin();
                     }
                 }
 
                 Image {
-                    id: baseImg
+                    id: imgA
                     anchors.fill: parent
                     asynchronous: true
                     fillMode: Image.PreserveAspectCrop
+                    visible: wp.aFront && !wp.running
+                    onStatusChanged: if (status === Image.Ready && !wp.aFront) wp.tryBegin()
                 }
 
                 Image {
-                    id: topImg
+                    id: imgB
                     anchors.fill: parent
                     asynchronous: true
                     fillMode: Image.PreserveAspectCrop
-                    opacity: 0
-                    onStatusChanged: if (status === Image.Ready) fade.restart()
+                    visible: !wp.aFront && !wp.running
+                    onStatusChanged: if (status === Image.Ready && wp.aFront) wp.tryBegin()
+                }
+
+                // The transition itself (only drawn while it plays)
+                ShaderEffect {
+                    id: ink
+                    anchors.fill: parent
+                    z: 1
+                    visible: wp.running
+                    property variant fromTex: ShaderEffectSource {
+                        sourceItem: wp.front
+                        live: wp.running
+                    }
+                    property variant toTex: ShaderEffectSource {
+                        sourceItem: wp.back
+                        live: wp.running
+                        mipmap: true
+                    }
+                    property real progress: 0
+                    property real aspect: width / Math.max(1, height)
+                    property real seed: 0
+                    property point origin: Qt.point(0.5, 0.45)
+                    property size texel: Qt.size(1 / Math.max(1, width), 1 / Math.max(1, height))
+                    fragmentShader: Qt.resolvedUrl("shaders/ink.frag.qsb")
+                }
+
+                NumberAnimation {
+                    id: inkAnim
+                    target: ink
+                    property: "progress"
+                    from: 0
+                    to: 1
+                    duration: 2400
+                    onFinished: wp.finish()
                 }
 
                 // Live wallpaper (only loaded while one is chosen)
@@ -9604,19 +11288,6 @@ ShellRoot {
                     onStatusChanged: if (status === Loader.Error) root.liveUnavailable = true
                 }
 
-                NumberAnimation {
-                    id: fade
-                    target: topImg
-                    property: "opacity"
-                    from: 0
-                    to: 1
-                    duration: root.animMs * 3
-                    easing.type: Easing.InOutQuad
-                    onFinished: {
-                        baseImg.source = topImg.source;
-                        topImg.opacity = 0;
-                    }
-                }
             }
         }
     }

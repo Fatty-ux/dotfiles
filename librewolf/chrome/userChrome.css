@@ -1,0 +1,202 @@
+/* ==========================================================================
+   JoeOS liquid glass for LibreWolf
+   Dark, see-through toolbars that pick up Hyprland's blur, like the bars.
+   Lives in:  <your LibreWolf profile>/chrome/userChrome.css
+   ========================================================================== */
+
+:root {
+  /* the same palette as the bars */
+  --joe-tint: rgba(12, 13, 16, 0.50);        /* the glass itself */
+  --joe-surface: rgba(255, 255, 255, 0.06);  /* fields, buttons */
+  --joe-hover: rgba(255, 255, 255, 0.12);
+  --joe-press: rgba(255, 255, 255, 0.18);
+  --joe-edge: rgba(255, 255, 255, 0.18);     /* thin glass edge */
+  --joe-shine: rgba(255, 255, 255, 0.07);
+  --joe-fg: #f2f3f5;
+  --joe-muted: #a8adb8;
+  --joe-accent: #e6eaf2;
+  --joe-menu: rgba(16, 17, 21, 0.62);        /* right-click menus and pop-ups: frosted by Hyprland */
+  --joe-solid: rgba(16, 17, 21, 0.86);       /* things that sit over a web page (no desktop blur there) */
+  --joe-nav-h: 44px;                         /* height of the address bar row */
+
+  color-scheme: dark !important;
+
+  /* Firefox's own theme colours, pointed at ours */
+  --lwt-accent-color: transparent !important;
+  --lwt-inactive-accent-color: transparent !important;
+  --lwt-text-color: var(--joe-fg) !important;
+  --toolbar-bgcolor: transparent !important;
+  --toolbar-color: var(--joe-fg) !important;
+  --toolbar-field-background-color: var(--joe-surface) !important;
+  --toolbar-field-focus-background-color: rgba(255, 255, 255, 0.10) !important;
+  --toolbar-field-color: var(--joe-fg) !important;
+  --toolbar-field-focus-color: var(--joe-fg) !important;
+  --toolbar-field-border-color: var(--joe-edge) !important;
+  --toolbar-field-focus-border-color: rgba(255, 255, 255, 0.40) !important;
+  --toolbarbutton-hover-background: var(--joe-hover) !important;
+  --toolbarbutton-active-background: var(--joe-press) !important;
+  --toolbarbutton-border-radius: 10px !important;
+  --button-hover-bgcolor: var(--joe-hover) !important;
+  --button-active-bgcolor: var(--joe-press) !important;
+  --tab-selected-bgcolor: rgba(255, 255, 255, 0.13) !important;
+  --tab-selected-textcolor: var(--joe-fg) !important;
+  --tab-border-radius: 10px !important;
+  --chrome-content-separator-color: transparent !important;
+  --focus-outline-color: var(--joe-accent) !important;
+  --tabpanel-background-color: var(--joe-tint) !important;   /* behind a page while it loads */
+
+  /* menus and pop-ups */
+  --arrowpanel-background: var(--joe-menu) !important;
+  --arrowpanel-color: var(--joe-fg) !important;
+  --arrowpanel-border-color: var(--joe-edge) !important;
+  --arrowpanel-border-radius: 14px !important;
+  --panel-separator-color: rgba(255, 255, 255, 0.08) !important;
+  --panel-background: var(--joe-menu) !important;
+  --panel-color: var(--joe-fg) !important;
+  --panel-border-color: var(--joe-edge) !important;
+  --menu-background-color: var(--joe-menu) !important;
+  --menu-color: var(--joe-fg) !important;
+  --menu-border-color: var(--joe-edge) !important;
+  --menu-disabled-color: var(--joe-muted) !important;
+  --menuitem-hover-background-color: var(--joe-hover) !important;
+  --menuitem-disabled-hover-background-color: transparent !important;
+  --urlbarView-highlight-background: var(--joe-hover) !important;
+  --urlbarView-highlight-color: var(--joe-fg) !important;
+}
+
+/* ---------- the glass: let the desktop (and Hyprland's blur) show through ---------- */
+:root,
+body,
+#main-window,
+#browser,
+#tabbrowser-tabpanels {
+  background: transparent !important;
+}
+
+/* the tab bar is the glass strip along the top */
+#TabsToolbar {
+  background: linear-gradient(to bottom, var(--joe-shine), transparent 70%), var(--joe-tint) !important;
+  border-bottom: 1px solid var(--joe-edge) !important;
+  position: relative !important;
+  z-index: 3 !important;
+}
+
+#navigator-toolbox {
+  background: transparent !important;
+  border: none !important;
+}
+
+/* ---------- address bar hides until you point at the tabs ---------- */
+/* It tucks up behind the tab bar and slides down when you point at the top, press Ctrl+L,
+   or open one of its menus. (Only margin and opacity are animated: anything fancier
+   moves the real typing box away from where the bar is drawn.) */
+#nav-bar,
+#PersonalToolbar {
+  background: var(--joe-tint) !important;
+  border: none !important;
+  border-bottom: 1px solid var(--joe-edge) !important;
+  box-shadow: none !important;
+  position: relative !important;
+  z-index: 1 !important;
+  margin-top: calc(-1 * var(--joe-nav-h)) !important;
+  opacity: 0 !important;
+  transition: margin-top 180ms cubic-bezier(0.2, 0.9, 0.3, 1) 300ms, opacity 140ms ease 300ms !important;
+}
+
+#navigator-toolbox:is(:hover, :focus-within) > :is(#nav-bar, #PersonalToolbar),
+#navigator-toolbox:has([open]) > :is(#nav-bar, #PersonalToolbar),
+#navigator-toolbox:has(#urlbar[focused]) > :is(#nav-bar, #PersonalToolbar),
+:root[customizing] :is(#nav-bar, #PersonalToolbar) {
+  margin-top: 0 !important;
+  opacity: 1 !important;
+  transition-delay: 0ms !important;   /* show straight away, hide after a short pause */
+}
+
+/* ---------- tabs: compact rounded pills ---------- */
+#TabsToolbar {
+  padding-inline: 6px !important;
+}
+.tabbrowser-tab {
+  --tab-min-height: 32px !important;
+  padding-block: 4px !important;
+}
+.tab-background {
+  border-radius: 10px !important;
+  box-shadow: none !important;
+  outline: none !important;
+}
+.tabbrowser-tab:hover:not([selected]) .tab-background {
+  background: var(--joe-surface) !important;
+}
+.tabbrowser-tab[selected] .tab-background {
+  background: var(--tab-selected-bgcolor) !important;
+  box-shadow: inset 0 0 0 1px var(--joe-edge) !important;
+}
+.tabbrowser-tab:not([selected]) .tab-label {
+  color: var(--joe-muted) !important;
+}
+/* close button only on the open tab, or when you point at one */
+.tabbrowser-tab:not([selected]):not(:hover) .tab-close-button {
+  display: none !important;
+}
+.tab-secondary-label {
+  display: none !important;   /* the little "PLAYING" text under tab titles */
+}
+
+/* ---------- address bar: a rounded glass pill ---------- */
+#urlbar-background {
+  border-radius: 12px !important;
+  box-shadow: none !important;
+}
+#urlbar[focused] #urlbar-background {
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.40) !important;
+}
+#urlbar .urlbarView {
+  margin-inline: 4px !important;
+}
+#urlbar[open] > #urlbar-background {
+  background: var(--joe-solid) !important;
+}
+
+/* ---------- less clutter ---------- */
+.titlebar-buttonbox-container,      /* minimise / maximise / close (Hyprland handles windows) */
+.titlebar-spacer,
+#firefox-view-button,
+#alltabs-button,                    /* the "list all tabs" arrow */
+#fxa-toolbar-menu-button,           /* Firefox account */
+#tracking-protection-icon-container,
+#picture-in-picture-button,
+#urlbar-searchmode-switcher,        /* search engine picker inside the address bar */
+#context-navigation > :not(#context-back):not(#context-forward):not(#context-reload),
+#nav-bar toolbarspring {
+  display: none !important;
+}
+
+/* one tidy row of buttons with even spacing */
+#nav-bar {
+  padding: 4px 6px !important;
+}
+#nav-bar .toolbarbutton-1 {
+  padding-inline: 2px !important;
+}
+
+/* ---------- menus: frosted glass, rounded ---------- */
+menupopup,
+panel {
+  --panel-border-radius: 14px !important;
+  --panel-padding: 6px !important;
+}
+menupopup {
+  --menuitem-border-radius: 8px !important;
+  appearance: none !important;
+}
+menupopup menu,
+menupopup menuitem {
+  border-radius: 8px !important;
+  margin-inline: 4px !important;
+  padding-block: 5px !important;
+}
+menupopup menuseparator {
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  margin-inline: 8px !important;
+}

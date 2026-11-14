@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# dotsave: copy your JoeOS setup into ~/dotfiles and save it to GitHub.
+#
+#   dotsave                  copy everything in, save, upload
+#   dotsave "changed X"      same, with your own note for this save
+#
+# First run creates a PRIVATE GitHub repo called "joeos-dotfiles" (needs: gh auth login).
+# Private things are never copied: passwords, browser history, Signal account, app state.
+
+set -u
+DOTS="${DOTFILES:-$HOME/dotfiles}"
+REPO_NAME="joeos-dotfiles"
+NOTE="${1:-Update $(date '+%Y-%m-%d %H:%M')}"
+
+say()  { printf '\e[1;34m::\e[0m %s\n' "$*"; }
+warn() { printf '\e[1;33m!!\e[0m %s\n' "$*"; }
+
+mkdir -p "$DOTS"
+DOTS_REAL="$(realpath "$DOTS")"
+
+# copy <from> <to inside ~/dotfiles>
+copy() {
+    local src="$1" dst="$DOTS/$2"
+    if [ ! -e "$src" ]; then
+        echo "   skipped (not found): $src"
+        return
+    fi
+    local real
+    real="$(realpath "$src")"
+    case "$real/" in
+        "$DOTS_REAL"/*) echo "   already lives in dotfiles: $src"; return ;;
+    esac
+    mkdir -p "$(dirname "$dst")"
+    rm -rf "$dst"
+    cp -aL "$src" "$dst"
+    echo "   saved: $src"
+}
+
+say "Copying your setup into $DOTS"
+copy "$HOME/.config/quickshell" "config/quickshell"
+copy "$HOME/.config/hypr"       "config/hypr"
+copy "$HOME/.config/kitty"      "config/kitty"
+copy "$HOME/.config/fastfetch"  "config/fastfetch"
+copy "$HOME/.config/fish/config.fish" "config/fish/config.fish"
+[ -n "$(command -v pokefetch)" ] && copy "$(command -v pokefetch)" "bin/pokefetch"
+[ -n "$(command -v dotsave)" ]   && copy "$(command -v dotsave)"   "bin/dotsave"
+
+# LibreWolf: only the theme and settings, never the rest of the profile
+prefs="$(find "$HOME/.librewolf" "$HOME/.config/librewolf" "$HOME/.var/app/io.gitlab.librewolf-community" \
+         -name prefs.js -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-)"
+if [ -n "$prefs" ]; then
+    prof="$(dirname "$prefs")"
+    copy "$prof/chrome"  "librewolf/chrome"
+    copy "$prof/user.js" "librewolf/user.js"
+fi
+
+# tidy: no backup copies, no caches
+find "$DOTS" -path "$DOTS/.git" -prune -o \( -name '*.bak' -o -name '*.bak[0-9]*' -o -name '*.qml.v*' \
+     -o -name '__pycache__' -o -name '.qmlls.ini' \) -print0 2>/dev/null | xargs -0 rm -rf
+
+cat > "$DOTS/.gitignore" <<'IGN'
+# never upload these
+*.bak
+*.bak*
+*.log
+.cache/
+fish_variables
+signal-account
+*.sqlite
+*.db
+IGN
+
+[ -f "$DOTS/README.md" ] || cat > "$DOTS/README.md" <<'README'
+# JoeOS dotfiles
+
+My CachyOS + Hyprland + Quickshell setup: liquid glass bars, hub, dock, side pill,
+ink wallpaper transitions, LibreWolf glass theme, animated pokefetch.
+
+Saved with `dotsave`.
+README
+
+# quick check for anything that looks like a secret before uploading
+if grep -rIlE '(ghp_[A-Za-z0-9]{20,}|github_pat_|BEGIN (RSA|OPENSSH) PRIVATE KEY|api[_-]?key *[:=] *["'"'"'][A-Za-z0-9]{16,})' \
+        --exclude-dir=.git --exclude=dotsave "$DOTS" >/tmp/dotsave-secrets 2>/dev/null; then
+    warn "These files look like they might contain a password or key, so nothing was uploaded:"
+    sed 's/^/     /' /tmp/dotsave-secrets
+    warn "Check them (or tell Claude), then run dotsave again."
+    exit 1
+fi
+
+cd "$DOTS" || exit 1
+command -v git >/dev/null || { warn "git isn't installed:  sudo pacman -S git"; exit 1; }
+
+if [ ! -d .git ]; then
+    say "Starting a new git history in $DOTS"
+    git init -q -b main
+fi
+
+git add -A
+if git diff --cached --quiet; then
+    say "Nothing changed since the last save."
+else
+    git commit -q -m "$NOTE" && say "Saved: $NOTE"
+fi
+
+if ! git remote get-url origin >/dev/null 2>&1; then
+    command -v gh >/dev/null || { warn "Install GitHub's tool first:  sudo pacman -S github-cli"; exit 1; }
+    gh auth status >/dev/null 2>&1 || { warn "Log in to GitHub first:  gh auth login"; exit 1; }
+    say "Creating your private GitHub repo \"$REPO_NAME\""
+    gh repo create "$REPO_NAME" --private --source . --remote origin --push || exit 1
+else
+    say "Uploading to GitHub"
+    git push -q -u origin main || { warn "Upload failed. Check your internet, or run: gh auth login"; exit 1; }
+fi
+
+url="$(gh repo view --json url -q .url 2>/dev/null || git remote get-url origin)"
+say "Done! Your setup is at: $url"

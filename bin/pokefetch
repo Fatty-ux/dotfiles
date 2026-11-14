@@ -1,28 +1,160 @@
 #!/usr/bin/env bash
-# fastfetch with a random WATER-TYPE Pokémon as the logo.
-# Needs:  fastfetch  and  pokemon-colorscripts. Falls back to the normal logo without them.
+# fastfetch with a random water-type Pokémon next to it, ANIMATED in kitty,
+# in the classic pixel-art style (Black & White sprites, scaled up with sharp pixels).
 #
-#   pokefetch              random water type
-#   POKE_ANY=1 pokefetch   any Pokémon at all
+#   pokefetch                    random pick (Squirtle, Wartortle, Blastoise or Mega Blastoise)
+#   POKE=blastoise-mega pokefetch   a specific one
+#   POKE_STILL=1 pokefetch       the old still picture instead
 #
-# To use a different type, swap the names in the list below.
-WATER="squirtle wartortle blastoise"
+# The moving sprites are downloaded once into ~/.cache/joeos/pokemon and then work offline
+# (PokéAPI's sprite collection on GitHub; Mega Blastoise's pixel version comes from Pokémon
+# Showdown, with the smoother sprite as a backup). Every so often you get a shiny one.
+# ffmpeg (already installed for live wallpapers) enlarges them 3x so the pixels stay sharp.
+# Outside kitty, or before the sprites are downloaded, it shows the old still picture
+# (needs pokemon-colorscripts), and failing that the normal fastfetch logo.
 
+POKES="squirtle wartortle blastoise blastoise-mega"
+SHINY_CHANCE=16          # 1 in 16 is shiny
+PIXEL_ZOOM=3             # pixel sprites are enlarged 3x (sharp, no blur)
+SMOOTH_SCALE=1.9         # size for the smoother backup sprites
+
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/joeos/pokemon"
+BW="https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/versions/generation-v/black-white/animated"
+SMOOTH="https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/showdown"
+SHOWDOWN="https://play.pokemonshowdown.com/sprites"
+mkdir -p "$CACHE"
+
+# Where each one comes from: "pixel-url smooth-url". $S is "shiny/" for shiny ones.
+sources() {   # sources <name> <shiny: yes/no>
+    local s="" sd="gen5ani"
+    [ "$2" = yes ] && { s="shiny/"; sd="gen5ani-shiny"; }
+    case "$1" in
+        squirtle)       echo "$BW/${s}7.gif $SMOOTH/${s}7.gif" ;;
+        wartortle)      echo "$BW/${s}8.gif $SMOOTH/${s}8.gif" ;;
+        blastoise)      echo "$BW/${s}9.gif $SMOOTH/${s}9.gif" ;;
+        blastoise-mega) echo "$SHOWDOWN/$sd/blastoise-mega.gif $SMOOTH/${s}10036.gif" ;;
+    esac
+}
+
+# ---- pick one ----
+read -r -a list <<< "$POKES"
+name="${list[RANDOM % ${#list[@]}]}"
+for e in "${list[@]}"; do [ "$e" = "${POKE:-}" ] && name="$e"; done
+shiny=no
+[ $((RANDOM % SHINY_CHANCE)) -eq 0 ] && shiny=yes
+
+fetch() {   # fetch <url> <file> [seconds]: download quietly, keep only real GIFs
+    command -v curl >/dev/null 2>&1 || return 1
+    curl -fsSL --max-time "${3:-4}" -o "$2.part" "$1" 2>/dev/null \
+        && head -c 3 "$2.part" | grep -q GIF \
+        && mv "$2.part" "$2" || { rm -f "$2.part"; return 1; }
+}
+
+# get <name> <shiny> [seconds]: makes $CACHE/<file>.gif plus a .style note (pixel or smooth)
+get() {
+    local base="$CACHE/$([ "$2" = yes ] && echo shiny-)$1"
+    [ -s "$base.gif" ] && [ -s "$base.style" ] && return 0
+    read -r pix smo <<< "$(sources "$1" "$2")"
+    if fetch "$pix" "$base.raw.gif" "${3:-4}"; then
+        # enlarge 3x with hard pixel edges (keeps the see-through background and every frame)
+        if command -v ffmpeg >/dev/null 2>&1 && ffmpeg -v error -y -i "$base.raw.gif" -filter_complex \
+            "[0:v]scale=iw*$PIXEL_ZOOM:ih*$PIXEL_ZOOM:flags=neighbor,split[a][b];[a]palettegen=reserve_transparent=1:stats_mode=full[p];[b][p]paletteuse=dither=none:alpha_threshold=128" \
+            -loop 0 "$base.gif" 2>/dev/null; then
+            echo pixel > "$base.style"
+        else
+            mv "$base.raw.gif" "$base.gif"
+            echo pixel-small > "$base.style"
+        fi
+        rm -f "$base.raw.gif"
+    elif fetch "$smo" "$base.gif" "${3:-4}"; then
+        echo smooth > "$base.style"
+    else
+        return 1
+    fi
+}
+
+# grab the rest of the sprites in the background, so later picks are instant
+prefetch() {
+    (
+        for n in "${list[@]}"; do get "$n" no 20; get "$n" yes 20; done
+    ) >/dev/null 2>&1 &
+    disown 2>/dev/null
+}
+
+get "$name" "$shiny" || { shiny=no; get "$name" no; }
+pre="$CACHE/$([ "$shiny" = yes ] && echo shiny-)$name"
+gif="$pre.gif"
+style="$(cat "$pre.style" 2>/dev/null)"
+case "$style" in
+    pixel)       SCALE=1 ;;                 # already enlarged
+    pixel-small) SCALE=$PIXEL_ZOOM ;;       # kitty enlarges it (a little softer)
+    *)           SCALE=$SMOOTH_SCALE ;;
+esac
+
+# POKE_DEBUG=1 pokefetch   explains why it fell back to the still picture
+why() { [ -n "${POKE_DEBUG:-}" ] && printf '\e[33mpokefetch: %s\e[0m\n' "$1" >&2; return 0; }
+
+# ---- the animated version (kitty only) ----
+animated() {
+    [ -z "${POKE_STILL:-}" ] || { why "POKE_STILL is set"; return 1; }
+    [ -n "${KITTY_WINDOW_ID:-}" ] || [ "${TERM:-}" = "xterm-kitty" ] || { why "not running in kitty"; return 1; }
+    command -v kitten >/dev/null 2>&1 || { why "no kitten command"; return 1; }
+    [ -s "$gif" ] || { why "sprite missing: $gif"; return 1; }
+    [ -t 1 ] || { why "output is not the terminal"; return 1; }
+
+    # sprite size in pixels (from the GIF header)
+    read -r gw gh < <(od -An -tu2 -j6 -N4 "$gif")
+    # size of one character cell in pixels
+    local win cols lines
+    win="$(kitten icat --stdin=no --print-window-size 2>/dev/null)" || { why "could not read the window size"; return 1; }
+    cols=$(tput cols); lines=$(tput lines)
+    local pw="${win%x*}" ph="${win#*x}"
+    [ -n "$pw" ] && [ -n "$ph" ] && [ "$cols" -gt 0 ] && [ "$lines" -gt 0 ] || { why "odd window size: $win, $cols cols, $lines lines"; return 1; }
+    # how many cells the sprite needs (rounded up)
+    local w h
+    w=$(awk -v g="$gw" -v s="$SCALE" -v p="$pw" -v c="$cols" 'BEGIN { x = g*s/(p/c); print (x == int(x)) ? x : int(x)+1 }')
+    h=$(awk -v g="$gh" -v s="$SCALE" -v p="$ph" -v l="$lines" 'BEGIN { x = g*s/(p/l); print (x == int(x)) ? x : int(x)+1 }')
+    [ "$w" -lt "$cols" ] && [ "$h" -lt "$lines" ] || { why "window too small for a ${w}x${h} sprite"; return 1; }
+
+    # make room first (so nothing scrolls under the picture), then find where we are
+    local total=$((h + 3)) row col
+    [ "$total" -lt 13 ] && total=13
+    printf '%*s' "$total" '' | tr ' ' '\n'
+    printf '\e[%dA' "$total"
+    IFS='[;' read -r -s -t 1 -d R -p $'\e[6n' _ row col < /dev/tty || { why "could not find the cursor position"; return 1; }
+
+    # a blank logo the same size as the sprite, so fastfetch writes its info beside it
+    local blank
+    blank="$(mktemp)"
+    for ((i = 0; i < h; i++)); do printf '%*s\n' "$w" ''; done > "$blank"
+
+    # the sprite: kitty keeps the animation playing by itself after this returns.
+    # (stream = send the picture straight through the terminal; kitty's automatic choice
+    #  silently fails on this PC)
+    # (fastfetch draws the blank logo one row down and one column in, so the sprite goes there)
+    kitten icat --stdin=no --transfer-mode=stream --align left --scale-up --place "${w}x${h}@1x${row}" "$gif" 2>"$CACHE/icat.log" \
+        || { why "kitten icat failed: $(cat "$CACHE/icat.log")"; rm -f "$blank"; return 1; }
+    printf '\e[%d;1H' "$row"
+
+    fastfetch --logo-type file-raw --logo "$blank" --logo-padding-top 1 --logo-padding-left 1 --logo-padding-right 3 "$@"
+    rm -f "$blank"
+    [ "$shiny" = yes ] && printf '  \e[2m✦ shiny %s!\e[0m\n' "${name/-mega/ (mega)}"
+    return 0
+}
+
+prefetch
+animated "$@" && exit 0
+
+# ---- the still version (old behaviour) ----
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
-
 if command -v pokemon-colorscripts >/dev/null 2>&1; then
-    if [ -n "${POKE_ANY:-}" ]; then
-        pokemon-colorscripts -r --no-title > "$tmp" 2>/dev/null
+    if [ "$name" = "blastoise-mega" ]; then
+        pokemon-colorscripts -n blastoise -f mega --no-title > "$tmp" 2>/dev/null
     else
-        # only keep names this version of pokemon-colorscripts actually has
-        pick="$(comm -12 <(pokemon-colorscripts -l 2>/dev/null | sort -u) <(printf '%s\n' $WATER | sort -u) | shuf -n 1)"
-        if [ -n "$pick" ]; then
-            pokemon-colorscripts -n "$pick" --no-title > "$tmp" 2>/dev/null
-        else
-            pokemon-colorscripts -r --no-title > "$tmp" 2>/dev/null
-        fi
+        pokemon-colorscripts -n "$name" --no-title > "$tmp" 2>/dev/null
     fi
+    [ -s "$tmp" ] || pokemon-colorscripts -n blastoise --no-title > "$tmp" 2>/dev/null
 fi
 
 if [ -s "$tmp" ]; then
