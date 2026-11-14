@@ -13,3 +13,17 @@ require("config.monitors")
 require("config.windowrules")
 require("config.workspaces")
 hl.env("QT_QPA_PLATFORMTHEME", "qt6ct")
+
+-- RecompLauncher: tile it like a normal window instead of floating
+hl.window_rule({
+    name = "recomplauncher-tile",
+    match = { class = "^recomplauncher$" },
+    tile = true,
+})
+
+-- RecompLauncher: tile it like a normal window instead of floating
+hl.window_rule({
+    name = "recomplauncher-tile",
+    match = { class = "^recomplauncher$" },
+    tile = true,
+})
