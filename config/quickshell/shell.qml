@@ -57,7 +57,7 @@ ShellRoot {
 
     // ---------- Your settings (edit, save, and the bars reload) ----------
     // Look and feel
-    readonly property int animMs: 150               // animation speed in ms (0 = no animations)
+    readonly property int animMs: gameMode ? 0 : 150   // animation speed in ms (0 = no animations; game mode turns them off)
     readonly property bool hoverZoom: true          // pinned icons grow when hovered
     readonly property string iconFont: "JetBrainsMono Nerd Font"   // font the bar icons come from
     // Clock
@@ -120,6 +120,7 @@ ShellRoot {
             property string historyJson: ""     // which apps were opened, how often and when (launcher tabs)
             property string sportsLeague: "nba"  // league shown on the Sports tab
             property string sportsFav: ""        // favourite team: "league|teamId|ABBR"
+            property bool gameMode: false        // game mode stays on across restarts
         }
     }
 
@@ -2303,6 +2304,93 @@ ShellRoot {
                         }
                     }
 
+                    // ---- Updates waiting (only shows when there are some) ----
+                    Rectangle {
+                        id: updBtn
+                        visible: root.updTotal > 0 || root.updRunning
+                        Layout.alignment: Qt.AlignVCenter
+                        implicitWidth: updRow.implicitWidth + 20
+                        implicitHeight: 32
+                        radius: 10
+                        color: updMouse.containsMouse ? root.overlay : root.surface
+                        scale: updMouse.pressed ? 0.94 : (updMouse.containsMouse ? 1.05 : 1)
+                        border.width: 1
+                        border.color: root.glassEdge
+                        clip: true
+                        Behavior on implicitWidth { NumberAnimation { duration: root.animMs * 1.5; easing.type: Easing.OutCubic } }
+                        Behavior on color { ColorAnimation { duration: root.animMs } }
+                        Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+
+                        Row {
+                            id: updRow
+                            anchors.centerIn: parent
+                            spacing: 7
+                            Text {
+                                id: updIcon
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: root.updRunning ? "" : ""
+                                color: root.accent
+                                font.family: root.iconFont
+                                font.pixelSize: 14
+                                RotationAnimation on rotation {
+                                    running: root.updRunning
+                                    from: 0
+                                    to: 360
+                                    duration: 1200
+                                    loops: Animation.Infinite
+                                    onStopped: updIcon.rotation = 0
+                                }
+                            }
+                            Text {
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: root.updRunning ? "Updating…"
+                                    : updMouse.containsMouse ? root.updSummary + "  ·  update now"
+                                    : String(root.updTotal)
+                                color: root.fg
+                                font.pixelSize: 12
+                                font.bold: true
+                            }
+                        }
+
+                        MouseArea {
+                            id: updMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            acceptedButtons: Qt.LeftButton | Qt.RightButton
+                            onClicked: mouse => {
+                                if (mouse.button === Qt.RightButton) root.checkUpdates();
+                                else root.runUpdates();
+                            }
+                        }
+                    }
+
+                    // ---- Game mode is on: a small gamepad you can click to turn it off ----
+                    Rectangle {
+                        visible: root.gameMode
+                        Layout.alignment: Qt.AlignVCenter
+                        implicitWidth: 36
+                        implicitHeight: 32
+                        radius: 10
+                        color: gmMouse.containsMouse ? root.overlay : root.accent
+                        border.width: 1
+                        border.color: root.glassEdge
+                        Text {
+                            anchors.centerIn: parent
+                            text: ""
+                            color: gmMouse.containsMouse ? root.accent : root.bg
+                            font.family: root.iconFont
+                            font.pixelSize: 15
+                        }
+                        MouseArea {
+                            id: gmMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.setGameMode(false)
+                        }
+                    }
+
                     // ---- Clock ----
                     Text {
                         Layout.alignment: Qt.AlignVCenter
@@ -2315,6 +2403,139 @@ ShellRoot {
             }
         }
     }
+
+    // ---------- Login screen wallpaper ----------
+    // Keeps a copy of the current wallpaper where the login screen (Plasma Login / SDDM) can read it.
+    // Only does anything after the one-time setup (login-wallpaper-setup) made that folder yours.
+    readonly property string loginWallSrc: pins.adapter.wallpaper
+    onLoginWallSrcChanged: loginWallTimer.restart()
+    Timer {
+        id: loginWallTimer
+        interval: 1500          // wait a moment so quick clicks through wallpapers only copy the last one
+        onTriggered: {
+            if (!root.loginWallSrc) return;
+            const path = decodeURIComponent(String(root.loginWallSrc).replace(/^file:\/\//, ""));
+            // writes into whichever login picture the setup made (Plasma Login or SDDM),
+            // keeping that file's owner and permissions
+            Quickshell.execDetached(["sh", "-c",
+                'set -- "$1" /var/lib/plasmalogin/wallpapers/joeos-login.jpg /usr/local/share/joeos/login-wallpaper.jpg; '
+                + 'src="$1"; shift; ok=""; for t in "$@"; do [ -w "$t" ] && ok=1; done; [ -n "$ok" ] || exit 0; '
+                + 'tmp="${XDG_RUNTIME_DIR:-/tmp}/joeos-login.jpg"; '
+                + 'ffmpeg -v error -y -i "$src" -frames:v 1 -q:v 2 "$tmp" || exit 0; '
+                + 'for t in "$@"; do [ -w "$t" ] && cat "$tmp" > "$t"; done',
+                "sh", path]);
+        }
+    }
+
+    // ---------- Game mode ----------
+    // Turns off blur, shadows, see-through windows and animations (in Hyprland and in the bars)
+    // and pauses a live wallpaper, for more FPS. Turning it off reloads your normal Hyprland config.
+    //   qs ipc call gamemode toggle | enable | disable
+    readonly property bool gameMode: pins.adapter.gameMode
+    function setGameMode(on) {
+        if (on === gameMode) return;
+        pins.adapter.gameMode = on;
+        root.toastSeq += 1;
+        toastModel.append({
+            tid: root.toastSeq, nid: -1, appName: "JoeOS", critical: false,
+            summary: on ? "Game mode on" : "Game mode off",
+            body: on ? "Blur, see-through windows and animations are off for more FPS." : "Your glass look is back."
+        });
+    }
+    onGameModeChanged: {
+        if (gameMode)
+            Quickshell.execDetached(["hyprctl", "eval",
+                "hl.config({ animations = { enabled = false }, decoration = { active_opacity = 1.0, inactive_opacity = 1.0, "
+                + "dim_inactive = false, blur = { enabled = false }, shadow = { enabled = false } } })"]);
+        else
+            Quickshell.execDetached(["hyprctl", "reload"]);
+    }
+    IpcHandler {
+        target: "gamemode"
+        function toggle(): void { root.setGameMode(!root.gameMode); }
+        function enable(): void { root.setGameMode(true); }
+        function disable(): void { root.setGameMode(false); }
+    }
+
+    // ---------- Update checker ----------
+    // Counts waiting updates every 30 minutes: system (pacman), AUR (paru/yay) and Flatpak.
+    // Clicking the dock badge opens a terminal that installs them. Right-click checks again.
+    property int updSystem: 0
+    property int updAur: 0
+    property int updFlatpak: 0
+    property var updNames: []
+    property bool updCanCheck: true        // false when checkupdates (pacman-contrib) is missing
+    property bool updRunning: false
+    property bool updChecking: false
+    readonly property int updTotal: updSystem + updAur + updFlatpak
+    readonly property string updSummary: {
+        const parts = [];
+        if (updSystem) parts.push(updSystem + " system");
+        if (updAur) parts.push(updAur + " AUR");
+        if (updFlatpak) parts.push(updFlatpak + " Flatpak");
+        return parts.join(" · ");
+    }
+
+    function checkUpdates() {
+        if (updRunning || updCheck.running) return;
+        updChecking = true;
+        updCheck.running = true;
+    }
+    function runUpdates() {
+        if (updRunning) return;
+        updRunning = true;
+        updRun.running = true;
+    }
+
+    Process {
+        id: updCheck
+        command: ["sh", "-c",
+            "echo '== system'; if command -v checkupdates >/dev/null 2>&1; then checkupdates 2>/dev/null; else echo '!nocheck'; fi; "
+            + "echo '== aur'; if command -v paru >/dev/null 2>&1; then paru -Qua 2>/dev/null; elif command -v yay >/dev/null 2>&1; then yay -Qua 2>/dev/null; fi; "
+            + "echo '== flatpak'; if command -v flatpak >/dev/null 2>&1; then flatpak remote-ls --updates --columns=application 2>/dev/null; fi; true"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                let sec = "", sys = 0, aur = 0, fp = 0, can = true;
+                const names = [];
+                for (const raw of text.split("\n")) {
+                    const line = raw.trim();
+                    if (line === "") continue;
+                    if (line.indexOf("== ") === 0) { sec = line.slice(3); continue; }
+                    if (line === "!nocheck") { can = false; continue; }
+                    if (line.indexOf("::") === 0 || line.toLowerCase().indexOf("warning") === 0) continue;
+                    if (sec === "system") sys++;
+                    else if (sec === "aur") aur++;
+                    else if (sec === "flatpak") fp++;
+                    else continue;
+                    if (names.length < 8) names.push(line.split(/\s+/)[0]);
+                }
+                root.updSystem = sys;
+                root.updAur = aur;
+                root.updFlatpak = fp;
+                root.updNames = names;
+                root.updCanCheck = can;
+                root.updChecking = false;
+            }
+        }
+        onExited: root.updChecking = false
+    }
+
+    Process {
+        id: updRun
+        command: ["kitty", "--class", "joeos-update", "--title", "Updating JoeOS", "sh", "-c",
+            "printf '\\n  \\033[1mUpdating your system\\033[0m\\n\\n'; "
+            + "if command -v paru >/dev/null 2>&1; then paru -Syu; else sudo pacman -Syu; fi; "
+            + "if command -v flatpak >/dev/null 2>&1; then printf '\\n  \\033[1mUpdating Flatpak apps\\033[0m\\n\\n'; flatpak update; fi; "
+            + "printf '\\n  All done! Press Enter to close. '; read _"]
+        onExited: {
+            root.updRunning = false;
+            root.checkUpdates();
+        }
+    }
+
+    // first check shortly after login, then every 30 minutes
+    Timer { interval: 90000; running: true; onTriggered: root.checkUpdates() }
+    Timer { interval: 1800000; running: true; repeat: true; onTriggered: root.checkUpdates() }
 
     // ---------- Sports tab (basketball scores, standings, teams, players) ----------
     // Everything comes from ESPN's public scores feed: no account or key needed.
@@ -2347,6 +2568,7 @@ ShellRoot {
     readonly property bool sportsAnyLive: {
         for (let i = 0; i < sportsGames.length; i++) if (sportsGames[i].state === "in") return true;
         for (let i = 0; i < sportsUpcoming.length; i++) if (sportsUpcoming[i].state === "in") return true;
+        if (sportsView === "game" && sportsGame && sportsGame.state === "in") return true;
         return false;
     }
 
@@ -2378,7 +2600,8 @@ ShellRoot {
 
     // keeps scores fresh while the tab is open (every 20 s when a game is live)
     Timer {
-        interval: root.sportsAnyLive ? 20000 : 120000
+        interval: root.sportsView === "game" && root.sportsGame && root.sportsGame.state === "in" ? 15000
+            : root.sportsAnyLive ? 20000 : 120000
         running: root.sportsVisible
         repeat: true
         onTriggered: root.sportsRefresh()
@@ -2434,6 +2657,7 @@ ShellRoot {
         else if (sportsView === "standings" || sportsView === "teams") sportsLoadStandings();
         else if (sportsView === "team" && sportsTeam) sportsLoadTeam(sportsTeam.id);
         else if (sportsView === "player" && sportsPlayer) sportsLoadPlayer(sportsPlayer);
+        else if (sportsView === "game" && sportsGame) sportsLoadGame(sportsGame.id);
     }
 
     function sportsShow(view) {
@@ -2602,6 +2826,81 @@ ShellRoot {
             root.sportsRecent = done.slice(-4).reverse();
             root.sportsUpcoming = next.slice(0, 5);
         });
+    }
+
+    // ---- One game: live box score (every player's stats) ----
+    property var sportsGame: null            // the game card that was clicked
+    property var sportsBox: null             // { teams: [away, home], lines, detail, state }
+    property int sportsBoxSide: 0            // which team's players are shown (0 away, 1 home)
+    property string sportsPlayerFrom: "team" // where Back goes from a player page
+    function sportsOpenGame(g) {
+        if (sportsView === "games" || sportsView === "standings" || sportsView === "teams" || sportsView === "team")
+            sportsBackTo = sportsView;
+        sportsGame = g;
+        sportsBox = null;
+        sportsBoxSide = 0;
+        sportsView = "game";
+        sportsLoadGame(g.id);
+    }
+    function sportsLoadGame(id) {
+        sportsGet(sportsBase() + "/summary?event=" + id, function (j) {
+            const box = j.boxscore || {};
+            const teams = [];
+            (box.players || []).forEach(t => {
+                const st = (t.statistics || [])[0] || {};
+                const tm = t.team || {};
+                teams.push({
+                    id: String(tm.id), abbr: tm.abbreviation || "", name: tm.shortDisplayName || tm.displayName || "",
+                    logo: root.sportsLogo(tm),
+                    labels: st.labels || st.names || [],
+                    totals: st.totals || [],
+                    players: (st.athletes || []).map(a => {
+                        const at = a.athlete || {};
+                        return {
+                            id: String(at.id), name: at.displayName || "", short: at.shortName || at.displayName || "",
+                            jersey: at.jersey || "", pos: at.position ? (at.position.abbreviation || "") : "",
+                            headshot: at.headshot ? at.headshot.href : "",
+                            height: "", weight: "", age: "", exp: "", injury: "", team: tm.displayName || "",
+                            starter: a.starter === true, dnp: a.didNotPlay === true,
+                            reason: a.reason || "", stats: a.stats || []
+                        };
+                    })
+                });
+            });
+            // keep away first, like the game card
+            const g = root.sportsGame;
+            if (g && teams.length === 2 && teams[0].id === g.home.id) teams.reverse();
+
+            // score by quarter and the clock, if the summary has them
+            const out = { teams: teams, lines: [], detail: g ? g.detail : "", state: g ? g.state : "", away: g ? g.away.score : "", home: g ? g.home.score : "" };
+            const hc = j.header && j.header.competitions ? j.header.competitions[0] : null;
+            if (hc) {
+                const st = hc.status || {};
+                if (st.type) {
+                    out.state = st.type.state || out.state;
+                    out.detail = st.type.shortDetail || out.detail;
+                }
+                const side = {};
+                (hc.competitors || []).forEach(c => side[c.homeAway] = c);
+                if (side.away && side.home) {
+                    out.away = root.sportsScore(side.away.score) || out.away;
+                    out.home = root.sportsScore(side.home.score) || out.home;
+                    const al = side.away.linescores || [], hl = side.home.linescores || [];
+                    for (let i = 0; i < Math.max(al.length, hl.length); i++)
+                        out.lines.push({
+                            label: i < 4 ? "Q" + (i + 1) : (i === 4 ? "OT" : "OT" + (i - 3)),
+                            away: al[i] ? (al[i].displayValue || String(al[i].value || "")) : "",
+                            home: hl[i] ? (hl[i].displayValue || String(hl[i].value || "")) : ""
+                        });
+                }
+            }
+            if (g && out.state) root.sportsGame = Object.assign({}, g, { state: out.state, detail: out.detail });
+            root.sportsBox = out;
+        });
+    }
+    function sportsOpenPlayerFrom(p, from) {
+        sportsPlayerFrom = from;
+        sportsOpenPlayer(p);
     }
 
     // ---- One player ----
@@ -3728,27 +4027,6 @@ ShellRoot {
                         }
                     }
 
-                    // ---- Focused app ----
-                    Row {
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: 7
-
-                        IconImage {
-                            anchors.verticalCenter: parent.verticalCenter
-                            visible: !!panel.activeWin
-                            implicitSize: 18
-                            source: panel.activeWin ? Quickshell.iconPath(panel.activeWin.appId, "application-x-executable") : ""
-                        }
-                        Text {
-                            anchors.verticalCenter: parent.verticalCenter
-                            width: Math.min(implicitWidth, 220)
-                            elide: Text.ElideRight
-                            text: panel.activeWin ? (panel.activeWin.title || panel.activeWin.appId) : "Desktop"
-                            color: root.fg
-                            font.pixelSize: 13
-                        }
-                    }
-
                     Rectangle { anchors.verticalCenter: parent.verticalCenter; width: 4; height: 4; radius: 2; color: root.muted }
 
                     // ---- Clock (opens the calendar) ----
@@ -4290,7 +4568,7 @@ ShellRoot {
                                     // Quick toggles
                                     GridLayout {
                                         Layout.fillWidth: true
-                                        columns: 4
+                                        columns: 5
                                         rowSpacing: 10
                                         columnSpacing: 10
 
@@ -4341,6 +4619,20 @@ ShellRoot {
                                                     icon: "", title: "Wallpaper", sub: "Choose one",
                                                     active: false, ok: true,
                                                     run: () => { root.hubOpen = false; root.wallPickerOpen = true; }
+                                                },
+                                                {
+                                                    icon: "\uf11b", title: "Game mode",
+                                                    sub: root.gameMode ? "On · max FPS" : "Off",
+                                                    active: root.gameMode, ok: true,
+                                                    run: () => root.setGameMode(!root.gameMode)
+                                                },
+                                                {
+                                                    icon: "\uf019", title: "Updates",
+                                                    sub: root.updRunning ? "Updating…" : root.updChecking ? "Checking…"
+                                                        : root.updTotal > 0 ? root.updTotal + " waiting · tap to install"
+                                                        : root.updCanCheck ? "Up to date" : "Needs pacman-contrib",
+                                                    active: root.updTotal > 0, ok: true,
+                                                    run: () => { if (root.updTotal > 0) { root.hubOpen = false; root.runUpdates(); } else root.checkUpdates(); }
                                                 }
                                             ]
 
@@ -5543,7 +5835,7 @@ ShellRoot {
                                     StackLayout {
                                         Layout.fillWidth: true
                                         Layout.fillHeight: true
-                                        currentIndex: ["games", "standings", "teams", "team", "player"].indexOf(root.sportsView)
+                                        currentIndex: ["games", "standings", "teams", "team", "player", "game"].indexOf(root.sportsView)
 
                                         // =========== Games ===========
                                         ColumnLayout {
@@ -5593,6 +5885,16 @@ ShellRoot {
                                                             anchors.margins: 5
                                                             radius: 16
                                                             border.color: gameCard.fav ? root.accent : root.glassEdge
+                                                            color: gameOpen.containsMouse ? root.overlay : root.surface
+
+                                                            // click the card: live box score (team names still open the team)
+                                                            MouseArea {
+                                                                id: gameOpen
+                                                                anchors.fill: parent
+                                                                hoverEnabled: true
+                                                                cursorShape: Qt.PointingHandCursor
+                                                                onClicked: root.sportsOpenGame(gameCard.g)
+                                                            }
 
                                                             ColumnLayout {
                                                                 anchors.fill: parent
@@ -6096,7 +6398,7 @@ ShellRoot {
                                                                     anchors.fill: parent
                                                                     hoverEnabled: true
                                                                     cursorShape: Qt.PointingHandCursor
-                                                                    onClicked: root.sportsOpenPlayer(rp.modelData)
+                                                                    onClicked: root.sportsOpenPlayerFrom(rp.modelData, "team")
                                                                 }
                                                             }
                                                         }
@@ -6215,7 +6517,12 @@ ShellRoot {
                                                                                 anchors.fill: parent
                                                                                 hoverEnabled: true
                                                                                 cursorShape: Qt.PointingHandCursor
-                                                                                onClicked: root.sportsOpenTeam(sg.modelData.oppId)
+                                                                                onClicked: {
+                                                                                    const me = { id: root.sportsTeam.id, abbr: root.sportsTeam.abbr, name: root.sportsTeam.name, logo: root.sportsTeam.logo, score: sg.modelData.us, record: "" };
+                                                                                    const them = { id: sg.modelData.oppId, abbr: sg.modelData.opp, name: sg.modelData.oppName, logo: sg.modelData.oppLogo, score: sg.modelData.them, record: "" };
+                                                                                    root.sportsOpenGame({ id: sg.modelData.id, date: sg.modelData.date, state: sg.modelData.state, detail: sg.modelData.detail,
+                                                                                                          away: sg.modelData.home ? them : me, home: sg.modelData.home ? me : them });
+                                                                                }
                                                                             }
                                                                         }
                                                                     }
@@ -6244,8 +6551,8 @@ ShellRoot {
                                                 SportChip {
                                                     theme: root
                                                     icon: ""
-                                                    label: root.sportsTeam && root.sportsTeam.abbr ? root.sportsTeam.abbr : "Back"
-                                                    onClicked: root.sportsView = "team"
+                                                    label: root.sportsPlayerFrom === "game" ? "Game" : (root.sportsTeam && root.sportsTeam.abbr ? root.sportsTeam.abbr : "Back")
+                                                    onClicked: root.sportsView = root.sportsPlayerFrom
                                                 }
                                                 Item { Layout.fillWidth: true }
                                             }
@@ -6315,7 +6622,7 @@ ShellRoot {
                                                             }
                                                             Text {
                                                                 text: root.sportsPlayer ? ["#" + (root.sportsPlayer.jersey || "–"), root.sportsPlayer.pos,
-                                                                    root.sportsTeam ? root.sportsTeam.name : ""].filter(x => x).join("  ·  ") : ""
+                                                                    (root.sportsPlayerFrom === "game" ? (root.sportsPlayer.team || "") : (root.sportsTeam ? root.sportsTeam.name : ""))].filter(x => x).join("  ·  ") : ""
                                                                 color: root.muted
                                                                 font.pixelSize: 14
                                                             }
@@ -6429,6 +6736,330 @@ ShellRoot {
                                                         color: root.muted
                                                         font.pixelSize: 13
                                                     }
+                                                }
+                                            }
+                                        }
+
+                                        // =========== One game: live box score ===========
+                                        ColumnLayout {
+                                            spacing: 10
+
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 8
+                                                SportChip {
+                                                    theme: root
+                                                    icon: ""
+                                                    label: "Back"
+                                                    onClicked: root.sportsShow(root.sportsBackTo === "team" ? "team" : root.sportsBackTo)
+                                                }
+                                                Item { Layout.fillWidth: true }
+                                                Text {
+                                                    visible: root.sportsGame !== null && root.sportsGame.state === "in"
+                                                    text: "Live · updates every 15 s"
+                                                    color: root.muted
+                                                    font.pixelSize: 11
+                                                }
+                                            }
+
+                                            // ---- scoreboard: away  score  [status + quarters]  score  home ----
+                                            HubCard {
+                                                theme: root
+                                                Layout.fillWidth: true
+                                                Layout.preferredHeight: 108
+
+                                                RowLayout {
+                                                    anchors.fill: parent
+                                                    anchors.leftMargin: 22
+                                                    anchors.rightMargin: 22
+                                                    spacing: 16
+
+                                                    Repeater {
+                                                        model: ["away", "status", "home"]
+                                                        delegate: Item {
+                                                            id: sbPart
+                                                            required property string modelData
+                                                            required property int index
+                                                            readonly property var t: root.sportsGame ? (modelData === "away" ? root.sportsGame.away : modelData === "home" ? root.sportsGame.home : null) : null
+                                                            readonly property string score: !root.sportsBox ? (t ? t.score : "") : (modelData === "away" ? root.sportsBox.away : root.sportsBox.home)
+                                                            readonly property bool lost: root.sportsGame !== null && root.sportsGame.state === "post" && sbPart.t !== null
+                                                                && Number(sbPart.score) < Number(modelData === "away" ? (root.sportsBox ? root.sportsBox.home : root.sportsGame.home.score) : (root.sportsBox ? root.sportsBox.away : root.sportsGame.away.score))
+                                                            Layout.fillWidth: modelData !== "status"
+                                                            Layout.fillHeight: true
+                                                            Layout.preferredWidth: modelData === "status" ? sbStatus.implicitWidth : 1
+
+                                                            // a team: logo + name, big score toward the middle
+                                                            RowLayout {
+                                                                anchors.fill: parent
+                                                                visible: sbPart.modelData !== "status"
+                                                                layoutDirection: sbPart.modelData === "home" ? Qt.RightToLeft : Qt.LeftToRight
+                                                                spacing: 14
+                                                                TeamLogo {
+                                                                    theme: root
+                                                                    Layout.preferredWidth: 52
+                                                                    Layout.preferredHeight: 52
+                                                                    source: sbPart.t ? sbPart.t.logo : ""
+                                                                    abbr: sbPart.t ? sbPart.t.abbr : ""
+                                                                }
+                                                                Column {
+                                                                    spacing: 2
+                                                                    Text {
+                                                                        text: sbPart.t ? sbPart.t.name : ""
+                                                                        color: sbPart.lost ? root.muted : root.fg
+                                                                        font.pixelSize: 16
+                                                                        font.bold: true
+                                                                    }
+                                                                    Text {
+                                                                        text: sbPart.t ? (sbPart.t.record || sbPart.t.abbr) : ""
+                                                                        color: root.muted
+                                                                        font.pixelSize: 11
+                                                                    }
+                                                                }
+                                                                Item { Layout.fillWidth: true }
+                                                                Text {
+                                                                    text: sbPart.score
+                                                                    color: sbPart.lost ? root.muted : root.fg
+                                                                    font.pixelSize: 38
+                                                                    font.bold: true
+                                                                }
+                                                            }
+
+                                                            // the middle: status and the score by quarter
+                                                            Column {
+                                                                id: sbStatus
+                                                                anchors.centerIn: parent
+                                                                visible: sbPart.modelData === "status"
+                                                                spacing: 6
+                                                                Row {
+                                                                    anchors.horizontalCenter: parent.horizontalCenter
+                                                                    spacing: 6
+                                                                    Rectangle {
+                                                                        visible: root.sportsGame !== null && root.sportsGame.state === "in"
+                                                                        anchors.verticalCenter: parent.verticalCenter
+                                                                        width: 8
+                                                                        height: 8
+                                                                        radius: 4
+                                                                        color: root.danger
+                                                                        SequentialAnimation on opacity {
+                                                                            running: root.sportsGame !== null && root.sportsGame.state === "in" && root.sportsVisible
+                                                                            loops: Animation.Infinite
+                                                                            NumberAnimation { to: 0.25; duration: 700 }
+                                                                            NumberAnimation { to: 1; duration: 700 }
+                                                                        }
+                                                                    }
+                                                                    Text {
+                                                                        text: !root.sportsGame ? "" : root.sportsGame.state === "pre" ? root.sportsTime(root.sportsGame.date)
+                                                                            : (root.sportsBox && root.sportsBox.detail ? root.sportsBox.detail : root.sportsGame.detail)
+                                                                        color: root.sportsGame && root.sportsGame.state === "in" ? root.danger : root.fg
+                                                                        font.pixelSize: 13
+                                                                        font.bold: true
+                                                                    }
+                                                                }
+                                                                // Q1 Q2 Q3 Q4 (OT)
+                                                                Grid {
+                                                                    anchors.horizontalCenter: parent.horizontalCenter
+                                                                    visible: root.sportsBox !== null && root.sportsBox.lines.length > 0
+                                                                    columns: root.sportsBox ? root.sportsBox.lines.length + 1 : 1
+                                                                    columnSpacing: 10
+                                                                    rowSpacing: 2
+                                                                    Repeater {
+                                                                        model: {
+                                                                            if (!root.sportsBox || !root.sportsGame) return [];
+                                                                            const L = root.sportsBox.lines, out = [{ t: "", h: true }];
+                                                                            L.forEach(l => out.push({ t: l.label, h: true }));
+                                                                            out.push({ t: root.sportsGame.away.abbr, h: true });
+                                                                            L.forEach(l => out.push({ t: l.away, h: false }));
+                                                                            out.push({ t: root.sportsGame.home.abbr, h: true });
+                                                                            L.forEach(l => out.push({ t: l.home, h: false }));
+                                                                            return out;
+                                                                        }
+                                                                        delegate: Text {
+                                                                            required property var modelData
+                                                                            horizontalAlignment: Text.AlignHCenter
+                                                                            width: 24
+                                                                            text: modelData.t
+                                                                            color: modelData.h ? root.muted : root.fg
+                                                                            font.pixelSize: 11
+                                                                            font.bold: !modelData.h
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            // ---- which team's players ----
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 6
+                                                Repeater {
+                                                    model: root.sportsBox ? root.sportsBox.teams : []
+                                                    delegate: SportChip {
+                                                        required property var modelData
+                                                        required property int index
+                                                        theme: root
+                                                        label: modelData.name
+                                                        active: root.sportsBoxSide === index
+                                                        onClicked: root.sportsBoxSide = index
+                                                    }
+                                                }
+                                                Item { Layout.fillWidth: true }
+                                            }
+
+                                            // ---- the box score ----
+                                            HubCard {
+                                                id: boxCard
+                                                theme: root
+                                                Layout.fillWidth: true
+                                                Layout.fillHeight: true
+                                                clip: true
+                                                readonly property var team: root.sportsBox && root.sportsBox.teams.length > root.sportsBoxSide ? root.sportsBox.teams[root.sportsBoxSide] : null
+                                                readonly property int ptsCol: boxCard.team ? boxCard.team.labels.indexOf("PTS") : -1
+
+                                                ColumnLayout {
+                                                    anchors.fill: parent
+                                                    anchors.margins: 10
+                                                    spacing: 2
+                                                    visible: boxCard.team !== null && boxCard.team.players.length > 0
+
+                                                    // headings
+                                                    RowLayout {
+                                                        Layout.fillWidth: true
+                                                        Layout.leftMargin: 8
+                                                        Layout.rightMargin: 8
+                                                        spacing: 0
+                                                        Text { Layout.preferredWidth: 170; text: "Player"; color: root.muted; font.pixelSize: 11; font.bold: true }
+                                                        Repeater {
+                                                            model: boxCard.team ? boxCard.team.labels : []
+                                                            delegate: Text {
+                                                                required property var modelData
+                                                                Layout.fillWidth: true
+                                                                Layout.preferredWidth: 1
+                                                                horizontalAlignment: Text.AlignRight
+                                                                text: modelData
+                                                                color: root.muted
+                                                                font.pixelSize: 11
+                                                                font.bold: true
+                                                            }
+                                                        }
+                                                    }
+
+                                                    ListView {
+                                                        id: boxList
+                                                        Layout.fillWidth: true
+                                                        Layout.fillHeight: true
+                                                        clip: true
+                                                        boundsBehavior: Flickable.StopAtBounds
+                                                        model: boxCard.team ? boxCard.team.players.concat([{ totals: true }]) : []
+
+                                                        delegate: Rectangle {
+                                                            id: bp
+                                                            required property var modelData
+                                                            required property int index
+                                                            readonly property bool isTotal: modelData.totals === true
+                                                            readonly property bool benchStart: !isTotal && !modelData.starter && index > 0 && boxCard.team.players[index - 1].starter
+                                                            width: boxList.width
+                                                            height: (bp.benchStart ? 22 : 0) + 34
+                                                            radius: 8
+                                                            color: "transparent"
+
+                                                            Text {
+                                                                visible: bp.benchStart
+                                                                x: 8
+                                                                y: 4
+                                                                text: "Bench"
+                                                                color: root.muted
+                                                                font.pixelSize: 11
+                                                                font.bold: true
+                                                            }
+
+                                                            Rectangle {
+                                                                anchors.left: parent.left
+                                                                anchors.right: parent.right
+                                                                anchors.bottom: parent.bottom
+                                                                height: 34
+                                                                radius: 8
+                                                                color: bpMouse.containsMouse && !bp.isTotal ? root.overlay : (bp.isTotal ? Qt.rgba(1, 1, 1, 0.07) : (bp.index % 2 === 0 ? Qt.rgba(1, 1, 1, 0.035) : "transparent"))
+
+                                                                RowLayout {
+                                                                    anchors.fill: parent
+                                                                    anchors.leftMargin: 8
+                                                                    anchors.rightMargin: 8
+                                                                    spacing: 0
+
+                                                                    Row {
+                                                                        Layout.preferredWidth: 170
+                                                                        spacing: 8
+                                                                        Text {
+                                                                            width: 22
+                                                                            visible: !bp.isTotal
+                                                                            anchors.verticalCenter: parent.verticalCenter
+                                                                            horizontalAlignment: Text.AlignRight
+                                                                            text: bp.isTotal ? "" : bp.modelData.jersey
+                                                                            color: root.muted
+                                                                            font.pixelSize: 11
+                                                                        }
+                                                                        Text {
+                                                                            width: bp.isTotal ? 160 : 132
+                                                                            anchors.verticalCenter: parent.verticalCenter
+                                                                            text: bp.isTotal ? "Team" : bp.modelData.short + (bp.modelData.pos ? "  " + bp.modelData.pos : "")
+                                                                            color: root.fg
+                                                                            font.pixelSize: 12
+                                                                            font.bold: bp.isTotal
+                                                                            elide: Text.ElideRight
+                                                                        }
+                                                                    }
+
+                                                                    // didn't play: one muted line instead of numbers
+                                                                    Text {
+                                                                        Layout.fillWidth: true
+                                                                        visible: !bp.isTotal && (bp.modelData.dnp || bp.modelData.stats.length === 0)
+                                                                        text: "Didn't play" + (bp.modelData.reason ? "  ·  " + bp.modelData.reason.toLowerCase() : "")
+                                                                        color: root.muted
+                                                                        font.pixelSize: 11
+                                                                        font.italic: true
+                                                                    }
+
+                                                                    Repeater {
+                                                                        model: bp.isTotal ? boxCard.team.totals : (bp.modelData.dnp ? [] : bp.modelData.stats)
+                                                                        delegate: Text {
+                                                                            required property var modelData
+                                                                            required property int index
+                                                                            Layout.fillWidth: true
+                                                                            Layout.preferredWidth: 1
+                                                                            horizontalAlignment: Text.AlignRight
+                                                                            text: modelData
+                                                                            color: index === boxCard.ptsCol ? root.fg : (bp.isTotal ? root.fg : Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.82))
+                                                                            font.pixelSize: 12
+                                                                            font.bold: index === boxCard.ptsCol || bp.isTotal
+                                                                        }
+                                                                    }
+                                                                }
+
+                                                                MouseArea {
+                                                                    id: bpMouse
+                                                                    anchors.fill: parent
+                                                                    enabled: !bp.isTotal
+                                                                    hoverEnabled: true
+                                                                    cursorShape: Qt.PointingHandCursor
+                                                                    onClicked: root.sportsOpenPlayerFrom(bp.modelData, "game")
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                Text {
+                                                    anchors.centerIn: parent
+                                                    visible: boxCard.team === null || boxCard.team.players.length === 0
+                                                    horizontalAlignment: Text.AlignHCenter
+                                                    text: root.sportsLoading && !root.sportsBox ? "Loading the box score…"
+                                                        : root.sportsGame && root.sportsGame.state === "pre" ? "Player stats show up here at tip-off"
+                                                        : (root.sportsStatus || "No player stats for this game yet")
+                                                    color: root.muted
+                                                    font.pixelSize: 13
                                                 }
                                             }
                                         }
@@ -11283,7 +11914,7 @@ ShellRoot {
                     source: Qt.resolvedUrl("LiveWallpaper.qml")
                     onLoaded: {
                         item.source = Qt.binding(() => pins.adapter.liveWallpaper);
-                        item.paused = Qt.binding(() => root.livePaused);
+                        item.paused = Qt.binding(() => root.livePaused || root.gameMode);
                     }
                     onStatusChanged: if (status === Loader.Error) root.liveUnavailable = true
                 }
