@@ -121,6 +121,7 @@ ShellRoot {
             property string sportsLeague: "nba"  // league shown on the Sports tab
             property string sportsFav: ""        // favourite team: "league|teamId|ABBR"
             property bool gameMode: false        // game mode stays on across restarts
+            property bool restoreSession: true   // reopen apps on their desktops after logging in
         }
     }
 
@@ -2427,6 +2428,150 @@ ShellRoot {
         }
     }
 
+    // ---------- Remember open apps across restarts ----------
+    // Every minute: note which apps are open and which desktop + monitor each window is on
+    // (~/.local/state/joeos/session.json). After logging in: open them again and put every
+    // window back on its desktop as it appears. Only apps with a launcher entry are reopened
+    // (so games started from a launcher aren't). Turn it off with the "Reopen apps" tile.
+    property bool sessionRestoring: false
+    property bool sessionReady: false        // no saving until the restore is finished
+    property var sessionPending: []          // windows still waiting to be placed
+    property int sessionLastCount: -1
+    property int sessionDropSeen: -1         // a smaller window count must be seen twice in a row
+    readonly property string sessionFile: Quickshell.env("HOME") + "/.local/state/joeos/session.json"
+    readonly property var sessionSkip: ["quickshell", "joeos-update", "xdg-desktop-portal-gtk", "xdg-desktop-portal-hyprland", "hyprland-share-picker"]
+    readonly property var sessionMultiLaunch: ["kitty", "foot", "alacritty", "wezterm", "org.wezfurlong.wezterm", "konsole", "ghostty", "com.mitchellh.ghostty"]
+
+    function sessionMonitorName(id) {
+        const list = Hyprland.monitors.values;
+        for (let i = 0; i < list.length; i++) if (list[i].id === id) return list[i].name;
+        return "";
+    }
+
+    Process {
+        id: sessionSnap
+        command: ["hyprctl", "clients", "-j"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                let list = [];
+                try { list = JSON.parse(text); } catch (e) { return; }
+                const out = [];
+                for (const c of list) {
+                    const cls = c["class"] || c.initialClass || "";
+                    if (!cls || !c.mapped || c.hidden) continue;
+                    if (!c.workspace || c.workspace.id <= 0) continue;          // skip special/scratch workspaces
+                    if (root.sessionSkip.indexOf(cls.toLowerCase()) >= 0) continue;
+                    const e = DesktopEntries.heuristicLookup(cls) || DesktopEntries.heuristicLookup(c.initialClass || "");
+                    if (!e) continue;                                            // nothing to reopen it with
+                    out.push({ cls: cls, entry: e.id, ws: c.workspace.id, mon: root.sessionMonitorName(c.monitor), title: c.title || "" });
+                }
+                // closing apps during shutdown shouldn't wipe the list: a drop must show up twice in a row
+                if (out.length < root.sessionLastCount && root.sessionDropSeen !== out.length) {
+                    root.sessionDropSeen = out.length;
+                    return;
+                }
+                root.sessionDropSeen = -1;
+                root.sessionLastCount = out.length;
+                Quickshell.execDetached(["sh", "-c", 'mkdir -p "$(dirname "$1")" && printf "%s" "$2" > "$1.tmp" && mv -f "$1.tmp" "$1"',
+                    "sh", root.sessionFile, JSON.stringify({ saved: Date.now(), windows: out })]);
+            }
+        }
+    }
+    Timer {
+        interval: 60000
+        repeat: true
+        running: root.sessionReady && pins.adapter.restoreSession
+        onTriggered: sessionSnap.running = true
+    }
+
+    // first start of the bar since logging in? (a marker in the runtime folder, wiped at logout/reboot)
+    Process {
+        id: sessionCheck
+        running: true
+        command: ["sh", "-c", 'm="${XDG_RUNTIME_DIR:-/tmp}/joeos-session-${HYPRLAND_INSTANCE_SIGNATURE:-x}"; '
+            + 'if [ -e "$m" ]; then echo SKIP; else touch "$m"; cat "$1" 2>/dev/null; fi', "sh", Quickshell.env("HOME") + "/.local/state/joeos/session.json"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                const t = text.trim();
+                let data = null;
+                if (t !== "SKIP") { try { data = JSON.parse(t); } catch (e) {} }
+                if (!data || !data.windows || data.windows.length === 0 || !pins.adapter.restoreSession) {
+                    root.sessionReady = true;
+                    return;
+                }
+                sessionStart.data = data;
+                sessionStart.start();      // give the monitors and desktops a moment to settle
+            }
+        }
+    }
+    Timer {
+        id: sessionStart
+        property var data: null
+        interval: 3000
+        onTriggered: root.sessionRestore(data.windows)
+    }
+
+    function sessionRestore(wins) {
+        sessionPending = wins.slice();
+        sessionRestoring = true;
+        // open each app once (terminals once per window); browsers reopen their own windows
+        const launched = {};
+        for (const w of wins) {
+            const multi = sessionMultiLaunch.indexOf(w.cls.toLowerCase()) >= 0;
+            if (launched[w.entry] && !multi) continue;
+            launched[w.entry] = true;
+            const e = DesktopEntries.heuristicLookup(w.entry) || DesktopEntries.heuristicLookup(w.cls);
+            if (e) e.execute();
+        }
+        root.toastSeq += 1;
+        toastModel.append({ tid: root.toastSeq, nid: -1, appName: "JoeOS", critical: false,
+            summary: "Welcome back", body: "Reopening " + wins.length + " window" + (wins.length === 1 ? "" : "s") + " from last time." });
+        sessionGiveUp.restart();
+    }
+
+    function sessionFinish() {
+        if (!sessionRestoring) return;
+        sessionRestoring = false;
+        sessionPending = [];
+        sessionReady = true;
+        sessionGiveUp.stop();
+        gotoDeskIndex(0);           // start on desktop 1
+    }
+    Timer {
+        id: sessionGiveUp
+        interval: 90000             // slow apps get 90 seconds to appear
+        onTriggered: root.sessionFinish()
+    }
+
+    // a window appeared: if it's one we're waiting for, send it to its desktop
+    Connections {
+        target: Hyprland
+        enabled: root.sessionRestoring
+        function onRawEvent(event) {
+            if (event.name !== "openwindow") return;
+            const parts = event.data.split(",");
+            if (parts.length < 3) return;
+            const addr = parts[0].indexOf("0x") === 0 ? parts[0] : "0x" + parts[0];
+            const cls = parts[2].toLowerCase();
+            const pend = root.sessionPending.slice();
+            for (let i = 0; i < pend.length; i++) {
+                if (pend[i].cls.toLowerCase() !== cls) continue;
+                const w = pend.splice(i, 1)[0];
+                root.sessionPending = pend;
+                const cmds = ['hl.dsp.window.move({ workspace = ' + w.ws + ', follow = false, window = "address:' + addr + '" })'];
+                if (w.mon) cmds.push('hl.dsp.workspace.move({ workspace = ' + w.ws + ', monitor = "' + w.mon + '" })');
+                root.hyprList(cmds);
+                if (pend.length === 0) sessionDone.restart();
+                return;
+            }
+        }
+    }
+    Timer {
+        id: sessionDone
+        interval: 1500
+        onTriggered: root.sessionFinish()
+    }
+
     // ---------- Game mode ----------
     // Turns off blur, shadows, see-through windows and animations (in Hyprland and in the bars)
     // and pauses a live wallpaper, for more FPS. Turning it off reloads your normal Hyprland config.
@@ -4633,6 +4778,12 @@ ShellRoot {
                                                         : root.updCanCheck ? "Up to date" : "Needs pacman-contrib",
                                                     active: root.updTotal > 0, ok: true,
                                                     run: () => { if (root.updTotal > 0) { root.hubOpen = false; root.runUpdates(); } else root.checkUpdates(); }
+                                                },
+                                                {
+                                                    icon: "\uf0e2", title: "Reopen apps",
+                                                    sub: pins.adapter.restoreSession ? "On · after restart" : "Off",
+                                                    active: pins.adapter.restoreSession, ok: true,
+                                                    run: () => { pins.adapter.restoreSession = !pins.adapter.restoreSession; }
                                                 }
                                             ]
 

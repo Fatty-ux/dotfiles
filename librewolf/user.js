@@ -47,3 +47,15 @@ user_pref("browser.newtabpage.activity-stream.showSponsoredTopSites", false);
 
 // JoeOS update: the bookmarks bar slides in with the address bar instead of sitting on the new tab page
 user_pref("browser.toolbars.bookmarks.visibility", "never");
+
+// JoeOS: reopen your tabs and windows when LibreWolf starts.
+// (LibreWolf normally wipes history, cookies and open tabs every time it closes. This keeps them,
+//  so you'll also stay logged in to sites.)
+user_pref("browser.startup.page", 3);
+user_pref("browser.sessionstore.resume_from_crash", true);
+user_pref("privacy.sanitize.sanitizeOnShutdown", false);
+user_pref("privacy.clearOnShutdown.history", false);
+user_pref("privacy.clearOnShutdown.cookies", false);
+user_pref("privacy.clearOnShutdown_v2.historyFormDataAndDownloads", false);
+user_pref("privacy.clearOnShutdown_v2.browsingHistoryAndDownloads", false);
+user_pref("privacy.clearOnShutdown_v2.cookiesAndStorage", false);
