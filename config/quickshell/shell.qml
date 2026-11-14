@@ -9815,25 +9815,18 @@ ShellRoot {
                 visible: side.wantHide && !side.openHere
                 anchors.verticalCenter: parent.verticalCenter
                 x: side.barShown ? sidePill.x - width - 4 : parent.width - width + 10
-                width: 24
-                height: sideTabMouse.containsMouse ? 74 : 60
-                radius: 12
+                width: sideTabMouse.containsMouse ? 26 : 22
+                // a long strip: about a third of the screen, a little longer when you point at it
+                height: Math.max(160, parent.height * 0.34) + (sideTabMouse.containsMouse ? 24 : 0)
+                radius: 11
                 color: root.popupBg
                 border.width: 1
                 border.color: root.glassEdge
                 Behavior on x { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutCubic } }
-                Behavior on height { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+                Behavior on height { NumberAnimation { duration: root.animMs * 1.5; easing.type: Easing.OutCubic } }
+                Behavior on width { NumberAnimation { duration: root.animMs; easing.type: Easing.OutCubic } }
 
                 GlassShine { radius: parent.radius; dark: root.dark }
-
-                Text {
-                    x: side.barShown ? 8 : 3
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: side.barShown ? "\uf054" : "\uf053"
-                    color: root.fg
-                    font.family: root.iconFont
-                    font.pixelSize: 11
-                }
 
                 MouseArea {
                     id: sideTabMouse
