@@ -204,7 +204,12 @@ ShellRoot {
             property bool gameMode: false        // game mode stays on across restarts
             property bool restoreSession: true   // reopen apps on their desktops after logging in
             property bool topPillAlways: true    // the top pill stays on screen (no pull tab)
-            property bool lyricsOpen: false      // the left lyrics panel stays open across restarts
+            property bool lyricsOpen: false      // the left panel stays open across restarts
+            property string leftTab: "lyrics"    // which tab the left panel shows
+            property int dispSat: 100            // Display tab: saturation %
+            property int dispCon: 100            //   contrast %
+            property int dispTemp: 6500          //   warmth in Kelvin (6500 = off)
+            property int dispBri: 100            //   brightness %
         }
     }
 
@@ -2760,6 +2765,7 @@ ShellRoot {
         });
     }
     onGameModeChanged: {
+        displayRestore.restart();          // screen colours: off for games, back afterwards
         if (gameMode)
             Quickshell.execDetached(["hyprctl", "eval",
                 "hl.config({ animations = { enabled = false }, decoration = { active_opacity = 1.0, inactive_opacity = 1.0, "
@@ -9663,7 +9669,7 @@ ShellRoot {
         }
     }
 
-    // ---------- Left lyrics panel (pull tab on the left edge) ----------
+    // ---------- Left panel: Lyrics, Display, Clipboard, Notes (pull tab on the left edge) ----------
     // Click the tab on the left edge to open big, colourful lyrics that follow Spotify.
     // It stays on screen until you press its close button, and takes its colours from the theme.
     readonly property bool lyricsOpen: pins.adapter.lyricsOpen
@@ -9707,6 +9713,181 @@ ShellRoot {
             out.push('<font color="#' + hex(col.r) + hex(col.g) + hex(col.b) + '">' + esc(words[i]) + "</font>");
         }
         return out.join(" ");
+    }
+
+    // ----- Left panel tabs -----
+    readonly property var leftTabs: [
+        { id: "lyrics",  name: "Lyrics",    icon: "" },
+        { id: "display", name: "Display",   icon: "" },
+        { id: "clip",    name: "Clipboard", icon: "" },
+        { id: "notes",   name: "Notes",     icon: "" }
+    ]
+    readonly property string leftTab: pins.adapter.leftTab || "lyrics"
+
+    // ----- Display tab: screen colours (a Hyprland screen shader) -----
+    readonly property int dispSat: pins.adapter.dispSat
+    readonly property int dispCon: pins.adapter.dispCon
+    readonly property int dispTemp: pins.adapter.dispTemp
+    readonly property int dispBri: pins.adapter.dispBri
+    readonly property var displayPresets: [
+        { name: "Normal",    sat: 100, con: 100, temp: 6500, bri: 100 },
+        { name: "Vivid",     sat: 140, con: 110, temp: 6500, bri: 100 },
+        { name: "Cinema",    sat: 115, con: 115, temp: 5600, bri: 95 },
+        { name: "Soft",      sat: 80,  con: 90,  temp: 6000, bri: 105 },
+        { name: "Warm",      sat: 105, con: 100, temp: 4500, bri: 100 },
+        { name: "Night",     sat: 90,  con: 95,  temp: 3400, bri: 85 },
+        { name: "Grayscale", sat: 0,   con: 105, temp: 6500, bri: 100 }
+    ]
+    property bool dispFlip: false
+
+    function setDisplay(s, c, t, b) {
+        pins.adapter.dispSat = s;
+        pins.adapter.dispCon = c;
+        pins.adapter.dispTemp = t;
+        pins.adapter.dispBri = b;
+        displayTimer.restart();
+    }
+    function setDisplayValue(key, v) {
+        if (key === "sat") pins.adapter.dispSat = v;
+        else if (key === "con") pins.adapter.dispCon = v;
+        else if (key === "temp") pins.adapter.dispTemp = v;
+        else pins.adapter.dispBri = v;
+        displayTimer.restart();
+    }
+    // colour of light at a temperature (Kelvin), as red/green/blue multipliers
+    function kelvinRgb(k) {
+        const f = kk => {
+            const t = kk / 100;
+            const r = t <= 66 ? 255 : 329.698727446 * Math.pow(t - 60, -0.1332047592);
+            const g = t <= 66 ? 99.4708025861 * Math.log(t) - 161.1195681661 : 288.1221695283 * Math.pow(t - 60, -0.0755148492);
+            const b = t >= 66 ? 255 : (t <= 19 ? 0 : 138.5177312231 * Math.log(t - 10) - 305.0447927307);
+            return [r, g, b].map(v => Math.max(0, Math.min(255, v)));
+        };
+        const c = f(k), w = f(6500);
+        return c.map((v, i) => Math.min(1, v / w[i]));
+    }
+    function displayShader() {
+        const n = v => Number(v).toFixed(4);
+        const w = kelvinRgb(dispTemp);
+        return [
+            "#version 300 es",
+            "// Made by the JoeOS bar (Display tab). Do not edit by hand.",
+            "precision highp float;",
+            "in vec2 v_texcoord;",
+            "uniform sampler2D tex;",
+            "out vec4 fragColor;",
+            "void main() {",
+            "    vec4 c = texture(tex, v_texcoord);",
+            "    vec3 col = c.rgb;",
+            "    float l = dot(col, vec3(0.2126, 0.7152, 0.0722));",
+            "    col = mix(vec3(l), col, " + n(dispSat / 100) + ");",
+            "    col = (col - 0.5) * " + n(dispCon / 100) + " + 0.5;",
+            "    col *= " + n(dispBri / 100) + ";",
+            "    col *= vec3(" + n(w[0]) + ", " + n(w[1]) + ", " + n(w[2]) + ");",
+            "    fragColor = vec4(clamp(col, 0.0, 1.0), c.a);",
+            "}"
+        ].join("\n");
+    }
+    function applyDisplay() {
+        const lua = p => 'hl.config({ decoration = { screen_shader = "' + p + '" } })';
+        const plain = dispSat === 100 && dispCon === 100 && dispTemp >= 6500 && dispBri === 100;
+        if (plain || gameMode) {
+            Quickshell.execDetached(["hyprctl", "eval", lua("")]);
+            return;
+        }
+        // Hyprland only re-reads a shader when the file name changes, so swap between two
+        dispFlip = !dispFlip;
+        const path = Quickshell.env("HOME") + "/.cache/joeos/screen-" + (dispFlip ? "a" : "b") + ".frag";
+        Quickshell.execDetached(["sh", "-c",
+            'mkdir -p "$(dirname "$2")" && printf "%s\\n" "$1" > "$2" && hyprctl eval "$3"',
+            "sh", displayShader(), path, lua(path)]);
+    }
+    Timer {
+        id: displayTimer
+        interval: 120
+        onTriggered: root.applyDisplay()
+    }
+    // put the screen colours back after starting up, and after game mode reloads Hyprland
+    Timer {
+        id: displayRestore
+        interval: 3000
+        running: true
+        onTriggered: root.applyDisplay()
+    }
+
+    // ----- Clipboard tab (cliphist) -----
+    property var clipItems: []
+    property bool clipHave: true
+    property string clipJustCopied: ""
+    Process {
+        id: clipList
+        command: ["sh", "-c", "command -v cliphist >/dev/null 2>&1 || { echo NOCLIP; exit 0; }; cliphist list 2>/dev/null | head -n 200"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                if (text.trim() === "NOCLIP") {
+                    root.clipHave = false;
+                    root.clipItems = [];
+                    return;
+                }
+                root.clipHave = true;
+                const out = [];
+                const lines = text.split("\n");
+                for (let i = 0; i < lines.length; i++) {
+                    const line = lines[i];
+                    const tab = line.indexOf("\t");
+                    if (tab < 0) continue;
+                    const body = line.slice(tab + 1);
+                    out.push({ line: line, text: body, image: /^\[\[ binary data/.test(body) });
+                }
+                root.clipItems = out;
+            }
+        }
+    }
+    function clipRefresh() { if (!clipList.running) clipList.running = true; }
+    function clipCopy(line) {
+        Quickshell.execDetached(["sh", "-c", 'printf "%s" "$1" | cliphist decode | wl-copy', "sh", line]);
+        clipJustCopied = line;
+        clipCopiedTimer.restart();
+    }
+    function clipDelete(line) {
+        Quickshell.execDetached(["sh", "-c", 'printf "%s" "$1" | cliphist delete', "sh", line]);
+        clipItems = clipItems.filter(x => x.line !== line);
+    }
+    function clipWipe() {
+        Quickshell.execDetached(["cliphist", "wipe"]);
+        clipItems = [];
+    }
+    Timer { id: clipCopiedTimer; interval: 1400; onTriggered: root.clipJustCopied = "" }
+    Timer {
+        interval: 2000
+        repeat: true
+        triggeredOnStart: true
+        running: root.lyricsOpen && root.leftTab === "clip"
+        onTriggered: root.clipRefresh()
+    }
+    // keep a history from now on (starts cliphist's watcher if it isn't running)
+    Timer {
+        interval: 4000
+        running: true
+        onTriggered: Quickshell.execDetached(["sh", "-c",
+            'command -v cliphist >/dev/null && command -v wl-paste >/dev/null || exit 0; '
+            + 'pgrep -f "wl-paste --type text --watch cliphist" >/dev/null || setsid -f wl-paste --type text --watch cliphist store; '
+            + 'pgrep -f "wl-paste --type image --watch cliphist" >/dev/null || setsid -f wl-paste --type image --watch cliphist store'])
+    }
+
+    // ----- Notes tab -----
+    property string notesText: ""
+    readonly property string notesPath: Quickshell.env("HOME") + "/.local/state/joeos-notes.txt"
+    FileView {
+        id: notesFile
+        path: root.notesPath
+        onLoaded: root.notesText = text()
+    }
+    Timer {
+        id: notesSave
+        interval: 600
+        onTriggered: Quickshell.execDetached(["sh", "-c", 'mkdir -p "$(dirname "$2")" && printf "%s" "$1" > "$2"',
+            "sh", root.notesText, root.notesPath])
     }
 
     Variants {
@@ -9774,7 +9955,8 @@ ShellRoot {
                 color: "transparent"
                 WlrLayershell.layer: WlrLayer.Top
                 WlrLayershell.namespace: "quickshell-lyrics"
-                WlrLayershell.keyboardFocus: WlrKeyboardFocus.None   // never steals your typing
+                WlrLayershell.keyboardFocus: lyrScope.here && (root.leftTab === "clip" || root.leftTab === "notes")
+                    ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None   // only takes typing on Clipboard / Notes, when you click in
                 // only the card catches the mouse; everything else goes to the windows underneath
                 readonly property bool showing: lyrScope.here || lyrCard.x > -lyrCard.width
                 mask: showing ? lyrCardMask : lyrOffMask
@@ -9785,7 +9967,7 @@ ShellRoot {
                 Timer {
                     interval: 200
                     repeat: true
-                    running: lyrScope.here && root.playing(root.spotify)
+                    running: lyrScope.here && root.leftTab === "lyrics" && root.playing(root.spotify)
                     onTriggered: root.spotify.positionChanged()
                 }
 
@@ -9853,7 +10035,60 @@ ShellRoot {
                         anchors.margins: 20
                         spacing: 14
 
-                        // ---- song + controls + close ----
+                        // ---- tabs + close ----
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 6
+                            Repeater {
+                                model: root.leftTabs
+                                delegate: SportChip {
+                                    required property var modelData
+                                    theme: root
+                                    icon: modelData.icon
+                                    // the name shows on the open tab so they all fit
+                                    label: root.leftTab === modelData.id ? modelData.name : ""
+                                    active: root.leftTab === modelData.id
+                                    onClicked: pins.adapter.leftTab = modelData.id
+                                }
+                            }
+                            Item { Layout.fillWidth: true }
+                            // close: the only way to put it away
+                            Rectangle {
+                                Layout.preferredWidth: 34
+                                Layout.preferredHeight: 34
+                                radius: 17
+                                color: lyrClose.containsMouse ? root.overlay : root.surface
+                                border.width: 1
+                                border.color: root.glassEdge
+                                scale: lyrClose.pressed ? 0.88 : 1
+                                Behavior on color { ColorAnimation { duration: root.animMs } }
+                                Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: "\uf00d"
+                                    color: root.fg
+                                    font.family: root.iconFont
+                                    font.pixelSize: 14
+                                }
+                                MouseArea {
+                                    id: lyrClose
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: root.closeLyricsPanel()
+                                }
+                            }
+                        }
+
+                        StackLayout {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            currentIndex: Math.max(0, root.leftTabs.findIndex(x => x.id === root.leftTab))
+
+                            // ===== Lyrics =====
+                            ColumnLayout {
+                                spacing: 14
+                        // ---- song ----
                         RowLayout {
                             Layout.fillWidth: true
                             spacing: 12
@@ -9916,33 +10151,7 @@ ShellRoot {
                                 }
                             }
 
-                            // close: the only way to put it away
-                            Rectangle {
-                                Layout.preferredWidth: 34
-                                Layout.preferredHeight: 34
-                                Layout.alignment: Qt.AlignTop
-                                radius: 17
-                                color: lyrClose.containsMouse ? root.overlay : root.surface
-                                border.width: 1
-                                border.color: root.glassEdge
-                                scale: lyrClose.pressed ? 0.88 : 1
-                                Behavior on color { ColorAnimation { duration: root.animMs } }
-                                Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
-                                Text {
-                                    anchors.centerIn: parent
-                                    text: ""
-                                    color: root.fg
-                                    font.family: root.iconFont
-                                    font.pixelSize: 14
-                                }
-                                MouseArea {
-                                    id: lyrClose
-                                    anchors.fill: parent
-                                    hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: root.closeLyricsPanel()
-                                }
-                            }
+
                         }
 
                         // ---- the words ----
@@ -10120,6 +10329,325 @@ ShellRoot {
                                             else if (lyrBtn.modelData.act === "next") p.next();
                                             else p.togglePlaying();
                                         }
+                                    }
+                                }
+                            }
+                        }
+                                                }
+
+                            // ===== Display: screen colours =====
+                            Flickable {
+                                clip: true
+                                contentWidth: width
+                                contentHeight: dispCol.implicitHeight
+                                boundsBehavior: Flickable.StopAtBounds
+
+                                ColumnLayout {
+                                    id: dispCol
+                                    width: parent.width
+                                    spacing: 12
+
+                                    Text { text: "Screen colours"; color: root.fg; font.pixelSize: 17; font.bold: true }
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: root.gameMode ? "Paused while game mode is on, so games run at full speed."
+                                            : "Changes every monitor. Pick a look, or fine-tune it below."
+                                        color: root.gameMode ? root.danger : root.muted
+                                        font.pixelSize: 12
+                                        wrapMode: Text.Wrap
+                                    }
+
+                                    Flow {
+                                        Layout.fillWidth: true
+                                        spacing: 6
+                                        Repeater {
+                                            model: root.displayPresets
+                                            delegate: SportChip {
+                                                required property var modelData
+                                                theme: root
+                                                label: modelData.name
+                                                active: root.dispSat === modelData.sat && root.dispCon === modelData.con
+                                                    && root.dispTemp === modelData.temp && root.dispBri === modelData.bri
+                                                onClicked: root.setDisplay(modelData.sat, modelData.con, modelData.temp, modelData.bri)
+                                            }
+                                        }
+                                    }
+
+                                    Repeater {
+                                        model: [
+                                            { key: "sat",  name: "Saturation", icon: "", lo: 0,    hi: 200,  unit: "%" },
+                                            { key: "con",  name: "Contrast",   icon: "", lo: 50,   hi: 150,  unit: "%" },
+                                            { key: "temp", name: "Warmth",     icon: "", lo: 6500, hi: 2500, unit: " K" },
+                                            { key: "bri",  name: "Brightness", icon: "", lo: 60,   hi: 120,  unit: "%" }
+                                        ]
+                                        delegate: HubCard {
+                                            id: dRow
+                                            required property var modelData
+                                            readonly property int val: modelData.key === "sat" ? root.dispSat
+                                                : modelData.key === "con" ? root.dispCon
+                                                : modelData.key === "temp" ? root.dispTemp : root.dispBri
+                                            theme: root
+                                            Layout.fillWidth: true
+                                            Layout.preferredHeight: 70
+                                            radius: 18
+                                            ColumnLayout {
+                                                anchors.fill: parent
+                                                anchors.margins: 14
+                                                spacing: 8
+                                                RowLayout {
+                                                    Layout.fillWidth: true
+                                                    spacing: 8
+                                                    Text { text: dRow.modelData.icon; color: root.accent; font.family: root.iconFont; font.pixelSize: 13 }
+                                                    Text { Layout.fillWidth: true; text: dRow.modelData.name; color: root.fg; font.pixelSize: 13; font.bold: true }
+                                                    Text {
+                                                        text: dRow.modelData.key === "temp" && dRow.val >= 6500 ? "Off" : dRow.val + dRow.modelData.unit
+                                                        color: root.muted
+                                                        font.pixelSize: 12
+                                                    }
+                                                }
+                                                ValueBar {
+                                                    Layout.fillWidth: true
+                                                    theme: root
+                                                    value: (dRow.val - dRow.modelData.lo) / (dRow.modelData.hi - dRow.modelData.lo)
+                                                    onMoved: v => {
+                                                        let n = dRow.modelData.lo + v * (dRow.modelData.hi - dRow.modelData.lo);
+                                                        n = dRow.modelData.key === "temp" ? Math.round(n / 100) * 100 : Math.round(n / 5) * 5;
+                                                        root.setDisplayValue(dRow.modelData.key, n);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    BarButton {
+                                        theme: root
+                                        icon: ""
+                                        label: "Back to normal"
+                                        onClicked: mouse => root.setDisplay(100, 100, 6500, 100)
+                                    }
+                                }
+                            }
+
+                            // ===== Clipboard history =====
+                            ColumnLayout {
+                                spacing: 10
+
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 8
+                                    Rectangle {
+                                        Layout.fillWidth: true
+                                        implicitHeight: 34
+                                        radius: 17
+                                        color: root.surface
+                                        border.width: 1
+                                        border.color: clipSearch.activeFocus ? root.accent : root.glassEdge
+                                        Text {
+                                            id: clipSearchIcon
+                                            anchors.left: parent.left
+                                            anchors.leftMargin: 12
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            text: ""
+                                            font.family: root.iconFont
+                                            font.pixelSize: 12
+                                            color: root.muted
+                                        }
+                                        TextInput {
+                                            id: clipSearch
+                                            anchors.left: clipSearchIcon.right
+                                            anchors.leftMargin: 9
+                                            anchors.right: parent.right
+                                            anchors.rightMargin: 12
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            color: root.fg
+                                            font.pixelSize: 13
+                                            clip: true
+                                            Keys.onEscapePressed: text = ""
+                                            Text {
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                visible: clipSearch.text === ""
+                                                text: "Search what you copied"
+                                                color: root.muted
+                                                font.pixelSize: 13
+                                            }
+                                        }
+                                    }
+                                    BarButton {
+                                        theme: root
+                                        icon: ""
+                                        label: "Clear"
+                                        visible: root.clipHave && root.clipItems.length > 0
+                                        onClicked: mouse => root.clipWipe()
+                                    }
+                                }
+
+                                Item {
+                                    Layout.fillWidth: true
+                                    Layout.fillHeight: true
+
+                                    ListView {
+                                        id: clipView
+                                        anchors.fill: parent
+                                        clip: true
+                                        spacing: 6
+                                        boundsBehavior: Flickable.StopAtBounds
+                                        model: {
+                                            const q = clipSearch.text.toLowerCase();
+                                            return q === "" ? root.clipItems : root.clipItems.filter(x => x.text.toLowerCase().indexOf(q) >= 0);
+                                        }
+                                        delegate: Rectangle {
+                                            id: ci
+                                            required property var modelData
+                                            width: clipView.width
+                                            height: ciText.implicitHeight + 22
+                                            radius: 14
+                                            color: ciMouse.containsMouse ? root.overlay : root.surface
+                                            border.width: 1
+                                            border.color: root.clipJustCopied === ci.modelData.line ? root.accent : root.glassEdge
+                                            Behavior on color { ColorAnimation { duration: root.animMs } }
+
+                                            Text {
+                                                id: ciText
+                                                anchors.left: parent.left
+                                                anchors.right: ciDel.left
+                                                anchors.leftMargin: 12
+                                                anchors.rightMargin: 8
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                text: ci.modelData.image ? "  Picture" : ci.modelData.text
+                                                color: root.fg
+                                                font.pixelSize: 12
+                                                font.family: ci.modelData.image ? root.iconFont : Qt.application.font.family
+                                                wrapMode: Text.Wrap
+                                                maximumLineCount: 3
+                                                elide: Text.ElideRight
+                                            }
+                                            MouseArea {
+                                                id: ciMouse
+                                                anchors.fill: parent
+                                                hoverEnabled: true
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: root.clipCopy(ci.modelData.line)
+                                            }
+                                            // delete just this one
+                                            Text {
+                                                id: ciDel
+                                                anchors.right: parent.right
+                                                anchors.rightMargin: 12
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                text: root.clipJustCopied === ci.modelData.line ? "" : ""
+                                                color: root.clipJustCopied === ci.modelData.line ? root.accent : root.muted
+                                                opacity: ciMouse.containsMouse || ciDelMouse.containsMouse || root.clipJustCopied === ci.modelData.line ? 1 : 0
+                                                font.family: root.iconFont
+                                                font.pixelSize: 12
+                                                MouseArea {
+                                                    id: ciDelMouse
+                                                    anchors.fill: parent
+                                                    anchors.margins: -8
+                                                    hoverEnabled: true
+                                                    cursorShape: Qt.PointingHandCursor
+                                                    onClicked: root.clipDelete(ci.modelData.line)
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    Column {
+                                        anchors.centerIn: parent
+                                        width: parent.width - 20
+                                        visible: !root.clipHave || clipView.count === 0
+                                        spacing: 10
+                                        Text {
+                                            anchors.horizontalCenter: parent.horizontalCenter
+                                            text: ""
+                                            color: root.lyricsColors[1]
+                                            font.family: root.iconFont
+                                            font.pixelSize: 34
+                                        }
+                                        Text {
+                                            width: parent.width
+                                            horizontalAlignment: Text.AlignHCenter
+                                            wrapMode: Text.Wrap
+                                            text: !root.clipHave ? "Clipboard history needs cliphist. Install it with:"
+                                                : (root.clipItems.length === 0 ? "Copy something and it shows up here" : "Nothing matches")
+                                            color: root.muted
+                                            font.pixelSize: 13
+                                        }
+                                        BarButton {
+                                            visible: !root.clipHave
+                                            anchors.horizontalCenter: parent.horizontalCenter
+                                            theme: root
+                                            icon: ""
+                                            label: "sudo pacman -S cliphist"
+                                            onClicked: mouse => Quickshell.execDetached(["wl-copy", "sudo pacman -S cliphist"])
+                                        }
+                                    }
+                                }
+                                Text {
+                                    text: root.clipHave ? "Click to copy it again" : "(click the command to copy it)"
+                                    color: root.muted
+                                    font.pixelSize: 11
+                                }
+                            }
+
+                            // ===== Notes =====
+                            ColumnLayout {
+                                spacing: 10
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Text { Layout.fillWidth: true; text: "Notes"; color: root.fg; font.pixelSize: 17; font.bold: true }
+                                    Text { text: "Saves by itself"; color: root.muted; font.pixelSize: 11 }
+                                }
+                                HubCard {
+                                    theme: root
+                                    Layout.fillWidth: true
+                                    Layout.fillHeight: true
+                                    radius: 18
+                                    Flickable {
+                                        id: noteFlick
+                                        anchors.fill: parent
+                                        anchors.margins: 14
+                                        clip: true
+                                        contentWidth: width
+                                        contentHeight: noteEdit.implicitHeight
+                                        boundsBehavior: Flickable.StopAtBounds
+                                        function ensureVisible(r) {
+                                            if (contentY >= r.y) contentY = r.y;
+                                            else if (contentY + height <= r.y + r.height) contentY = r.y + r.height - height;
+                                        }
+                                        TextEdit {
+                                            id: noteEdit
+                                            width: noteFlick.width
+                                            color: root.fg
+                                            selectionColor: root.accent
+                                            selectedTextColor: root.bg
+                                            font.pixelSize: 14
+                                            wrapMode: TextEdit.Wrap
+                                            Component.onCompleted: text = root.notesText
+                                            onCursorRectangleChanged: noteFlick.ensureVisible(cursorRectangle)
+                                            onTextChanged: if (activeFocus && text !== root.notesText) {
+                                                root.notesText = text;
+                                                notesSave.restart();
+                                            }
+                                            Connections {
+                                                target: root
+                                                function onNotesTextChanged() {
+                                                    if (!noteEdit.activeFocus && noteEdit.text !== root.notesText) noteEdit.text = root.notesText;
+                                                }
+                                            }
+                                            Text {
+                                                visible: noteEdit.text === ""
+                                                text: "Click here and type. Ideas, to-dos, codes for games…"
+                                                color: root.muted
+                                                font.pixelSize: 14
+                                                wrapMode: Text.Wrap
+                                                width: parent.width
+                                            }
+                                        }
+                                    }
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        z: -1
+                                        onClicked: noteEdit.forceActiveFocus()
                                     }
                                 }
                             }
