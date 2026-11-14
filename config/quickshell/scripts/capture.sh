@@ -11,6 +11,8 @@ set -u
 
 SHOTS="$HOME/Pictures/Screenshots"
 VIDS="$HOME/Videos/Recordings"
+LOG="$HOME/.cache/joeos/rec.log"
+PIDFILE="${XDG_RUNTIME_DIR:-/tmp}/joeos-rec.pid"
 
 stamp() { date +%Y-%m-%d_%H-%M-%S; }
 notify() { command -v notify-send >/dev/null 2>&1 && notify-send "$@"; true; }
@@ -50,33 +52,50 @@ case "${1:-}" in
         mode="${2:-area}"; audio="${3:-none}"; mon="${4:-}"
         [ -z "$mon" ] && mon="$(hyprctl -j monitors | jq -r '.[] | select(.focused) | .name')"
         command -v wf-recorder >/dev/null 2>&1 || { notify "Can't record" "Install wf-recorder first"; exit 1; }
-        pgrep -x wf-recorder >/dev/null && exit 0
-        mkdir -p "$VIDS"
+        pgrep -f "^wf-recorder" >/dev/null && exit 0
+        mkdir -p "$VIDS" "$(dirname "$LOG")"
+        echo "$$" > "$PIDFILE"
         f="$VIDS/$(stamp).mp4"
-        args=(-f "$f")
+        args=(-y -f "$f")
         case "$mode" in
-            area)   g="$(slurp)" || exit 1; args+=(-g "$g") ;;
-            screen) args+=(-o "$mon") ;;
+            area)   g="$(slurp)" || { rm -f "$PIDFILE"; exit 1; }; args+=(-g "$g") ;;
+            screen) [ -n "$mon" ] && args+=(-o "$mon") ;;
         esac
         case "$audio" in
             system) args+=("--audio=$(pactl get-default-sink 2>/dev/null).monitor") ;;
             mic)    args+=("--audio=$(pactl get-default-source 2>/dev/null)") ;;
         esac
-        wf-recorder "${args[@]}"
-        [ -s "$f" ] && notify "Recording saved" "$f"
+        echo "== $(date) wf-recorder ${args[*]}" >> "$LOG"
+        # run the recorder in the background (with job control, so Ctrl+C still reaches it)
+        set -m
+        wf-recorder "${args[@]}" </dev/null >>"$LOG" 2>&1 &
+        rp=$!
+        echo "$rp" > "$PIDFILE.rec"
+        trap 'kill -INT "$rp" 2>/dev/null' INT TERM
+        while kill -0 "$rp" 2>/dev/null; do wait "$rp"; done
+        code=$?
+        rm -f "$PIDFILE" "$PIDFILE.rec"
+        echo "== exited ($code)" >> "$LOG"
+        if [ -s "$f" ]; then
+            notify "Recording saved" "$f" &
+        else
+            notify "Recording failed" "Nothing was saved. Details: ~/.cache/joeos/rec.log" &
+        fi
         ;;
 
     stop)
-        # wf-recorder finishes the video when it gets Ctrl+C (SIGINT), but it sometimes waits
-        # for the screen to change first, so: ask, ask again, then insist.
-        running() { pgrep -x wf-recorder >/dev/null; }
-        waitgone() { for _ in $(seq 1 "$1"); do running || return 0; sleep 0.1; done; return 1; }
-        running || exit 0
-        pkill -INT -x wf-recorder;  waitgone 25 && exit 0
-        pkill -INT -x wf-recorder;  waitgone 25 && exit 0
-        pkill -TERM -x wf-recorder; waitgone 30 && exit 0
-        pkill -KILL -x wf-recorder
-        notify "Recording stopped" "It had to be forced, so the last moment of the video may be cut off"
+        # cancel a box that's still being dragged
+        pkill -x slurp 2>/dev/null
+        rp="$(cat "$PIDFILE.rec" 2>/dev/null)"
+        pids() { { [ -n "$rp" ] && kill -0 "$rp" 2>/dev/null && echo "$rp"; pgrep -f "^wf-recorder"; } | sort -u; }
+        waitgone() { for _ in $(seq 1 "$1"); do [ -z "$(pids)" ] && return 0; sleep 0.1; done; return 1; }
+        [ -z "$(pids)" ] && { rm -f "$PIDFILE" "$PIDFILE.rec"; exit 0; }
+        # wf-recorder finishes the video on Ctrl+C (SIGINT): ask, ask again, then insist
+        kill -INT $(pids) 2>/dev/null;  waitgone 25 && exit 0
+        kill -INT $(pids) 2>/dev/null;  waitgone 25 && exit 0
+        kill -TERM $(pids) 2>/dev/null; waitgone 30 && exit 0
+        kill -KILL $(pids) 2>/dev/null
+        notify "Recording stopped" "It had to be forced, so the end of the video may be cut off" &
         ;;
 
     *)

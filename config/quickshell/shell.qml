@@ -3262,13 +3262,14 @@ ShellRoot {
 
     function stopRecording() {
         Quickshell.execDetached(["bash", root.captureScript, "stop"]);
+        recProc.signal(2);          // also tell the recording script itself to wrap up
         recStopGuard.restart();
     }
     // if the recorder is somehow still going after the stop script has had its turn,
     // stop tracking it so the pill and the Capture tab go back to normal
     Timer {
         id: recStopGuard
-        interval: 9000
+        interval: 7000
         onTriggered: if (recProc.running) recProc.running = false
     }
 
@@ -4443,56 +4444,6 @@ ShellRoot {
                                     text: Math.round(chip.modelData.value * 100) + "%"
                                     color: root.fg
                                     font.pixelSize: 13
-                                }
-                            }
-                        }
-                    }
-
-                    // ---- Screenshot + record (click: drag a box · right-click: the whole screen) ----
-                    Row {
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: 4
-
-                        Repeater {
-                            model: [
-                                { icon: "", kind: "shot" },
-                                { icon: "", kind: "rec" }
-                            ]
-                            delegate: Rectangle {
-                                id: capBtn
-                                required property var modelData
-                                readonly property bool isRec: modelData.kind === "rec"
-                                visible: !isRec || (!root.recording && root.canRecord)
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: 26
-                                height: 26
-                                radius: 13
-                                color: capMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.14) : Qt.rgba(1, 1, 1, 0.05)
-                                border.width: 1
-                                border.color: capMouse.containsMouse ? root.glassEdge : "transparent"
-                                scale: capMouse.pressed ? 0.85 : 1
-                                Behavior on color { ColorAnimation { duration: root.animMs } }
-                                Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
-
-                                Text {
-                                    anchors.centerIn: parent
-                                    text: capBtn.modelData.icon
-                                    color: capBtn.isRec ? root.danger : root.fg
-                                    font.family: root.iconFont
-                                    font.pixelSize: capBtn.isRec ? 10 : 12
-                                }
-
-                                MouseArea {
-                                    id: capMouse
-                                    anchors.fill: parent
-                                    hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
-                                    acceptedButtons: Qt.LeftButton | Qt.RightButton
-                                    onClicked: mouse => {
-                                        const mode = mouse.button === Qt.RightButton ? "screen" : "area";
-                                        if (capBtn.isRec) root.record(mode);
-                                        else root.shot(mode);
-                                    }
                                 }
                             }
                         }
