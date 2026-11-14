@@ -148,6 +148,8 @@ ShellRoot {
     readonly property bool bottomShowClock: true
     readonly property bool bottomShowWallpaperButton: true
     readonly property int dockIconSize: 44         // size of the app icons on the bottom dock
+    readonly property int pillIconSize: 30         // app icons on the small dock pill
+    property real dockPillW: 200                   // how wide the dock pill is (the launcher grows out of it)
     // Top bar: a pill at the top centre that grows into the hub when clicked (see "Top bar: the island")
     // Weather (from Open-Meteo, no account or key needed). Put your own coordinates here.
     readonly property string weatherName: "Windsor, ON"
@@ -1623,7 +1625,7 @@ ShellRoot {
                 left: true
                 right: true
             }
-            implicitHeight: root.dockIconSize + 34
+            implicitHeight: 34
             color: "transparent"
             WlrLayershell.namespace: "quickshell-bar"
 
@@ -1652,12 +1654,39 @@ ShellRoot {
             }
 
             // Windows only make room while the bar is out
-            exclusionMode: ExclusionMode.Normal
-            exclusiveZone: barShown ? implicitHeight : 0
+            // just a small tab now, so windows keep the whole screen
+            exclusionMode: ExclusionMode.Ignore
+            exclusiveZone: 0
 
             // While hidden, only a thin strip at the screen edge listens for the mouse;
             // everything else passes straight through to the windows underneath
-            mask: barShown ? null : edgeMask
+            mask: Region { item: bottomHot }
+
+            // The tab stays out of sight until the mouse touches the bottom edge near the middle
+            property bool tabPeek: false
+            Item {
+                id: bottomHot
+                anchors.bottom: parent.bottom
+                anchors.horizontalCenter: parent.horizontalCenter
+                width: bottomTab.width + 160
+                height: panel.tabPeek ? parent.height : 4      // a thin strip at the edge until it's out
+                HoverHandler {
+                    id: bottomHotHover
+                    onHoveredChanged: {
+                        if (hovered) {
+                            tabHideTimer.stop();
+                            panel.tabPeek = true;
+                        } else {
+                            tabHideTimer.restart();
+                        }
+                    }
+                }
+            }
+            Timer {
+                id: tabHideTimer
+                interval: 500
+                onTriggered: panel.tabPeek = false
+            }
             Region { id: edgeMask; item: hotStrip }
 
             Item {
@@ -1846,705 +1875,33 @@ ShellRoot {
                 }
             }
 
-            // ===== The bar itself =====
-            Item {
-                id: barContent
-                opacity: panel.barShown ? 1 : 0
-                Behavior on opacity { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutCubic } }
-                transform: Translate {
-                    y: panel.barShown ? 0 : panel.implicitHeight
-                    Behavior on y { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutCubic } }
-                }
-                anchors.fill: parent
-                anchors.leftMargin: 16
-                anchors.rightMargin: 16
+            // ===== The bar itself: one small plain tab at the bottom =====
+            // Click it and it grows into the launcher: search at the top, your pinned apps at the bottom.
+            Rectangle {
+                id: bottomTab
+                anchors.horizontalCenter: parent.horizontalCenter
+                y: panel.tabPeek && !root.launcherOpen ? parent.height - height + 10 : parent.height + 4
+                height: bottomTabMouse.containsMouse ? 26 : 22
+                width: Math.max(160, panel.width * 0.12) + (bottomTabMouse.containsMouse ? 24 : 0)
+                radius: 11
+                color: root.popupBg
+                border.width: 1
+                border.color: root.glassEdge
+                Behavior on y { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutCubic } }
+                Behavior on width { NumberAnimation { duration: root.animMs * 1.5; easing.type: Easing.OutCubic } }
+                Behavior on height { NumberAnimation { duration: root.animMs; easing.type: Easing.OutCubic } }
+                onWidthChanged: root.dockPillW = width
 
-                // ---- Left: search bar (opens the app launcher) ----
-                Rectangle {
-                    id: searchBar
-                    anchors.left: parent.left
-                    anchors.verticalCenter: parent.verticalCenter
-                    // turns into a round search button when the dock needs the room
-                    width: dock.searchCompact ? 48 : 230
-                    Behavior on width { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutCubic } }
-                    clip: true
-                    height: 48
-                    radius: 24
-                    color: searchMouse.containsMouse ? root.overlay : root.popupBg
-                    border.width: 1
-                    border.color: root.glassEdge
-                    Behavior on color { ColorAnimation { duration: root.animMs } }
+                GlassShine { radius: parent.radius; dark: root.dark }
 
-                    GlassShine { radius: parent.radius; dark: root.dark }
-
-                    // little magnifying glass drawn from two shapes
-                    Item {
-                        anchors.left: parent.left
-                        anchors.leftMargin: dock.searchCompact ? 16 : 17
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: 16
-                        height: 16
-
-                        Rectangle {
-                            width: 11
-                            height: 11
-                            radius: 5.5
-                            color: "transparent"
-                            border.width: 2
-                            border.color: root.muted
-                        }
-                        Rectangle {
-                            x: 9
-                            y: 10
-                            width: 7
-                            height: 2
-                            radius: 1
-                            color: root.muted
-                            rotation: 45
-                            transformOrigin: Item.Left
-                        }
-                    }
-
-                    Text {
-                        anchors.left: parent.left
-                        anchors.leftMargin: 44
-                        anchors.verticalCenter: parent.verticalCenter
-                        opacity: dock.searchCompact ? 0 : 1
-                        Behavior on opacity { NumberAnimation { duration: root.animMs } }
-                        text: "Search apps..."
-                        color: root.muted
-                        font.pixelSize: 14
-                    }
-
-                    MouseArea {
-                        id: searchMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        onClicked: root.launcherOpen = !root.launcherOpen
-                    }
-                }
-                // ---- Center: the dock, big app icons ----
-                Rectangle {
-                    id: dock
-                    anchors.verticalCenter: parent.verticalCenter
-                    implicitWidth: dockRow.implicitWidth + 28
-                    implicitHeight: root.dockIconSize + 26
-
-                    // ---- Making room when lots of apps are open (icons keep their full size) ----
-                    // 1. the search bar turns into a round button, 2. the dock slides off-centre
-                    // into the free space, 3. the gaps between icons get tighter.
-                    // Only if it still can't fit does the dock shrink, and never below 85%.
-                    property int itemsChanged: 0       // bumped when an icon is added or removed
-                    readonly property int nItems: {
-                        itemsChanged;
-                        let n = 0;
-                        for (let i = 0; i < pinRep.count; i++) { const it = pinRep.itemAt(i); if (it && it.visible) n++; }
-                        for (let i = 0; i < winRep.count; i++) { const it = winRep.itemAt(i); if (it && it.visible) n++; }
-                        return n;
-                    }
-                    function widthFor(pad, gap) {
-                        return nItems * (root.dockIconSize + pad) + Math.max(0, nItems - 2) * gap + 12 + 28;
-                    }
-                    readonly property real sideGap: 24
-                    readonly property real roomWith: barContent.width - 230 - rightIsland.width - 2 * sideGap
-                    readonly property bool searchCompact: widthFor(14, 8) > roomWith
-                    readonly property real room: barContent.width - (searchCompact ? 48 : 230) - rightIsland.width - 2 * sideGap
-                    readonly property bool tight: widthFor(14, 8) > room
-                    readonly property int cellPad: tight ? 4 : 14
-                    readonly property int cellGap: tight ? 2 : 8
-                    scale: widthFor(cellPad, cellGap) > room && room > 0 ? Math.max(0.85, room / widthFor(cellPad, cellGap)) : 1
-                    Behavior on scale { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutCubic } }
-
-                    // centred when there's space, otherwise nudged into the free space between the sides
-                    readonly property real leftEdge: (searchCompact ? 48 : 230) + sideGap
-                    readonly property real rightEdge: barContent.width - rightIsland.width - sideGap
-                    x: Math.max(leftEdge, Math.min((barContent.width - width) / 2, rightEdge - width))
-                    Behavior on x { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutCubic } }
-                    radius: 24
-                    color: root.popupBg
-                    border.width: 1
-                    border.color: root.glassEdge
-                    visible: dockRow.implicitWidth > 0
-
-                    GlassShine { radius: parent.radius; dark: root.dark }
-
-                    RowLayout {
-                        id: dockRow
-                        anchors.centerIn: parent
-                        spacing: 12
-
-                        // ---- Pinned apps ----
-                        Row {
-                            spacing: dock.cellGap
-                            Layout.alignment: Qt.AlignVCenter
-
-                            Repeater {
-                                id: pinRep
-                                onItemAdded: dock.itemsChanged++
-                                onItemRemoved: dock.itemsChanged++
-                                model: pins.adapter.pinned
-
-                                delegate: Item {
-                                    id: pin
-                                    required property string modelData
-
-                                    // Reading .values makes this re-run once apps finish loading
-                                    readonly property var entry: {
-                                        DesktopEntries.applications.values;
-                                        return DesktopEntries.heuristicLookup(modelData);
-                                    }
-                                    readonly property var wins: root.windowsFor(modelData)
-                                    readonly property bool running: wins.length > 0
-                                    readonly property bool isActive: {
-                                        for (let i = 0; i < wins.length; i++)
-                                            if (wins[i].activated) return true;
-                                        return false;
-                                    }
-
-                                    visible: !!entry
-                                    width: visible ? root.dockIconSize + dock.cellPad : 0
-                                    height: root.dockIconSize + 14
-                                    Behavior on width { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutCubic } }
-
-                                    function focusNext() {
-                                        let next = 0;
-                                        for (let i = 0; i < wins.length; i++) {
-                                            if (wins[i].activated) { next = (i + 1) % wins.length; break; }
-                                        }
-                                        wins[next].activate();
-                                    }
-
-                                    function menuEntries() {
-                                        const out = [];
-                                        out.push({ text: "Open new window", action: () => root.launchApp(pin.entry) });
-
-                                        const acts = pin.entry.actions;
-                                        for (let i = 0; i < acts.length && i < 4; i++) {
-                                            const a = acts[i];
-                                            out.push({ text: a.name, action: () => a.execute() });
-                                        }
-
-                                        if (pin.running) {
-                                            out.push({
-                                                text: pin.wins.length > 1 ? "Close all windows" : "Close window",
-                                                danger: true,
-                                                action: () => { for (const w of pin.wins) w.close(); }
-                                            });
-                                        }
-                                        out.push({ text: "Unpin", action: () => root.unpin(pin.modelData) });
-                                        return out;
-                                    }
-
-                                    Rectangle {
-                                        anchors.fill: parent
-                                        radius: 14
-                                        color: pinMouse.containsMouse ? root.overlay
-                                             : (pin.isActive ? root.surface : "transparent")
-                                             Behavior on color { ColorAnimation { duration: root.animMs } }
-                                    }
-
-                                    IconImage {
-                                        anchors.centerIn: parent
-                                        implicitSize: root.dockIconSize
-                                        scale: (root.hoverZoom && pinMouse.containsMouse) ? 1.18 : 1
-                                        Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
-                                        source: pin.entry
-                                            ? Quickshell.iconPath(pin.entry.icon, "application-x-executable") : ""
-                                    }
-
-                                    // Dot under running apps (longer for the focused one)
-                                    Rectangle {
-                                        visible: pin.running
-                                        anchors.horizontalCenter: parent.horizontalCenter
-                                        anchors.bottom: parent.bottom
-                                        anchors.bottomMargin: 3
-                                        width: pin.isActive ? 14 : 5
-                                        height: 3
-                                        radius: 2
-                                        color: root.accent
-                                    }
-
-                                    MouseArea {
-                                        id: pinMouse
-                                        anchors.fill: parent
-                                        hoverEnabled: true
-                                        acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
-                                        onClicked: mouse => {
-                                            if (mouse.button === Qt.RightButton) {
-                                                panel.openMenu(pin, pin.menuEntries());
-                                            } else if (mouse.button === Qt.MiddleButton) {
-                                                root.launchApp(pin.entry);
-                                            } else if (pin.running) {
-                                                pin.focusNext();
-                                            } else {
-                                                root.launchApp(pin.entry);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // ---- Other open windows (not pinned), shown as icons ----
-                        Row {
-                            spacing: dock.cellGap
-                            Layout.alignment: Qt.AlignVCenter
-
-                            Repeater {
-                                id: winRep
-                                onItemAdded: dock.itemsChanged++
-                                onItemRemoved: dock.itemsChanged++
-                                model: ToplevelManager.toplevels
-
-                                delegate: Item {
-                                    id: win
-                                    required property var modelData
-                                    visible: root.bottomShowWindowList && !root.isPinned(modelData.appId)
-                                    width: visible ? root.dockIconSize + dock.cellPad : 0
-                                    height: root.dockIconSize + 14
-                                    Behavior on width { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutCubic } }
-
-                                    Rectangle {
-                                        anchors.fill: parent
-                                        radius: 14
-                                        color: winMouse.containsMouse ? root.overlay
-                                             : (win.modelData.activated ? root.surface : "transparent")
-                                        Behavior on color { ColorAnimation { duration: root.animMs } }
-                                    }
-
-                                    IconImage {
-                                        anchors.centerIn: parent
-                                        implicitSize: root.dockIconSize
-                                        scale: (root.hoverZoom && winMouse.containsMouse) ? 1.18 : 1
-                                        Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
-                                        source: Quickshell.iconPath(win.modelData.appId, "application-x-executable")
-                                    }
-
-                                    // Dot under the window (longer when it's the focused one)
-                                    Rectangle {
-                                        anchors.horizontalCenter: parent.horizontalCenter
-                                        anchors.bottom: parent.bottom
-                                        anchors.bottomMargin: 3
-                                        width: win.modelData.activated ? 14 : 5
-                                        height: 3
-                                        radius: 2
-                                        color: root.accent
-                                    }
-
-                                    MouseArea {
-                                        id: winMouse
-                                        anchors.fill: parent
-                                        hoverEnabled: true
-                                        acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
-                                        onClicked: mouse => {
-                                            if (mouse.button === Qt.RightButton) {
-                                                const out = [];
-                                                out.push({ text: "Close window", danger: true, action: () => win.modelData.close() });
-                                                if (win.modelData.appId)
-                                                    out.push({ text: "Pin to taskbar", action: () => root.pin(win.modelData.appId) });
-                                                panel.openMenu(win, out);
-                                            } else if (mouse.button === Qt.MiddleButton) {
-                                                win.modelData.close();
-                                            } else {
-                                                win.modelData.activate();
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // ---- Right: desktops, tray, media, wallpaper, clock (on one glass island) ----
-                Rectangle {
-                    id: rightIsland
-                    anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: rightGroup.implicitWidth + 32
-                    height: 52
-                    radius: 26
-                    color: root.popupBg
-                    border.width: 1
-                    border.color: root.glassEdge
-
-                    GlassShine { radius: parent.radius; dark: root.dark }
-                }
-
-                RowLayout {
-                    id: rightGroup
-                    anchors.right: parent.right
-                    anchors.rightMargin: 16
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: 18
-
-                    // ---- Desktops (this monitor's own set: click to switch, + to add, right-click to delete) ----
-                    Row {
-                        id: strip
-                        readonly property string monitorName: panel.screen.name
-                        spacing: 6
-                        Layout.alignment: Qt.AlignVCenter
-
-                        ListModel { id: deskModel }
-
-                        // Keeps the animated list in step with the saved desktops
-                        function sync() {
-                            const want = root.deskMap[monitorName] || [];
-                            for (let i = deskModel.count - 1; i >= 0; i--)
-                                if (want.indexOf(deskModel.get(i).wid) < 0) deskModel.remove(i);
-                            for (let i = 0; i < want.length; i++) {
-                                if (i < deskModel.count && deskModel.get(i).wid === want[i]) continue;
-                                let found = -1;
-                                for (let j = i + 1; j < deskModel.count; j++)
-                                    if (deskModel.get(j).wid === want[i]) found = j;
-                                if (found >= 0) deskModel.move(found, i, 1);
-                                else deskModel.insert(i, { wid: want[i] });
-                            }
-                        }
-
-                        Connections {
-                            target: root
-                            function onDeskMapChanged() { strip.sync(); }
-                        }
-                        Component.onCompleted: sync()
-
-                        ListView {
-                            id: deskView
-                            orientation: ListView.Horizontal
-                            interactive: false
-                            spacing: 6
-                            width: contentWidth
-                            height: 28
-                            model: deskModel
-
-                            // New desktops pop in, deleted ones shrink away, the rest slide over
-                            add: Transition {
-                                ParallelAnimation {
-                                    NumberAnimation { property: "scale"; from: 0; to: 1; duration: root.animMs * 3; easing.type: Easing.OutBack }
-                                    NumberAnimation { property: "opacity"; from: 0; to: 1; duration: root.animMs * 2 }
-                                }
-                            }
-                            remove: Transition {
-                                ParallelAnimation {
-                                    NumberAnimation { property: "scale"; to: 0; duration: root.animMs * 2; easing.type: Easing.InBack }
-                                    NumberAnimation { property: "opacity"; to: 0; duration: root.animMs * 2 }
-                                }
-                            }
-                            displaced: Transition {
-                                NumberAnimation { properties: "x"; duration: root.animMs * 2; easing.type: Easing.OutCubic }
-                            }
-
-                            delegate: Item {
-                                id: dk
-                                required property int wid
-                                required property int index
-                                readonly property bool isActive: root.activeWsId(strip.monitorName) === dk.wid
-                                readonly property int windows: root.wsWindowCount(dk.wid)
-                                width: pill.width
-                                height: 28
-
-                                Rectangle {
-                                    id: pill
-                                    width: dk.isActive ? 52 : 28
-                                    height: 28
-                                    radius: 14
-                                    color: dk.isActive ? root.accent : (dkMouse.containsMouse ? root.overlay : root.surface)
-                                    border.width: 1
-                                    border.color: root.glassEdge
-                                    Behavior on width { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutBack } }
-                                    Behavior on color { ColorAnimation { duration: root.animMs } }
-
-                                    Text {
-                                        anchors.centerIn: parent
-                                        text: dk.index + 1
-                                        color: dk.isActive ? root.bg : root.fg
-                                        font.pixelSize: 13
-                                        font.bold: dk.isActive
-                                    }
-
-                                    // Small dot when a desktop has windows on it
-                                    Rectangle {
-                                        visible: dk.windows > 0 && !dk.isActive
-                                        anchors.horizontalCenter: parent.horizontalCenter
-                                        anchors.bottom: parent.bottom
-                                        anchors.bottomMargin: 3
-                                        width: 4
-                                        height: 4
-                                        radius: 2
-                                        color: root.accent
-                                    }
-                                }
-
-                                MouseArea {
-                                    id: dkMouse
-                                    anchors.fill: parent
-                                    hoverEnabled: true
-                                    acceptedButtons: Qt.LeftButton | Qt.RightButton
-                                    onClicked: mouse => {
-                                        if (mouse.button === Qt.RightButton) {
-                                            const out = [];
-                                            out.push({ text: "Go to desktop " + (dk.index + 1), action: () => root.gotoDesktop(strip.monitorName, dk.wid) });
-                                            if (deskModel.count > 1)
-                                                out.push({ text: "Delete this desktop", danger: true, action: () => root.removeDesktop(strip.monitorName, dk.wid) });
-                                            panel.openMenu(dk, out);
-                                        } else {
-                                            root.gotoDesktop(strip.monitorName, dk.wid);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // Add button: the plus spins when you hover it
-                        Rectangle {
-                            id: addBtn
-                            visible: deskModel.count < root.maxDesktops
-                            width: 28
-                            height: 28
-                            radius: 14
-                            color: addMouse.containsMouse ? root.overlay : root.surface
-                            border.width: 1
-                            border.color: root.glassEdge
-                            rotation: addMouse.containsMouse ? 90 : 0
-                            scale: addMouse.pressed ? 0.85 : 1
-                            Behavior on color { ColorAnimation { duration: root.animMs } }
-                            Behavior on rotation { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutBack } }
-                            Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutCubic } }
-
-                            Text {
-                                anchors.centerIn: parent
-                                text: "+"
-                                color: root.fg
-                                font.pixelSize: 17
-                            }
-
-                            MouseArea {
-                                id: addMouse
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                onClicked: root.addDesktop(strip.monitorName)
-                            }
-                        }
-                    }
-                    // ---- System tray ----
-                    Row {
-                        visible: root.bottomShowTray
-                        spacing: 8
-                        Layout.alignment: Qt.AlignVCenter
-
-                        Repeater {
-                            model: SystemTray.items
-
-                            delegate: Item {
-                                id: trayItem
-                                required property var modelData
-                                width: 22
-                                height: 22
-
-                                IconImage {
-                                    anchors.fill: parent
-                                    source: trayItem.modelData.icon
-                                }
-
-                                MouseArea {
-                                    anchors.fill: parent
-                                    acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
-                                    onClicked: mouse => {
-                                        const p = trayItem.mapToItem(null, 0, 0);
-                                        if (mouse.button === Qt.LeftButton && !trayItem.modelData.onlyMenu) {
-                                            trayItem.modelData.activate();
-                                        } else if (mouse.button === Qt.MiddleButton) {
-                                            trayItem.modelData.secondaryActivate();
-                                        } else if (trayItem.modelData.hasMenu) {
-                                            trayItem.modelData.display(panel, p.x, p.y);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // ---- Media button (only shows when something is playing/paused) ----
-                    Rectangle {
-                        id: mediaBtn
-                        visible: root.bottomShowMedia && root.player !== null
-                        Layout.alignment: Qt.AlignVCenter
-                        implicitWidth: Math.min(190, mediaLabel.implicitWidth + 24)
-                        implicitHeight: 30
-                        radius: 8
-                        color: mediaPopup.visible ? root.overlay : root.surface
-                        Behavior on color { ColorAnimation { duration: root.animMs } }
-                        border.width: 1
-                        border.color: root.glassEdge
-
-                        Text {
-                            id: mediaLabel
-                            anchors.centerIn: parent
-                            width: Math.min(implicitWidth, 166)
-                            elide: Text.ElideRight
-                            color: root.fg
-                            font.pixelSize: 12
-                            text: root.player
-                                ? (root.playing(root.player) ? "▶  " : "❚❚  ")
-                                  + (root.player.trackTitle || root.player.identity)
-                                  + (root.player.trackArtist ? " – " + root.player.trackArtist : "")
-                                : ""
-                        }
-
-                        MouseArea {
-                            anchors.fill: parent
-                            acceptedButtons: Qt.LeftButton | Qt.MiddleButton
-                            onClicked: mouse => {
-                                if (mouse.button === Qt.MiddleButton) {
-                                    if (root.player && root.player.canTogglePlaying) root.player.togglePlaying();
-                                    return;
-                                }
-                                // Clicking the button also dismisses the popup; don't instantly reopen it
-                                if (Date.now() - panel.mediaClosedAt < 250) return;
-                                if (mediaPopup.visible) {
-                                    mediaPopup.visible = false;
-                                    return;
-                                }
-                                const p = mediaBtn.mapToItem(null, 0, 0);
-                                mediaPopup.anchor.rect = Qt.rect(p.x, p.y, mediaBtn.width, mediaBtn.height);
-                                mediaPopup.visible = true;
-                            }
-                        }
-                    }
-
-                    // ---- Wallpaper button (middle click = random) ----
-                    Rectangle {
-                        id: wallBtn
-                        visible: root.bottomShowWallpaperButton
-                        Layout.alignment: Qt.AlignVCenter
-                        implicitWidth: 36
-                        implicitHeight: 32
-                        radius: 10
-                        color: (root.wallPickerOpen || wallMouse.containsMouse) ? root.overlay : root.surface
-                        scale: wallMouse.pressed ? 0.92 : (wallMouse.containsMouse ? 1.08 : 1)
-                        Behavior on color { ColorAnimation { duration: root.animMs } }
-                        Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
-                        border.width: 1
-                        border.color: root.glassEdge
-
-                        Text {
-                            anchors.centerIn: parent
-                            text: "\uf03e"
-                            color: root.accent
-                            font.family: root.iconFont
-                            font.pixelSize: 15
-                        }
-
-                        MouseArea {
-                            id: wallMouse
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            acceptedButtons: Qt.LeftButton | Qt.MiddleButton
-                            onClicked: mouse => {
-                                if (mouse.button === Qt.MiddleButton) {
-                                    root.randomWallpaper();
-                                    return;
-                                }
-                                root.wallPickerOpen = !root.wallPickerOpen;
-                            }
-                        }
-                    }
-
-                    // ---- Updates waiting (only shows when there are some) ----
-                    Rectangle {
-                        id: updBtn
-                        visible: root.updTotal > 0 || root.updRunning
-                        Layout.alignment: Qt.AlignVCenter
-                        implicitWidth: updRow.implicitWidth + 20
-                        implicitHeight: 32
-                        radius: 10
-                        color: updMouse.containsMouse ? root.overlay : root.surface
-                        scale: updMouse.pressed ? 0.94 : (updMouse.containsMouse ? 1.05 : 1)
-                        border.width: 1
-                        border.color: root.glassEdge
-                        clip: true
-                        Behavior on implicitWidth { NumberAnimation { duration: root.animMs * 1.5; easing.type: Easing.OutCubic } }
-                        Behavior on color { ColorAnimation { duration: root.animMs } }
-                        Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
-
-                        Row {
-                            id: updRow
-                            anchors.centerIn: parent
-                            spacing: 7
-                            Text {
-                                id: updIcon
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: root.updRunning ? "" : ""
-                                color: root.accent
-                                font.family: root.iconFont
-                                font.pixelSize: 14
-                                RotationAnimation on rotation {
-                                    running: root.updRunning
-                                    from: 0
-                                    to: 360
-                                    duration: 1200
-                                    loops: Animation.Infinite
-                                    onStopped: updIcon.rotation = 0
-                                }
-                            }
-                            Text {
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: root.updRunning ? "Updating…"
-                                    : updMouse.containsMouse ? root.updSummary + "  ·  update now"
-                                    : String(root.updTotal)
-                                color: root.fg
-                                font.pixelSize: 12
-                                font.bold: true
-                            }
-                        }
-
-                        MouseArea {
-                            id: updMouse
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            acceptedButtons: Qt.LeftButton | Qt.RightButton
-                            onClicked: mouse => {
-                                if (mouse.button === Qt.RightButton) root.checkUpdates();
-                                else root.runUpdates();
-                            }
-                        }
-                    }
-
-                    // ---- Game mode is on: a small gamepad you can click to turn it off ----
-                    Rectangle {
-                        visible: root.gameMode
-                        Layout.alignment: Qt.AlignVCenter
-                        implicitWidth: 36
-                        implicitHeight: 32
-                        radius: 10
-                        color: gmMouse.containsMouse ? root.overlay : root.accent
-                        border.width: 1
-                        border.color: root.glassEdge
-                        Text {
-                            anchors.centerIn: parent
-                            text: ""
-                            color: gmMouse.containsMouse ? root.accent : root.bg
-                            font.family: root.iconFont
-                            font.pixelSize: 15
-                        }
-                        MouseArea {
-                            id: gmMouse
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: root.setGameMode(false)
-                        }
-                    }
-
-                    // ---- Clock ----
-                    Text {
-                        Layout.alignment: Qt.AlignVCenter
-                        visible: root.bottomShowClock
-                        text: Qt.formatDateTime(clock.date, "ddd MMM d  " + root.timePattern)
-                        color: root.fg
-                        font.pixelSize: 13
+                MouseArea {
+                    id: bottomTabMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        panel.tabPeek = false;
+                        root.launcherOpen = !root.launcherOpen;
                     }
                 }
             }
@@ -7797,13 +7154,19 @@ ShellRoot {
             required property var modelData
             screen: modelData
 
-            // Only show on the monitor that has focus
-            visible: root.launcherOpen
-                && (!Hyprland.focusedMonitor || Hyprland.focusedMonitor.name === modelData.name)
+            // Only show on the monitor that has focus. It stays up a moment after closing,
+            // while the card shrinks back into the dock pill.
+            readonly property bool focusedHere: !Hyprland.focusedMonitor || Hyprland.focusedMonitor.name === modelData.name
+            property bool grown: false
+            visible: focusedHere && (root.launcherOpen || card.height > card.pillH + 1)
+            Connections {
+                target: root
+                function onLauncherOpenChanged() { launcher.grown = root.launcherOpen; }
+            }
 
             WlrLayershell.layer: WlrLayer.Overlay
             WlrLayershell.namespace: "quickshell-launcher"
-            WlrLayershell.keyboardFocus: WlrKeyboardFocus.Exclusive
+            WlrLayershell.keyboardFocus: root.launcherOpen ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
             exclusionMode: ExclusionMode.Ignore
             anchors {
                 top: true
@@ -7811,7 +7174,14 @@ ShellRoot {
                 left: true
                 right: true
             }
-            color: "#2a000000"
+            color: "transparent"
+            // gentle dim behind the launcher
+            Rectangle {
+                anchors.fill: parent
+                color: "black"
+                opacity: launcher.grown ? 0.16 : 0
+                Behavior on opacity { NumberAnimation { duration: root.animMs * 2 } }
+            }
 
             readonly property string query: searchInput.text
             readonly property bool searching: query.trim() !== ""
@@ -7860,6 +7230,26 @@ ShellRoot {
                 return entry ? (entry.startupClass || entry.id) : "";
             }
 
+            // right-click menu for the pinned apps along the bottom
+            property var menuItems: []
+            property real menuX: 0
+            onGrownChanged: menuItems = []
+            function openPinMenu(item, key, entry, wins) {
+                const out = [];
+                out.push({ text: "Open new window", action: () => { root.launcherOpen = false; root.launchApp(entry); } });
+                const acts = entry ? entry.actions : [];
+                for (let i = 0; i < acts.length && i < 3; i++) {
+                    const a = acts[i];
+                    out.push({ text: a.name, action: () => { root.launcherOpen = false; a.execute(); } });
+                }
+                if (wins.length > 0)
+                    out.push({ text: wins.length > 1 ? "Close all windows" : "Close window", danger: true,
+                               action: () => { for (const w of wins) w.close(); } });
+                out.push({ text: "Unpin", action: () => root.unpin(key) });
+                menuX = item.mapToItem(card, item.width / 2, 0).x;
+                menuItems = out;
+            }
+
             function togglePin(entry) {
                 const key = pinKey(entry);
                 if (key === "") return;
@@ -7873,18 +7263,22 @@ ShellRoot {
                 onClicked: root.launcherOpen = false
             }
 
+            // The card grows out of the dock pill at the bottom, and shrinks back into it when closed
             Rectangle {
                 id: card
-                opacity: 0
-                scale: 0.94
-                NumberAnimation on opacity { running: launcher.visible; from: 0; to: 1; duration: root.animMs * 1.5; easing.type: Easing.OutCubic }
-                NumberAnimation on scale { running: launcher.visible; from: 0.94; to: 1; duration: root.animMs * 2; easing.type: Easing.OutBack }
-
-                width: 760
-                height: 560
-                anchors.centerIn: parent
-                anchors.verticalCenterOffset: -30
-                radius: 26
+                readonly property real pillW: root.dockPillW
+                readonly property real pillH: 22
+                readonly property real pillGap: -10         // the tab hangs off the bottom edge like this
+                width: launcher.grown ? 760 : pillW
+                height: launcher.grown ? 640 : pillH
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: launcher.grown ? 14 : pillGap
+                radius: launcher.grown ? 28 : 11
+                Behavior on width { NumberAnimation { duration: root.animMs * 2.6; easing.type: Easing.OutBack; easing.overshoot: 0.6 } }
+                Behavior on height { NumberAnimation { duration: root.animMs * 2.6; easing.type: Easing.OutBack; easing.overshoot: 0.6 } }
+                Behavior on anchors.bottomMargin { NumberAnimation { duration: root.animMs * 2.6; easing.type: Easing.OutCubic } }
+                Behavior on radius { NumberAnimation { duration: root.animMs * 2 } }
                 color: root.popupBg
                 border.color: root.glassEdge
                 border.width: 1
@@ -7902,13 +7296,18 @@ ShellRoot {
                 }
                 // thin bright edge along the top
 
-                // Swallow clicks inside the card
-                MouseArea { anchors.fill: parent }
+                // Swallow clicks inside the card (and close the little right-click menu)
+                MouseArea { anchors.fill: parent; onClicked: launcher.menuItems = [] }
 
                 ColumnLayout {
-                    anchors.fill: parent
-                    anchors.margins: 20
+                    width: 760 - 40
+                    height: 640 - 40
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    anchors.bottom: parent.bottom
+                    anchors.bottomMargin: 20
                     spacing: 14
+                    opacity: launcher.grown ? 1 : 0
+                    Behavior on opacity { NumberAnimation { duration: launcher.grown ? root.animMs * 3 : root.animMs; easing.type: Easing.OutCubic } }
 
                     // ---- Search box ----
                     Rectangle {
@@ -8162,13 +7561,147 @@ ShellRoot {
                         }
                     }
 
-                    // ---- Hints ----
-                    Text {
-                        Layout.alignment: Qt.AlignHCenter
-                        text: "Enter  open      ↑ ↓ Tab  move      Right-click  pin / unpin      Ctrl+Tab  switch tab      Esc  close"
-                        color: root.muted
-                        font.pixelSize: 11
-                        opacity: 0.8
+                    // ---- Taskbar: your pinned apps along the bottom ----
+                    Rectangle {
+                        Layout.fillWidth: true
+                        implicitHeight: 1
+                        color: root.glassEdge
+                    }
+                    Item {
+                        Layout.fillWidth: true
+                        implicitHeight: 58
+
+                        Row {
+                            id: taskRow
+                            anchors.centerIn: parent
+                            spacing: 6
+
+                            Repeater {
+                                model: pins.adapter.pinned
+
+                                delegate: Item {
+                                    id: tpin
+                                    required property string modelData
+                                    readonly property var entry: {
+                                        DesktopEntries.applications.values;
+                                        return DesktopEntries.heuristicLookup(modelData);
+                                    }
+                                    readonly property var wins: root.windowsFor(modelData)
+                                    readonly property bool running: wins.length > 0
+                                    readonly property bool isActive: {
+                                        for (let i = 0; i < wins.length; i++)
+                                            if (wins[i].activated) return true;
+                                        return false;
+                                    }
+                                    visible: !!entry
+                                    width: visible ? 54 : 0
+                                    height: 54
+
+                                    Rectangle {
+                                        anchors.fill: parent
+                                        radius: 16
+                                        color: tpinMouse.containsMouse ? root.overlay : (tpin.isActive ? root.surface : "transparent")
+                                        Behavior on color { ColorAnimation { duration: root.animMs } }
+                                    }
+                                    IconImage {
+                                        anchors.centerIn: parent
+                                        implicitSize: 38
+                                        scale: tpinMouse.pressed ? 0.85 : (tpinMouse.containsMouse ? 1.15 : 1)
+                                        Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+                                        source: tpin.entry ? Quickshell.iconPath(tpin.entry.icon, "application-x-executable") : ""
+                                    }
+                                    // dot under open apps (longer for the focused one)
+                                    Rectangle {
+                                        visible: tpin.running
+                                        anchors.horizontalCenter: parent.horizontalCenter
+                                        anchors.bottom: parent.bottom
+                                        anchors.bottomMargin: 2
+                                        width: tpin.isActive ? 14 : 5
+                                        height: 3
+                                        radius: 2
+                                        color: root.accent
+                                    }
+                                    MouseArea {
+                                        id: tpinMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
+                                        onClicked: mouse => {
+                                            if (mouse.button === Qt.RightButton) {
+                                                launcher.openPinMenu(tpin, tpin.modelData, tpin.entry, tpin.wins);
+                                                return;
+                                            }
+                                            root.launcherOpen = false;
+                                            if (mouse.button === Qt.MiddleButton || !tpin.running) root.launchApp(tpin.entry);
+                                            else {
+                                                // already open: bring it up (or the next one if it's focused)
+                                                let next = 0;
+                                                for (let i = 0; i < tpin.wins.length; i++)
+                                                    if (tpin.wins[i].activated) { next = (i + 1) % tpin.wins.length; break; }
+                                                tpin.wins[next].activate();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Text {
+                            anchors.centerIn: parent
+                            visible: taskRow.width === 0
+                            text: "Right-click any app above to pin it here"
+                            color: root.muted
+                            font.pixelSize: 12
+                        }
+                    }
+                }
+
+                // ---- right-click menu for the taskbar apps ----
+                Rectangle {
+                    id: pinMenu
+                    visible: launcher.menuItems.length > 0
+                    x: Math.max(10, Math.min(card.width - width - 10, launcher.menuX - width / 2))
+                    y: card.height - 92 - height
+                    width: 200
+                    height: pinMenuCol.implicitHeight + 12
+                    radius: 14
+                    color: root.bg
+                    border.width: 1
+                    border.color: root.glassEdge
+                    z: 50
+                    Column {
+                        id: pinMenuCol
+                        anchors.centerIn: parent
+                        width: parent.width - 12
+                        Repeater {
+                            model: launcher.menuItems
+                            delegate: Rectangle {
+                                id: pmi
+                                required property var modelData
+                                width: pinMenuCol.width
+                                height: 32
+                                radius: 9
+                                color: pmiMouse.containsMouse ? root.overlay : "transparent"
+                                Text {
+                                    anchors.left: parent.left
+                                    anchors.leftMargin: 10
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: pmi.modelData.text
+                                    color: pmi.modelData.danger ? root.danger : root.fg
+                                    font.pixelSize: 13
+                                }
+                                MouseArea {
+                                    id: pmiMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    onClicked: {
+                                        const act = pmi.modelData.action;
+                                        launcher.menuItems = [];
+                                        act();
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
