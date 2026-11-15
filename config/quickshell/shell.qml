@@ -262,7 +262,35 @@ ShellRoot {
 
     function setDevice(n) {
         if (devPicker === "in") Pipewire.preferredDefaultAudioSource = n;
-        else Pipewire.preferredDefaultAudioSink = n;
+        else {
+            Pipewire.preferredDefaultAudioSink = n;
+            // also move what's already playing over (and unmute it), so the sound really switches
+            Quickshell.execDetached(["bash", audioScript, "sink", n.name]);
+        }
+        devPicker = "";
+    }
+
+    // Monitor / TV speakers (HDMI or DisplayPort) that are plugged in but switched off on the graphics card.
+    // They don't show as an output until the card is told to use them, which is what picking one does.
+    readonly property string audioScript: Quickshell.env("HOME") + "/.config/quickshell/scripts/audio.sh"
+    property var hdmiOptions: []           // [{ card, profile, name }]
+    Process {
+        id: hdmiList
+        command: ["bash", root.audioScript, "hdmi"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                const out = [];
+                for (const line of text.split("\n")) {
+                    const f = line.split("\t");
+                    if (f.length >= 2 && f[0]) out.push({ card: f[0], profile: f[1], name: f[2] || f[1] });
+                }
+                root.hdmiOptions = out;
+            }
+        }
+    }
+    onDevPickerChanged: if (devPicker === "out" && !hdmiList.running) hdmiList.running = true
+    function useHdmi(o) {
+        Quickshell.execDetached(["bash", audioScript, "use", o.card, o.profile]);
         devPicker = "";
     }
 
@@ -2833,6 +2861,82 @@ ShellRoot {
         }
     }
 
+    // ---------- Bluetooth page (hub: tap the Bluetooth tile) ----------
+    readonly property string btScript: Quickshell.env("HOME") + "/.config/quickshell/scripts/bt.sh"
+    property var btDevices: []               // [{ mac, name, paired, connected, icon, battery }]
+    property bool btScanning: false
+    property string btBusy: ""               // the device something is happening to right now
+    property string btMsg: ""
+    function btRefresh() { if (!btList.running) btList.running = true; }
+    Process {
+        id: btList
+        command: ["bash", root.btScript, "list"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                const out = [];
+                for (const line of text.split("\n")) {
+                    const f = line.split("\t");
+                    if (f.length < 4 || !f[0]) continue;
+                    out.push({ mac: f[0], name: f[1] || f[0], paired: f[2] === "yes", connected: f[3] === "yes",
+                               icon: f[4] || "", battery: f[5] ? parseInt(f[5]) : -1 });
+                }
+                // connected first, then the ones you've paired, then new ones
+                out.sort((a, b) => (b.connected - a.connected) || (b.paired - a.paired) || a.name.localeCompare(b.name));
+                root.btDevices = out;
+            }
+        }
+    }
+    Process {
+        id: btScanProc
+        command: ["bash", root.btScript, "scan"]
+        onRunningChanged: { root.btScanning = running; if (!running) root.btRefresh(); }
+    }
+    Process {
+        id: btAct
+        property string what: ""
+        stdout: StdioCollector {
+            onStreamFinished: {
+                const ok = text.trim() === "ok";
+                if (btAct.what === "pair") root.btMsg = ok ? "Connected!" : "Couldn't connect. Make sure it's in pairing mode and try again.";
+                else if (btAct.what === "connect") root.btMsg = ok ? "" : "Couldn't connect. Is it turned on and nearby?";
+                root.btBusy = "";
+                root.btRefresh();
+                root.run("true");            // update the Bluetooth tile too
+            }
+        }
+    }
+    function btDo(what, mac) {
+        if (btAct.running) return;
+        btBusy = mac;
+        btMsg = what === "pair" ? "Pairing… this takes about 20 seconds" : "";
+        btAct.what = what;
+        btAct.command = ["bash", btScript, what, mac];
+        btAct.running = true;
+    }
+    function btPower(on) {
+        btAct.what = "power";
+        btAct.command = ["bash", btScript, "power", on ? "on" : "off"];
+        btAct.running = true;
+    }
+    function btScan() { if (!btScanProc.running) btScanProc.running = true; }
+    function btIconFor(icon, name) {
+        const s = (icon + " " + name).toLowerCase();
+        if (/gaming|controller|gamepad|xbox|dualsense|dualshock|pro controller|joy-con/.test(s)) return "";
+        if (/audio|headset|headphone|buds|airpods|speaker/.test(s)) return "";
+        if (/mouse/.test(s)) return "";
+        if (/keyboard/.test(s)) return "";
+        if (/phone/.test(s)) return "";
+        return "";
+    }
+    // keep the list fresh while the page is open
+    Timer {
+        interval: root.btScanning ? 2000 : 5000
+        repeat: true
+        running: root.hubOpen && root.hubTab === 10
+        triggeredOnStart: true
+        onTriggered: root.btRefresh()
+    }
+
     // ----- Network, Bluetooth and night light state (checked every few seconds) -----
     property bool wifiOn: false
     property string netKind: ""      // "wifi", "ethernet" or "" when offline
@@ -4480,6 +4584,47 @@ ShellRoot {
                                             }
                                         }
 
+                                        // monitor / TV speakers that need switching on first
+                                        Text {
+                                            visible: root.devPicker === "out" && root.hdmiOptions.length > 0
+                                            topPadding: 6
+                                            text: "Monitor & TV speakers"
+                                            color: root.muted
+                                            font.pixelSize: 11
+                                        }
+                                        Repeater {
+                                            model: root.devPicker === "out" ? root.hdmiOptions : []
+                                            delegate: Rectangle {
+                                                id: hdRow
+                                                required property var modelData
+                                                width: devCol.width
+                                                height: 44
+                                                radius: 12
+                                                color: hdMouse.containsMouse ? root.overlay : root.surface
+                                                RowLayout {
+                                                    anchors.fill: parent
+                                                    anchors.leftMargin: 12
+                                                    anchors.rightMargin: 12
+                                                    spacing: 10
+                                                    Text { Layout.preferredWidth: 16; text: "\uf108"; color: root.accent; font.family: root.iconFont; font.pixelSize: 13 }
+                                                    Text {
+                                                        Layout.fillWidth: true
+                                                        text: hdRow.modelData.name
+                                                        color: root.fg
+                                                        font.pixelSize: 13
+                                                        elide: Text.ElideRight
+                                                    }
+                                                }
+                                                MouseArea {
+                                                    id: hdMouse
+                                                    anchors.fill: parent
+                                                    hoverEnabled: true
+                                                    cursorShape: Qt.PointingHandCursor
+                                                    onClicked: root.useHdmi(hdRow.modelData)
+                                                }
+                                            }
+                                        }
+
                                         Text {
                                             visible: devCard.list.length === 0
                                             width: devCol.width
@@ -4628,9 +4773,9 @@ ShellRoot {
                                                 },
                                                 {
                                                     icon: "", title: "Bluetooth",
-                                                    sub: root.btState === "none" ? "Not available" : (root.btState === "yes" ? "On" : "Off"),
+                                                    sub: root.btState === "none" ? "Not available" : (root.btState === "yes" ? (root.btDevices.some(d => d.connected) ? root.btDevices.filter(d => d.connected)[0].name : "On · tap for devices") : "Off · tap for devices"),
                                                     active: root.btState === "yes", ok: root.btState !== "none",
-                                                    run: () => root.run("bluetoothctl power " + (root.btState === "yes" ? "off" : "on"))
+                                                    run: () => { root.hubTab = 10; root.btRefresh(); }
                                                 },
                                                 {
                                                     icon: "", title: "Do not disturb",
@@ -7640,6 +7785,143 @@ ShellRoot {
                                 Loader {
                                     active: root.hubTab === 9
                                     sourceComponent: inputPage
+                                }
+                                // ===== 10: Bluetooth (opened from the Bluetooth tile) =====
+                                ColumnLayout {
+                                    spacing: 12
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 10
+                                        BarButton {
+                                            theme: root
+                                            icon: ""
+                                            label: "Home"
+                                            onClicked: mouse => root.hubTab = 0
+                                        }
+                                        Text { text: ""; color: root.accent; font.family: root.iconFont; font.pixelSize: 18 }
+                                        Text { text: "Bluetooth"; color: root.fg; font.pixelSize: 18; font.bold: true }
+                                        Item { Layout.fillWidth: true }
+                                        SportChip {
+                                            theme: root
+                                            icon: root.btScanning ? "" : ""
+                                            label: root.btScanning ? "Looking for devices…" : "Find new devices"
+                                            active: root.btScanning
+                                            onClicked: root.btScan()
+                                        }
+                                        SportChip {
+                                            theme: root
+                                            label: root.btState === "yes" ? "On" : "Off"
+                                            icon: ""
+                                            active: root.btState === "yes"
+                                            onClicked: root.btPower(root.btState !== "yes")
+                                        }
+                                    }
+
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: root.btMsg !== "" ? root.btMsg
+                                            : "Controller: put it in pairing mode (PlayStation: hold Create + PS · Xbox: hold the pair button · Switch: hold sync), press Find new devices, then click it."
+                                        color: root.btMsg.indexOf("Couldn't") === 0 ? root.danger : root.muted
+                                        font.pixelSize: 12
+                                        wrapMode: Text.Wrap
+                                    }
+
+                                    HubCard {
+                                        theme: root
+                                        Layout.fillWidth: true
+                                        Layout.fillHeight: true
+
+                                        ListView {
+                                            id: btView
+                                            anchors.fill: parent
+                                            anchors.margins: 10
+                                            clip: true
+                                            spacing: 6
+                                            boundsBehavior: Flickable.StopAtBounds
+                                            model: root.btDevices
+                                            delegate: Rectangle {
+                                                id: btd
+                                                required property var modelData
+                                                readonly property bool busy: root.btBusy === btd.modelData.mac
+                                                width: btView.width
+                                                height: 58
+                                                radius: 16
+                                                color: btdMouse.containsMouse ? root.overlay : root.surface
+                                                border.width: btd.modelData.connected ? 2 : 1
+                                                border.color: btd.modelData.connected ? root.accent : root.glassEdge
+
+                                                RowLayout {
+                                                    anchors.fill: parent
+                                                    anchors.leftMargin: 14
+                                                    anchors.rightMargin: 10
+                                                    spacing: 12
+                                                    Rectangle {
+                                                        Layout.preferredWidth: 38
+                                                        Layout.preferredHeight: 38
+                                                        radius: 19
+                                                        color: btd.modelData.connected ? root.accent : root.overlay
+                                                        Text {
+                                                            anchors.centerIn: parent
+                                                            text: root.btIconFor(btd.modelData.icon, btd.modelData.name)
+                                                            font.family: root.iconFont
+                                                            font.pixelSize: 16
+                                                            color: btd.modelData.connected ? root.bg : root.fg
+                                                        }
+                                                    }
+                                                    ColumnLayout {
+                                                        Layout.fillWidth: true
+                                                        spacing: 2
+                                                        Text { Layout.fillWidth: true; text: btd.modelData.name; color: root.fg; font.pixelSize: 14; font.bold: true; elide: Text.ElideRight }
+                                                        Text {
+                                                            text: btd.busy ? "Working…"
+                                                                : btd.modelData.connected ? "Connected" + (btd.modelData.battery >= 0 ? " · " + btd.modelData.battery + "% battery" : "")
+                                                                : btd.modelData.paired ? "Paired · click to connect" : "New · click to pair"
+                                                            color: btd.modelData.connected ? root.accent : root.muted
+                                                            font.pixelSize: 11
+                                                        }
+                                                    }
+                                                    SportChip {
+                                                        visible: !btd.busy
+                                                        theme: root
+                                                        label: btd.modelData.connected ? "Disconnect" : (btd.modelData.paired ? "Connect" : "Pair")
+                                                        active: !btd.modelData.connected && !btd.modelData.paired
+                                                        onClicked: root.btDo(btd.modelData.connected ? "disconnect" : (btd.modelData.paired ? "connect" : "pair"), btd.modelData.mac)
+                                                    }
+                                                    SportChip {
+                                                        visible: !btd.busy && btd.modelData.paired
+                                                        theme: root
+                                                        label: "Forget"
+                                                        onClicked: root.btDo("remove", btd.modelData.mac)
+                                                    }
+                                                    Text {
+                                                        visible: btd.busy
+                                                        text: ""
+                                                        font.family: root.iconFont
+                                                        font.pixelSize: 16
+                                                        color: root.accent
+                                                        RotationAnimation on rotation { running: btd.busy; loops: Animation.Infinite; from: 0; to: 360; duration: 1000 }
+                                                    }
+                                                }
+                                                MouseArea {
+                                                    id: btdMouse
+                                                    anchors.fill: parent
+                                                    z: -1
+                                                    hoverEnabled: true
+                                                    cursorShape: Qt.PointingHandCursor
+                                                    onClicked: if (!btd.busy && !btd.modelData.connected)
+                                                        root.btDo(btd.modelData.paired ? "connect" : "pair", btd.modelData.mac)
+                                                }
+                                            }
+                                        }
+                                        Text {
+                                            anchors.centerIn: parent
+                                            visible: btView.count === 0
+                                            text: root.btState === "yes" ? (root.btScanning ? "Looking…" : "No devices yet. Press Find new devices.") : "Bluetooth is off"
+                                            color: root.muted
+                                            font.pixelSize: 13
+                                        }
+                                    }
                                 }
                             }
                         }
