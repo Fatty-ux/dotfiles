@@ -2241,10 +2241,125 @@ ShellRoot {
         updChecking = true;
         updCheck.running = true;
     }
+    // Update button: with automatic updates set up, this just starts the update in the
+    // background (no terminal, no password). Without it, it runs the one-time setup first.
+    // AUR packages are never installed without you: if only those are left, it opens a terminal for them.
+    property bool updAuto: false          // automatic updates set up (scripts/autoupdate-setup.sh)
+    property string updState: ""          // last result: running, ok, restart, failed, busy
+    property double updStateAt: 0
+    readonly property string autoUpdSetup: Quickshell.env("HOME") + "/.config/quickshell/scripts/autoupdate-setup.sh"
+
     function runUpdates() {
         if (updRunning) return;
+        if (!updAuto) {                    // first time: set it up (asks for the password once), then update
+            updRunning = true;
+            updSetup.running = true;
+            return;
+        }
+        if (updState === "failed") {       // the automatic one got stuck: do it in a terminal so you can answer
+            updRunning = true;
+            updState = "";
+            updRun.running = true;
+            return;
+        }
+        if (updSystem + updFlatpak === 0 && updAur > 0) {   // only AUR left: that needs you
+            updRunning = true;
+            updAurRun.running = true;
+            return;
+        }
         updRunning = true;
-        updRun.running = true;
+        updState = "running";
+        Quickshell.execDetached(["sh", "-c", "systemctl start --no-block joeos-update.service; "
+            + "command -v flatpak >/dev/null && flatpak update -y --noninteractive --user >/dev/null 2>&1; true"]);
+        updWatch.restart();
+    }
+
+    Process {
+        id: updSetup
+        command: ["kitty", "--class", "joeos-update", "--title", "Set up automatic updates", "bash", root.autoUpdSetup]
+        onExited: {
+            root.updRunning = false;
+            updAutoCheck.running = true;
+            updAfterSetup.start();
+        }
+    }
+    Timer { id: updAfterSetup; interval: 1500; onTriggered: if (root.updAuto) root.runUpdates() }
+
+    Process {
+        id: updAurRun
+        command: ["kitty", "--class", "joeos-update", "--title", "AUR updates", "sh", "-c",
+            "printf '\\n  \\033[1mUpdating AUR packages\\033[0m\\n\\n'; "
+            + "if command -v paru >/dev/null 2>&1; then paru -Sua; else yay -Sua; fi; "
+            + "printf '\\n  All done! Press Enter to close. '; read _"]
+        onExited: {
+            root.updRunning = false;
+            root.checkUpdates();
+        }
+    }
+
+    // is it set up? (also on startup)
+    Process {
+        id: updAutoCheck
+        running: true
+        command: ["sh", "-c", "[ -x /usr/local/bin/joeos-autoupdate ] && systemctl is-enabled joeos-update.timer >/dev/null 2>&1 && echo yes || echo no"]
+        stdout: StdioCollector { onStreamFinished: root.updAuto = text.trim() === "yes" }
+    }
+
+    // watch the background update (started here, or by the daily timer)
+    Process {
+        id: updStatus
+        command: ["sh", "-c", "systemctl is-active joeos-update.service 2>/dev/null; cat /var/lib/joeos-update/last 2>/dev/null"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                const lines = text.trim().split("\n");
+                const active = lines[0] === "activating" || lines[0] === "active";
+                const last = (lines[1] || "").split(" ");
+                const was = root.updRunning;
+                if (active) {
+                    root.updRunning = true;
+                    root.updState = "running";
+                    updWatch.restart();
+                    return;
+                }
+                const st = last[0] || "", at = parseFloat(last[1] || "0") * 1000;
+                root.updState = st;
+                root.updStateAt = at;
+                if (was && root.updAuto && !updSetup.running && !updAurRun.running) {
+                    root.updRunning = false;
+                    root.checkUpdates();
+                    root.updToast(st);
+                }
+            }
+        }
+    }
+    Timer {                                // quick checks while an update is running
+        id: updWatch
+        interval: 3000
+        repeat: true
+        running: root.updRunning && root.updAuto
+        onTriggered: if (!updStatus.running) updStatus.running = true
+    }
+    Timer {                                // and a slow one to notice the daily update
+        interval: 60000
+        repeat: true
+        running: root.updAuto && !root.updRunning
+        triggeredOnStart: true
+        onTriggered: if (!updStatus.running) updStatus.running = true
+    }
+    function updToast(st) {
+        const msg = st === "ok" ? ["Up to date", "Your computer finished updating."]
+            : st === "restart" ? ["Updated: restart when you can", "A new system core (kernel) was installed. It's used after a restart."]
+            : st === "busy" ? ["Update skipped", "Something else was installing. It'll try again later."]
+            : st === "failed" ? ["Update needs you", "It stopped partway. Details: /var/log/joeos-update.log"]
+            : null;
+        if (!msg) return;
+        root.toastSeq += 1;
+        toastModel.append({ tid: root.toastSeq, nid: -1, appName: "JoeOS", critical: st === "failed", summary: msg[0], body: msg[1] });
+    }
+    function updAgo(ms) {
+        if (!ms) return "";
+        const h = (Date.now() - ms) / 3600000;
+        return h < 1 ? "just now" : h < 24 ? Math.floor(h) + "h ago" : Math.floor(h / 24) + "d ago";
     }
 
     Process {
@@ -4544,10 +4659,17 @@ ShellRoot {
                                                 {
                                                     icon: "\uf019", title: "Updates",
                                                     sub: root.updRunning ? "Updating…" : root.updChecking ? "Checking…"
-                                                        : root.updTotal > 0 ? root.updTotal + " waiting · tap to install"
-                                                        : root.updCanCheck ? "Up to date" : "Needs pacman-contrib",
-                                                    active: root.updTotal > 0, ok: true,
-                                                    run: () => { if (root.updTotal > 0) { root.hubOpen = false; root.runUpdates(); } else root.checkUpdates(); }
+                                                        : !root.updAuto ? (root.updTotal > 0 ? root.updTotal + " waiting · tap to set up auto" : "Tap to set up auto updates")
+                                                        : root.updState === "restart" ? "Restart to finish"
+                                                        : root.updState === "failed" ? "Needs you · tap to fix"
+                                                        : (root.updSystem + root.updFlatpak) > 0 ? (root.updSystem + root.updFlatpak) + " waiting · tap to install"
+                                                        : root.updAur > 0 ? root.updAur + " AUR · tap to install"
+                                                        : "Auto · " + (root.updStateAt ? "updated " + root.updAgo(root.updStateAt) : "daily"),
+                                                    active: root.updRunning || root.updTotal > 0, ok: true,
+                                                    run: () => {
+                                                        if (!root.updAuto || root.updTotal > 0 || root.updState === "failed") { root.hubOpen = false; root.runUpdates(); }
+                                                        else root.checkUpdates();
+                                                    }
                                                 }
 
                                             ]
