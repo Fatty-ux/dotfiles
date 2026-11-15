@@ -212,6 +212,7 @@ ShellRoot {
             property var gameCollections: []     // Games: your own collections
             property var gameAdded: []           // Games: games you added yourself
             property var gameEdits: ({})         // Games: your changes to names, covers and programs
+            property bool ambientFx: false       // always-moving decorations (spinning record, bobbing buddy, glow); off = less GPU
             property bool inputTouched: false    // Input tab: only apply once you've changed something
             property real inSens: 0              //   mouse speed (-1 to 1)
             property string inAccel: "adaptive"  //   "flat" or "adaptive"
@@ -336,6 +337,49 @@ ShellRoot {
     property bool liveNoFfmpeg: false
     property bool liveUnavailable: false      // Qt video support missing
     property bool livePaused: false
+    // A video wallpaper makes the whole screen (and every blurred glass panel on top) redraw for each
+    // video frame, which keeps the graphics card at 100%. So it pauses on any screen where windows
+    // are covering it, and plays again when you're looking at the bare desktop.
+    property var liveCovered: ({})         // monitor name -> true while windows are on its current desktop
+    Process {
+        id: liveCoverCheck
+        command: ["sh", "-c", 'hyprctl -j monitors 2>/dev/null; echo "@@"; hyprctl -j clients 2>/dev/null']
+        stdout: StdioCollector {
+            onStreamFinished: {
+                const parts = text.split("@@");
+                let mons = [], clients = [];
+                try { mons = JSON.parse(parts[0]); clients = JSON.parse(parts[1]); } catch (e) { return; }
+                const busy = {};
+                for (const c of clients)
+                    if (c.mapped && !c.hidden && c.workspace && c.workspace.id > 0) busy[c.workspace.id] = true;
+                const out = {};
+                for (const m of mons) out[m.name] = !!busy[m.activeWorkspace.id];
+                root.liveCovered = out;
+            }
+        }
+    }
+    Timer {
+        id: liveCoverSoon
+        interval: 300
+        onTriggered: if (!liveCoverCheck.running) liveCoverCheck.running = true
+    }
+    Timer {                                 // and a slow check, just in case an event is missed
+        interval: 5000
+        repeat: true
+        running: pins.adapter.liveWallpaper !== ""
+        triggeredOnStart: true
+        onTriggered: liveCoverSoon.restart()
+    }
+    Connections {
+        target: Hyprland
+        enabled: pins.adapter.liveWallpaper !== ""
+        function onRawEvent(event) {
+            const n = event.name;
+            if (n === "openwindow" || n === "closewindow" || n === "movewindow" || n === "movewindowv2"
+                || n === "workspace" || n === "workspacev2" || n === "focusedmon" || n === "minimized")
+                liveCoverSoon.restart();
+        }
+    }
 
     function liveThumbFor(fileName) {
         return "file://" + liveThumbDir + "/" + fileName + ".jpg";
@@ -2862,6 +2906,11 @@ ShellRoot {
     }
 
     // ---------- Bluetooth page (hub: tap the Bluetooth tile) ----------
+    // Always-moving decorations make the whole bar redraw every frame (and Hyprland re-blur behind it),
+    // which keeps the graphics card busy even when nothing is happening. Off by default; they still
+    // move when you point at them.
+    readonly property bool ambientFx: pins.adapter.ambientFx && !gameMode
+
     readonly property string btScript: Quickshell.env("HOME") + "/.config/quickshell/scripts/bt.sh"
     property var btDevices: []               // [{ mac, name, paired, connected, icon, battery }]
     property bool btScanning: false
@@ -3302,6 +3351,7 @@ ShellRoot {
         HoverHandler { id: budHover }
 
         SequentialAnimation on bob {
+            running: (bud.theme && bud.theme.ambientFx) || budHover.hovered
             loops: Animation.Infinite
             NumberAnimation { from: 0; to: -2; duration: 1300 + bud.slot * 90; easing.type: Easing.InOutSine }
             NumberAnimation { from: -2; to: 0; duration: 1300 + bud.slot * 90; easing.type: Easing.InOutSine }
@@ -3312,7 +3362,7 @@ ShellRoot {
             visible: bud.img !== ""
             anchors.fill: parent
             source: bud.img
-            playing: visible
+            playing: visible && ((bud.theme && bud.theme.ambientFx) || budHover.hovered)
             fillMode: Image.PreserveAspectFit
             smooth: true
             transform: Translate { y: bud.bob }
@@ -4225,7 +4275,7 @@ ShellRoot {
                                 }
                                 // slowly spins like a record while playing
                                 RotationAnimation on rotation {
-                                    running: !!root.player && root.player.isPlaying && root.animMs > 0
+                                    running: !!root.player && root.player.isPlaying && root.animMs > 0 && (root.ambientFx || pmHover.hovered)
                                     from: 0
                                     to: 360
                                     duration: 12000
@@ -5454,6 +5504,12 @@ ShellRoot {
                                                     sub: pins.adapter.restoreSession ? "On · after restart" : "Off",
                                                     active: pins.adapter.restoreSession, ok: true,
                                                     run: () => { pins.adapter.restoreSession = !pins.adapter.restoreSession; }
+                                                    },
+                                                    {
+                                                    icon: "\uf0d0", title: "Moving effects",
+                                                    sub: pins.adapter.ambientFx ? "On · uses more GPU" : "Off · saves GPU",
+                                                    active: pins.adapter.ambientFx, ok: true,
+                                                    run: () => { pins.adapter.ambientFx = !pins.adapter.ambientFx; }
                                                     }
                                             ]
                                             delegate: HubToggle {
@@ -9085,8 +9141,8 @@ ShellRoot {
                                             onStatusChanged: if (status === Image.Error && tryNo < 2) tryNo++
                                             fillMode: Image.PreserveAspectCrop
                                             asynchronous: true
-                                            cache: true
-                                            sourceSize.width: 300
+                                            cache: false
+                                            sourceSize.width: 240
                                             opacity: gcard.modelData.installed ? 1 : 0.55
                                         }
                                         // where it's from
@@ -11835,7 +11891,7 @@ ShellRoot {
                             color: root.lyricsColors[1]
                             opacity: 0.55
                             SequentialAnimation on x {
-                                running: lyrScope.here && root.animMs > 0
+                                running: lyrScope.here && root.animMs > 0 && root.ambientFx
                                 loops: Animation.Infinite
                                 NumberAnimation { to: 40; duration: 9000; easing.type: Easing.InOutSine }
                                 NumberAnimation { to: -80; duration: 9000; easing.type: Easing.InOutSine }
@@ -11847,7 +11903,7 @@ ShellRoot {
                             color: root.lyricsColors[2]
                             opacity: 0.5
                             SequentialAnimation on y {
-                                running: lyrScope.here && root.animMs > 0
+                                running: lyrScope.here && root.animMs > 0 && root.ambientFx
                                 loops: Animation.Infinite
                                 NumberAnimation { to: lyrCard.height * 0.35; duration: 11000; easing.type: Easing.InOutSine }
                                 NumberAnimation { to: lyrCard.height * 0.55; duration: 11000; easing.type: Easing.InOutSine }
@@ -13593,7 +13649,7 @@ ShellRoot {
                             border.width: 1
                             border.color: root.bg
                             SequentialAnimation on opacity {
-                                running: root.playing(root.spotify)
+                                running: root.playing(root.spotify) && root.ambientFx
                                 loops: Animation.Infinite
                                 NumberAnimation { to: 0.35; duration: 700 }
                                 NumberAnimation { to: 1; duration: 700 }
@@ -15947,7 +16003,7 @@ ShellRoot {
                     source: Qt.resolvedUrl("LiveWallpaper.qml")
                     onLoaded: {
                         item.source = Qt.binding(() => pins.adapter.liveWallpaper);
-                        item.paused = Qt.binding(() => root.livePaused || root.gameMode);
+                        item.paused = Qt.binding(() => root.livePaused || root.gameMode || !!root.liveCovered[modelData.name]);
                     }
                     onStatusChanged: if (status === Loader.Error) root.liveUnavailable = true
                 }
