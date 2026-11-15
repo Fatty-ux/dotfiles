@@ -208,6 +208,9 @@ ShellRoot {
             property bool topPillAlways: true    // the top pill stays on screen (no pull tab)
             property bool lyricsOpen: false      // the left panel stays open across restarts
             property string leftTab: "lyrics"    // which tab the left panel shows
+            property var gameHidden: []          // Games: hidden games (their keys)
+            property var gameCollections: []     // Games: your own collections
+            property var gameAdded: []           // Games: games you added yourself
             property bool inputTouched: false    // Input tab: only apply once you've changed something
             property real inSens: 0              //   mouse speed (-1 to 1)
             property string inAccel: "adaptive"  //   "flat" or "adaptive"
@@ -7662,11 +7665,89 @@ ShellRoot {
     readonly property string gamesScript: Quickshell.env("HOME") + "/.config/quickshell/scripts/games.py"
     readonly property string gamesCachePath: Quickshell.env("HOME") + "/.cache/joeos/games.json"
 
+    // ---- your own touches: hidden games, your collections, games you added yourself ----
+    readonly property var gamesHidden: pins.adapter.gameHidden || []
+    readonly property var gamesMyCols: pins.adapter.gameCollections || []     // [{ id, name, keys: [...] }]
+    readonly property var gamesAdded: pins.adapter.gameAdded || []           // [{ key, name, path }]
+    property string gamesMyCol: ""          // one of your collections, "" = none picked
+    property bool gamesHiddenView: false    // showing the hidden games
+
+    function gamesIsHidden(key) { return gamesHidden.indexOf(key) >= 0; }
+    function gamesHide(key, hide) {
+        const list = gamesHidden.filter(k => k !== key);
+        if (hide) list.push(key);
+        pins.adapter.gameHidden = list;
+    }
+    function gamesNewCollection(name, firstKey) {
+        name = name.trim();
+        if (name === "") return "";
+        const id = "my-" + Date.now();
+        pins.adapter.gameCollections = gamesMyCols.concat([{ id: id, name: name, keys: firstKey ? [firstKey] : [] }]);
+        return id;
+    }
+    function gamesInCol(colId, key) {
+        const c = gamesMyCols.find(x => x.id === colId);
+        return !!c && c.keys.indexOf(key) >= 0;
+    }
+    function gamesToggleCol(colId, key) {
+        pins.adapter.gameCollections = gamesMyCols.map(c => {
+            if (c.id !== colId) return c;
+            const has = c.keys.indexOf(key) >= 0;
+            return { id: c.id, name: c.name, keys: has ? c.keys.filter(k => k !== key) : c.keys.concat([key]) };
+        });
+    }
+    function gamesDeleteCol(colId) {
+        pins.adapter.gameCollections = gamesMyCols.filter(c => c.id !== colId);
+        if (gamesMyCol === colId) gamesMyCol = "";
+    }
+    // a game you picked yourself (any program or AppImage)
+    function gamesAddPath(path) {
+        path = path.trim();
+        if (path === "" || gamesAdded.some(g => g.path === path)) return;
+        let name = path.split("/").pop().replace(/\.appimage$/i, "");
+        name = name.replace(/[._ -]?(x86_64|amd64|x64|linux|release)$/i, "").replace(/recomp(iled)?$/i, " Recompiled")
+                   .replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_-]/g, " ").replace(/\s+/g, " ").trim();
+        pins.adapter.gameAdded = gamesAdded.concat([{ key: "added:" + path, name: name, path: path }]);
+    }
+    function gamesRemoveAdded(key) {
+        pins.adapter.gameAdded = gamesAdded.filter(g => g.key !== key);
+    }
+    Process {
+        id: gamesPicker
+        command: ["sh", "-c",
+            'if command -v zenity >/dev/null; then zenity --file-selection --title="Pick the game to add" 2>/dev/null; '
+            + 'elif command -v kdialog >/dev/null; then kdialog --getopenfilename "$HOME/Games" 2>/dev/null; else echo NOPICKER; fi']
+        stdout: StdioCollector {
+            onStreamFinished: {
+                const v = text.trim();
+                if (v === "NOPICKER") { root.gamesNote = "To add games, install zenity: sudo pacman -S zenity"; return; }
+                if (v !== "") { root.gamesAddPath(v); root.gamesSrc = "recomp"; root.gamesCol = ""; root.gamesMyCol = ""; root.gamesHiddenView = false; }
+            }
+        }
+    }
+    property string gamesNote: ""
+    function gamesPickToAdd() { if (!gamesPicker.running) gamesPicker.running = true; }
+
+    // everything: what the scan found, plus games you added
+    readonly property var gamesEverything: {
+        const added = gamesAdded.map(a => ({
+            key: a.key, id: a.path, name: a.name, src: "recomp", added: true, installed: true,
+            cover: "", header: "", last: 0, cols: [],
+            play: ["sh", "-c", 'chmod +x "$1" 2>/dev/null; cd "$(dirname "$1")" && exec "$1"', "sh", a.path], install: []
+        }));
+        const known = {};
+        for (const g of gamesAll) known[g.id] = true;
+        return gamesAll.concat(added.filter(a => !known[a.id]));
+    }
+
     readonly property var gamesShown: {
         const q = gamesQuery.trim().toLowerCase();
-        let list = gamesAll.filter(g =>
-            (gamesSrc === "all" || g.src === gamesSrc)
-            && (gamesCol === "" || (g.cols && g.cols.indexOf(gamesCol) >= 0))
+        const mine = gamesMyCol === "" ? null : (gamesMyCols.find(c => c.id === gamesMyCol) || { keys: [] });
+        let list = gamesEverything.filter(g =>
+            (gamesHiddenView ? gamesIsHidden(g.key) : !gamesIsHidden(g.key))
+            && (gamesHiddenView || mine || gamesSrc === "all" || g.src === gamesSrc)
+            && (gamesHiddenView || mine || gamesCol === "" || (g.cols && g.cols.indexOf(gamesCol) >= 0))
+            && (!mine || mine.keys.indexOf(g.key) >= 0)
             && (!gamesInstalledOnly || g.installed)
             && (q === "" || g.name.toLowerCase().indexOf(q) >= 0));
         if (gamesSort === "recent")
@@ -7674,7 +7755,7 @@ ShellRoot {
         return list;
     }
     function gamesCount(src) {
-        return src === "all" ? gamesAll.length : gamesAll.filter(g => g.src === src).length;
+        return gamesEverything.filter(g => !gamesIsHidden(g.key) && (src === "all" || g.src === src)).length;
     }
 
     function gamesApply(text) {
@@ -7726,7 +7807,7 @@ ShellRoot {
         gamesQuery = "";
         gamesRefresh();
     }
-    onLauncherOpenChanged: if (!launcherOpen) gamesMode = false
+    onLauncherOpenChanged: if (!launcherOpen) { gamesMode = false; gamesHiddenView = false; }
 
     function gamePlay(g) {
         launcherOpen = false;
@@ -8340,80 +8421,207 @@ ShellRoot {
                                 MouseArea { id: gBack; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.gamesMode = false }
                             }
 
-                            Text { text: "Library"; color: root.muted; font.pixelSize: 11; Layout.topMargin: 8 }
-                            Repeater {
-                                model: [
-                                    { id: "all", name: "All games", icon: "" },
-                                    { id: "steam", name: "Steam", icon: "" },
-                                    { id: "heroic", name: "Heroic", icon: "" },
-                                    { id: "recomp", name: "Recomp", icon: "" }
-                                ]
-                                delegate: Rectangle {
-                                    id: gs
-                                    required property var modelData
-                                    readonly property bool sel: root.gamesSrc === modelData.id && root.gamesCol === ""
-                                    Layout.fillWidth: true
-                                    implicitHeight: 38
-                                    radius: 12
-                                    color: gs.sel ? root.accent : (gsMouse.containsMouse ? root.overlay : "transparent")
-                                    Behavior on color { ColorAnimation { duration: root.animMs } }
-                                    RowLayout {
-                                        anchors.fill: parent
-                                        anchors.leftMargin: 12
-                                        anchors.rightMargin: 12
-                                        spacing: 10
-                                        Text { text: gs.modelData.icon; font.family: root.iconFont; font.pixelSize: 14; color: gs.sel ? root.bg : root.accent }
-                                        Text { Layout.fillWidth: true; text: gs.modelData.name; color: gs.sel ? root.bg : root.fg; font.pixelSize: 13; font.bold: gs.sel }
-                                        Text { text: root.gamesCount(gs.modelData.id); color: gs.sel ? root.bg : root.muted; font.pixelSize: 11 }
-                                    }
-                                    MouseArea {
-                                        id: gsMouse
-                                        anchors.fill: parent
-                                        hoverEnabled: true
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: { root.gamesSrc = gs.modelData.id; root.gamesCol = ""; }
-                                    }
-                                }
-                            }
-
-                            Text { visible: root.gamesCols.length > 0; text: "Steam collections"; color: root.muted; font.pixelSize: 11; Layout.topMargin: 8 }
-                            ListView {
+                            // everything below scrolls if your collections get long
+                            Flickable {
                                 Layout.fillWidth: true
                                 Layout.fillHeight: true
                                 clip: true
-                                spacing: 2
+                                contentWidth: width
+                                contentHeight: sideCol.implicitHeight
                                 boundsBehavior: Flickable.StopAtBounds
-                                model: root.gamesCols
-                                delegate: Rectangle {
-                                    id: gc2
-                                    required property var modelData
-                                    readonly property bool sel: root.gamesCol === modelData.id
-                                    width: ListView.view.width
-                                    height: 34
-                                    radius: 11
-                                    color: gc2.sel ? root.accent : (gcMouse.containsMouse ? root.overlay : "transparent")
-                                    Text {
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        x: 12
-                                        width: parent.width - 24
-                                        text: gc2.modelData.name
-                                        elide: Text.ElideRight
-                                        color: gc2.sel ? root.bg : root.fg
-                                        font.pixelSize: 12
-                                        font.bold: gc2.sel
+
+                                Column {
+                                    id: sideCol
+                                    width: parent.width
+                                    spacing: 3
+
+                                    Text { text: "Library"; color: root.muted; font.pixelSize: 11; topPadding: 8; bottomPadding: 2 }
+                                    Repeater {
+                                        model: [
+                                            { id: "all", name: "All games", icon: "" },
+                                            { id: "steam", name: "Steam", icon: "" },
+                                            { id: "heroic", name: "Heroic", icon: "" },
+                                            { id: "recomp", name: "Recomp", icon: "" }
+                                        ]
+                                        delegate: Rectangle {
+                                            id: gs
+                                            required property var modelData
+                                            readonly property bool sel: root.gamesSrc === modelData.id && root.gamesCol === "" && root.gamesMyCol === "" && !root.gamesHiddenView
+                                            width: sideCol.width
+                                            height: 38
+                                            radius: 12
+                                            color: gs.sel ? root.accent : (gsMouse.containsMouse ? root.overlay : "transparent")
+                                            Behavior on color { ColorAnimation { duration: root.animMs } }
+                                            RowLayout {
+                                                anchors.fill: parent
+                                                anchors.leftMargin: 12
+                                                anchors.rightMargin: 12
+                                                spacing: 10
+                                                Text { text: gs.modelData.icon; font.family: root.iconFont; font.pixelSize: 14; color: gs.sel ? root.bg : root.accent }
+                                                Text { Layout.fillWidth: true; text: gs.modelData.name; color: gs.sel ? root.bg : root.fg; font.pixelSize: 13; font.bold: gs.sel }
+                                                Text { text: root.gamesCount(gs.modelData.id); color: gs.sel ? root.bg : root.muted; font.pixelSize: 11 }
+                                            }
+                                            MouseArea {
+                                                id: gsMouse
+                                                anchors.fill: parent
+                                                hoverEnabled: true
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: { root.gamesSrc = gs.modelData.id; root.gamesCol = ""; root.gamesMyCol = ""; root.gamesHiddenView = false; }
+                                            }
+                                        }
                                     }
-                                    MouseArea {
-                                        id: gcMouse
-                                        anchors.fill: parent
-                                        hoverEnabled: true
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: { root.gamesSrc = "steam"; root.gamesCol = gc2.sel ? "" : gc2.modelData.id; }
+                                    // hidden games (only when you've hidden some)
+                                    Rectangle {
+                                        visible: root.gamesHidden.length > 0
+                                        width: sideCol.width
+                                        height: 34
+                                        radius: 12
+                                        color: root.gamesHiddenView ? root.accent : (ghMouse.containsMouse ? root.overlay : "transparent")
+                                        RowLayout {
+                                            anchors.fill: parent
+                                            anchors.leftMargin: 12
+                                            anchors.rightMargin: 12
+                                            spacing: 10
+                                            Text { text: ""; font.family: root.iconFont; font.pixelSize: 13; color: root.gamesHiddenView ? root.bg : root.muted }
+                                            Text { Layout.fillWidth: true; text: "Hidden"; color: root.gamesHiddenView ? root.bg : root.muted; font.pixelSize: 12 }
+                                            Text { text: root.gamesHidden.length; color: root.gamesHiddenView ? root.bg : root.muted; font.pixelSize: 11 }
+                                        }
+                                        MouseArea { id: ghMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { root.gamesHiddenView = !root.gamesHiddenView; root.gamesMyCol = ""; root.gamesCol = ""; } }
+                                    }
+
+                                    // ---- your own collections ----
+                                    Text { text: "My collections"; color: root.muted; font.pixelSize: 11; topPadding: 10; bottomPadding: 2 }
+                                    Repeater {
+                                        model: root.gamesMyCols
+                                        delegate: Rectangle {
+                                            id: mc2
+                                            required property var modelData
+                                            readonly property bool sel: root.gamesMyCol === modelData.id
+                                            width: sideCol.width
+                                            height: 34
+                                            radius: 11
+                                            color: mc2.sel ? root.accent : (mcMouse.containsMouse || mcDel.containsMouse ? root.overlay : "transparent")
+                                            Text {
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                x: 12
+                                                width: parent.width - 54
+                                                text: mc2.modelData.name
+                                                elide: Text.ElideRight
+                                                color: mc2.sel ? root.bg : root.fg
+                                                font.pixelSize: 12
+                                                font.bold: mc2.sel
+                                            }
+                                            Text {
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                anchors.right: parent.right
+                                                anchors.rightMargin: 30
+                                                text: mc2.modelData.keys.length
+                                                color: mc2.sel ? root.bg : root.muted
+                                                font.pixelSize: 11
+                                            }
+                                            MouseArea {
+                                                id: mcMouse
+                                                anchors.fill: parent
+                                                hoverEnabled: true
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: { root.gamesMyCol = mc2.sel ? "" : mc2.modelData.id; root.gamesCol = ""; root.gamesHiddenView = false; }
+                                            }
+                                            // delete (press twice to be sure)
+                                            Text {
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                anchors.right: parent.right
+                                                anchors.rightMargin: 10
+                                                property bool armed: false
+                                                visible: mcMouse.containsMouse || mcDel.containsMouse || armed
+                                                text: armed ? "" : ""
+                                                font.family: root.iconFont
+                                                font.pixelSize: 11
+                                                color: armed ? root.danger : (mc2.sel ? root.bg : root.muted)
+                                                MouseArea {
+                                                    id: mcDel
+                                                    anchors.fill: parent
+                                                    anchors.margins: -6
+                                                    hoverEnabled: true
+                                                    cursorShape: Qt.PointingHandCursor
+                                                    onClicked: { if (parent.armed) root.gamesDeleteCol(mc2.modelData.id); else { parent.armed = true; disarm.restart(); } }
+                                                }
+                                                Timer { id: disarm; interval: 2500; onTriggered: parent.armed = false }
+                                            }
+                                        }
+                                    }
+                                    // + New collection
+                                    Rectangle {
+                                        width: sideCol.width
+                                        height: 34
+                                        radius: 11
+                                        color: newColIn.activeFocus ? root.surface : (newColMouse.containsMouse ? root.overlay : "transparent")
+                                        border.width: newColIn.activeFocus ? 1 : 0
+                                        border.color: root.accent
+                                        Text {
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            x: 12
+                                            visible: !newColIn.activeFocus && newColIn.text === ""
+                                            text: "  New collection"
+                                            font.family: root.iconFont
+                                            color: root.accent
+                                            font.pixelSize: 12
+                                        }
+                                        MouseArea { id: newColMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.IBeamCursor; onClicked: newColIn.forceActiveFocus() }
+                                        TextInput {
+                                            id: newColIn
+                                            anchors.fill: parent
+                                            anchors.leftMargin: 12
+                                            anchors.rightMargin: 12
+                                            verticalAlignment: TextInput.AlignVCenter
+                                            color: root.fg
+                                            font.pixelSize: 12
+                                            clip: true
+                                            onAccepted: {
+                                                const id = root.gamesNewCollection(text, gamesView.pendingKey);
+                                                text = "";
+                                                gamesView.pendingKey = "";
+                                                if (id !== "") { root.gamesMyCol = id; root.gamesHiddenView = false; }
+                                                gamesSearch.forceActiveFocus();
+                                            }
+                                            Keys.onEscapePressed: { text = ""; gamesView.pendingKey = ""; gamesSearch.forceActiveFocus(); }
+                                        }
+                                    }
+
+                                    // ---- Steam's collections ----
+                                    Text { visible: root.gamesCols.length > 0; text: "Steam collections"; color: root.muted; font.pixelSize: 11; topPadding: 10; bottomPadding: 2 }
+                                    Repeater {
+                                        model: root.gamesCols
+                                        delegate: Rectangle {
+                                            id: gc2
+                                            required property var modelData
+                                            readonly property bool sel: root.gamesCol === modelData.id
+                                            width: sideCol.width
+                                            height: 34
+                                            radius: 11
+                                            color: gc2.sel ? root.accent : (gcMouse.containsMouse ? root.overlay : "transparent")
+                                            Text {
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                x: 12
+                                                width: parent.width - 24
+                                                text: gc2.modelData.name
+                                                elide: Text.ElideRight
+                                                color: gc2.sel ? root.bg : root.fg
+                                                font.pixelSize: 12
+                                                font.bold: gc2.sel
+                                            }
+                                            MouseArea {
+                                                id: gcMouse
+                                                anchors.fill: parent
+                                                hoverEnabled: true
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: { root.gamesSrc = "steam"; root.gamesCol = gc2.sel ? "" : gc2.modelData.id; root.gamesMyCol = ""; root.gamesHiddenView = false; }
+                                            }
+                                        }
                                     }
                                 }
                             }
-                            Item { visible: root.gamesCols.length === 0; Layout.fillHeight: true }
 
-                            // open the launchers themselves
+                            // open the launchers themselves, or add a game by hand
                             Text { text: "Open"; color: root.muted; font.pixelSize: 11 }
                             Flow {
                                 Layout.fillWidth: true
@@ -8426,6 +8634,15 @@ ShellRoot {
                                     label: "RecompLauncher"
                                     onClicked: { root.launcherOpen = false; Quickshell.execDetached([root.gamesRecompLauncher]); }
                                 }
+                                SportChip { theme: root; icon: ""; label: "Add a game"; onClicked: root.gamesPickToAdd() }
+                            }
+                            Text {
+                                visible: root.gamesNote !== ""
+                                Layout.fillWidth: true
+                                text: root.gamesNote
+                                color: root.muted
+                                font.pixelSize: 10
+                                wrapMode: Text.Wrap
                             }
                         }
 
@@ -8553,7 +8770,7 @@ ShellRoot {
                                             Text {
                                                 id: gSrc
                                                 anchors.centerIn: parent
-                                                text: gcard.modelData.src === "steam" ? "Steam" : gcard.modelData.src === "heroic" ? (gcard.modelData.store || "Heroic") : "Recomp"
+                                                text: gcard.modelData.src === "steam" ? "Steam" : gcard.modelData.src === "heroic" ? (gcard.modelData.store || "Heroic") : (gcard.modelData.added ? "Added" : "Recomp")
                                                 color: "white"
                                                 font.pixelSize: 9
                                                 font.bold: true
@@ -8602,7 +8819,11 @@ ShellRoot {
                                         anchors.fill: gArt
                                         hoverEnabled: true
                                         cursorShape: Qt.PointingHandCursor
-                                        onClicked: root.gamePlay(gcard.modelData)
+                                        acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                        onClicked: mouse => {
+                                            if (mouse.button === Qt.RightButton) gamesView.openGameMenu(gcard.modelData, gMouse, mouse.x, mouse.y);
+                                            else root.gamePlay(gcard.modelData);
+                                        }
                                     }
                                 }
                             }
@@ -8613,6 +8834,8 @@ ShellRoot {
                                 horizontalAlignment: Text.AlignHCenter
                                 text: root.gamesLoading ? "Finding your games…"
                                     : root.gamesAll.length === 0 ? "No games found. Open Steam or Heroic once, then press refresh."
+                                    : root.gamesMyCol !== "" ? "This collection is empty. Right-click any game to add it here."
+                                    : root.gamesSrc === "recomp" ? "No recomp games found. Press \"Add a game\" and pick the game's program or AppImage."
                                     : "Nothing matches"
                                 color: root.muted
                                 font.pixelSize: 13
@@ -8622,6 +8845,98 @@ ShellRoot {
                                 text: "Looking up the names of " + root.gamesMissingNames + " more Steam games…"
                                 color: root.muted
                                 font.pixelSize: 11
+                            }
+                        }
+                    }
+                
+                    // ---- right-click menu for a game ----
+                    property var menuGame: null
+                    property real menuX: 0
+                    property real menuY: 0
+                    property string pendingKey: ""          // the game a new collection will start with
+                    function openGameMenu(g, item, mx, my) {
+                        const p = item.mapToItem(gamesView, mx, my);
+                        menuX = Math.min(p.x, gamesView.width - 230);
+                        menuY = Math.min(p.y, gamesView.height - gameMenuCol.implicitHeight - 20);
+                        menuGame = g;
+                    }
+                    readonly property var menuItems: {
+                        const g = menuGame;
+                        if (!g) return [];
+                        const out = [];
+                        out.push({ text: g.installed ? "Play" : "Install", icon: g.installed ? "" : "", act: () => root.gamePlay(g) });
+                        for (const c of root.gamesMyCols) {
+                            const has = c.keys.indexOf(g.key) >= 0;
+                            out.push({ text: (has ? "Remove from " : "Add to ") + c.name, icon: has ? "" : "",
+                                       act: () => root.gamesToggleCol(c.id, g.key) });
+                        }
+                        out.push({ text: "New collection with this game…", icon: "", act: () => { gamesView.pendingKey = g.key; newColIn.forceActiveFocus(); } });
+                        const hid = root.gamesIsHidden(g.key);
+                        out.push({ text: hid ? "Show this game again" : "Hide this game", icon: hid ? "" : "", act: () => root.gamesHide(g.key, !hid) });
+                        if (g.added) out.push({ text: "Remove from the list", icon: "", danger: true, act: () => root.gamesRemoveAdded(g.key) });
+                        return out;
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        visible: gamesView.menuGame !== null
+                        z: 40
+                        acceptedButtons: Qt.LeftButton | Qt.RightButton
+                        onClicked: gamesView.menuGame = null
+                    }
+                    Rectangle {
+                        visible: gamesView.menuGame !== null
+                        z: 41
+                        x: gamesView.menuX
+                        y: gamesView.menuY
+                        width: 230
+                        height: gameMenuCol.implicitHeight + 12
+                        radius: 14
+                        color: root.bg
+                        border.width: 1
+                        border.color: root.glassEdge
+                        Column {
+                            id: gameMenuCol
+                            anchors.centerIn: parent
+                            width: parent.width - 12
+                            Text {
+                                width: parent.width
+                                leftPadding: 10
+                                topPadding: 4
+                                bottomPadding: 6
+                                text: gamesView.menuGame ? gamesView.menuGame.name : ""
+                                elide: Text.ElideRight
+                                color: root.muted
+                                font.pixelSize: 11
+                                font.bold: true
+                            }
+                            Repeater {
+                                model: gamesView.menuItems
+                                delegate: Rectangle {
+                                    id: gmi
+                                    required property var modelData
+                                    width: gameMenuCol.width
+                                    height: 32
+                                    radius: 9
+                                    color: gmiMouse.containsMouse ? root.overlay : "transparent"
+                                    Row {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        x: 10
+                                        spacing: 10
+                                        Text { width: 14; text: gmi.modelData.icon; font.family: root.iconFont; font.pixelSize: 11; color: gmi.modelData.danger ? root.danger : root.accent; anchors.verticalCenter: parent.verticalCenter }
+                                        Text { text: gmi.modelData.text; color: gmi.modelData.danger ? root.danger : root.fg; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
+                                    }
+                                    MouseArea {
+                                        id: gmiMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            const act = gmi.modelData.act;
+                                            gamesView.menuGame = null;
+                                            act();
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

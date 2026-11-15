@@ -248,40 +248,52 @@ def heroic_games():
 
 # ---------------------------------------------------------------- Recomp ports
 def recomp_games():
-    """Recompiled console games: native programs found in your recomp folders."""
-    roots = [os.path.join(HOME, "Games/Console Recomps"), os.path.join(HOME, "Games/Recomps"),
-             os.path.join(HOME, ".local/share/RecompLauncher"), os.path.join(HOME, ".config/RecompLauncher")]
+    """Recompiled console games: programs (often AppImages) found in your games and RecompLauncher folders."""
+    roots = [os.path.join(HOME, d) for d in ("Games", "Applications", "Downloads")]
+    for pat in ("~/.local/share/*", "~/.config/*", "~/*"):
+        roots += [d for d in glob.glob(os.path.expanduser(pat)) if os.path.isdir(d) and "recomp" in os.path.basename(d).lower()]
     out, seen = [], set()
-    skip = re.compile(r"(^|/)(roms?|saves?|mods?|shaders?|cache|lib|libs|data|assets)(/|$)", re.I)
-    for root in roots:
+    skip = re.compile(r"(^|/)(roms?|saves?|shaders?|cache|caches|lib|libs|assets|\.git|node_modules|steamapps|compatdata)(/|$)", re.I)
+    for root in dict.fromkeys(roots):
         if not os.path.isdir(root):
             continue
         for dirpath, dirs, files in os.walk(root):
             rel = os.path.relpath(dirpath, root)
-            if rel.count(os.sep) >= 3 or skip.search(rel.replace(os.sep, "/")):
+            depth = 0 if rel == "." else rel.count(os.sep) + 1
+            if depth > 4 or skip.search(rel.replace(os.sep, "/")):
                 dirs[:] = []
                 continue
+            in_recomp_dir = "recomp" in dirpath.lower()
             for fn in files:
                 p = os.path.join(dirpath, fn)
-                if fn.lower().endswith((".so", ".txt", ".json", ".ini", ".cfg", ".sh", ".log", ".png", ".jpg", ".zip", ".rar")):
+                low = fn.lower()
+                if low.startswith("recomplauncher") or low.endswith((".so", ".txt", ".json", ".ini", ".cfg", ".sh", ".log",
+                                                                     ".png", ".jpg", ".zip", ".rar", ".7z", ".z64", ".n64", ".iso", ".nsp", ".xci")):
                     continue
-                if not (os.access(p, os.X_OK) and os.path.isfile(p)):
+                is_appimage = low.endswith(".appimage")
+                if not ("recomp" in low or (is_appimage and in_recomp_dir) or (in_recomp_dir and os.access(p, os.X_OK) and "." not in fn)):
                     continue
-                if "recomp" not in fn.lower() and not fn.endswith(".AppImage"):
+                if not os.path.isfile(p) or (not is_appimage and not os.access(p, os.X_OK)):
                     continue
-                if fn.lower().startswith("recomplauncher"):
+                real = os.path.realpath(p)
+                if real in seen:
                     continue
-                name = re.sub(r"(?i)[._-]?(x86_64|amd64|linux|appimage)$", "", os.path.splitext(fn)[0] if fn.endswith(".AppImage") else fn)
-                name = re.sub(r"(?i)recomp(iled)?$", " Recompiled", name).replace("_", " ").replace("-", " ").strip()
-                if p in seen:
-                    continue
-                seen.add(p)
-                icon = first(*[os.path.join(dirpath, n) for n in ("icon.png", "icon.jpg", "cover.png", "cover.jpg")])
+                seen.add(real)
+                base = fn[:-9] if is_appimage else fn
+                name = re.sub(r"(?i)[._ -]?(x86_64|amd64|x64|linux|release)$", "", base)
+                name = re.sub(r"(?i)[._ -]?(x86_64|amd64|x64|linux|release)$", "", name)
+                name = re.sub(r"(?i)recomp(iled)?$", " Recompiled", name)
+                name = re.sub(r"([a-z])([A-Z])", r"\1 \2", name).replace("_", " ").replace("-", " ")
+                name = re.sub(r"\s+", " ", name).strip()
+                icon = first(*[os.path.join(dirpath, n) for n in ("icon.png", "icon.jpg", "cover.png", "cover.jpg", "logo.png")])
+                if is_appimage and not os.access(p, os.X_OK):
+                    play = ["sh", "-c", 'chmod +x "$1"; cd "$(dirname "$1")" && exec "$1"', "sh", p]
+                else:
+                    play = ["sh", "-c", 'cd "$(dirname "$1")" && exec "$1"', "sh", p]
                 out.append({
-                    "key": "recomp:" + p, "id": p, "name": name, "src": "recomp", "installed": True,
+                    "key": "recomp:" + real, "id": p, "name": name, "src": "recomp", "installed": True,
                     "cover": ("file://" + icon) if icon else "", "header": "", "last": int(os.path.getatime(p)),
-                    "play": ["sh", "-c", 'cd "$(dirname "$1")" && exec "$1"', "sh", p],
-                    "install": [], "cols": [],
+                    "play": play, "install": [], "cols": [],
                 })
     return out
 
