@@ -8159,15 +8159,16 @@ ShellRoot {
                     }
                     Item {
                         Layout.fillWidth: true
-                        implicitHeight: 58
+                        implicitHeight: 68
 
                         // ---- Games library button ----
                         Rectangle {
+                            id: gBtn
                             anchors.left: parent.left
                             anchors.verticalCenter: parent.verticalCenter
-                            width: gBtnRow.implicitWidth + 26
-                            height: 44
-                            radius: 22
+                            width: gBtnRow.implicitWidth + 34
+                            height: 52
+                            radius: 26
                             color: gBtnMouse.containsMouse ? root.accent : root.surface
                             border.width: 1
                             border.color: root.glassEdge
@@ -8176,81 +8177,115 @@ ShellRoot {
                                 id: gBtnRow
                                 anchors.centerIn: parent
                                 spacing: 8
-                                Text { anchors.verticalCenter: parent.verticalCenter; text: "\uf11b"; font.family: root.iconFont; font.pixelSize: 16; color: gBtnMouse.containsMouse ? root.bg : root.accent }
-                                Text { anchors.verticalCenter: parent.verticalCenter; text: "Games"; font.pixelSize: 13; font.bold: true; color: gBtnMouse.containsMouse ? root.bg : root.fg }
+                                Text { anchors.verticalCenter: parent.verticalCenter; text: "\uf11b"; font.family: root.iconFont; font.pixelSize: 19; color: gBtnMouse.containsMouse ? root.bg : root.accent }
+                                Text { anchors.verticalCenter: parent.verticalCenter; text: "Games"; font.pixelSize: 14; font.bold: true; color: gBtnMouse.containsMouse ? root.bg : root.fg }
                             }
                             MouseArea { id: gBtnMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.openGames() }
                         }
 
-                        Row {
-                            id: taskRow
-                            anchors.centerIn: parent
-                            spacing: 6
+                        // a thin line between Games and your apps
+                        Rectangle {
+                            id: taskSep
+                            anchors.left: gBtn.right
+                            anchors.leftMargin: 16
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 1
+                            height: 36
+                            color: root.glassEdge
+                        }
 
-                            Repeater {
-                                model: pins.adapter.pinned
+                        // your pinned apps, with room to breathe (scroll sideways if there are lots)
+                        Flickable {
+                            id: taskFlick
+                            anchors.left: taskSep.right
+                            anchors.leftMargin: 16
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            anchors.bottom: parent.bottom
+                            clip: true
+                            contentWidth: Math.max(width, taskRow.width)
+                            contentHeight: height
+                            flickableDirection: Flickable.HorizontalFlick
+                            boundsBehavior: Flickable.StopAtBounds
+                            WheelHandler {
+                                onWheel: event => {
+                                    taskFlick.contentX = Math.max(0, Math.min(taskFlick.contentWidth - taskFlick.width,
+                                        taskFlick.contentX - (event.angleDelta.y || event.angleDelta.x) / 2));
+                                }
+                            }
 
-                                delegate: Item {
-                                    id: tpin
-                                    required property string modelData
-                                    readonly property var entry: {
-                                        DesktopEntries.applications.values;
-                                        return DesktopEntries.heuristicLookup(modelData);
-                                    }
-                                    readonly property var wins: root.windowsFor(modelData)
-                                    readonly property bool running: wins.length > 0
-                                    readonly property bool isActive: {
-                                        for (let i = 0; i < wins.length; i++)
-                                            if (wins[i].activated) return true;
-                                        return false;
-                                    }
-                                    visible: !!entry
-                                    width: visible ? 54 : 0
-                                    height: 54
+                            Row {
+                                id: taskRow
+                                // centred in the space next to Games, or starts at the left and scrolls if there are lots
+                                x: Math.max(0, (taskFlick.width - width) / 2)
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 10
 
-                                    Rectangle {
-                                        anchors.fill: parent
-                                        radius: 16
-                                        color: tpinMouse.containsMouse ? root.overlay : (tpin.isActive ? root.surface : "transparent")
-                                        Behavior on color { ColorAnimation { duration: root.animMs } }
-                                    }
-                                    IconImage {
-                                        anchors.centerIn: parent
-                                        implicitSize: 38
-                                        scale: tpinMouse.pressed ? 0.85 : (tpinMouse.containsMouse ? 1.15 : 1)
-                                        Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
-                                        source: tpin.entry ? Quickshell.iconPath(tpin.entry.icon, "application-x-executable") : ""
-                                    }
-                                    // dot under open apps (longer for the focused one)
-                                    Rectangle {
-                                        visible: tpin.running
-                                        anchors.horizontalCenter: parent.horizontalCenter
-                                        anchors.bottom: parent.bottom
-                                        anchors.bottomMargin: 2
-                                        width: tpin.isActive ? 14 : 5
-                                        height: 3
-                                        radius: 2
-                                        color: root.accent
-                                    }
-                                    MouseArea {
-                                        id: tpinMouse
-                                        anchors.fill: parent
-                                        hoverEnabled: true
-                                        cursorShape: Qt.PointingHandCursor
-                                        acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
-                                        onClicked: mouse => {
-                                            if (mouse.button === Qt.RightButton) {
-                                                launcher.openPinMenu(tpin, tpin.modelData, tpin.entry, tpin.wins);
-                                                return;
-                                            }
-                                            root.launcherOpen = false;
-                                            if (mouse.button === Qt.MiddleButton || !tpin.running) root.launchApp(tpin.entry);
-                                            else {
-                                                // already open: bring it up (or the next one if it's focused)
-                                                let next = 0;
-                                                for (let i = 0; i < tpin.wins.length; i++)
-                                                    if (tpin.wins[i].activated) { next = (i + 1) % tpin.wins.length; break; }
-                                                tpin.wins[next].activate();
+                                Repeater {
+                                    model: pins.adapter.pinned
+
+                                    delegate: Item {
+                                        id: tpin
+                                        required property string modelData
+                                        readonly property var entry: {
+                                            DesktopEntries.applications.values;
+                                            return DesktopEntries.heuristicLookup(modelData);
+                                        }
+                                        readonly property var wins: root.windowsFor(modelData)
+                                        readonly property bool running: wins.length > 0
+                                        readonly property bool isActive: {
+                                            for (let i = 0; i < wins.length; i++)
+                                                if (wins[i].activated) return true;
+                                            return false;
+                                        }
+                                        visible: !!entry
+                                        width: visible ? 60 : 0
+                                        height: 60
+
+                                        Rectangle {
+                                            anchors.fill: parent
+                                            radius: 16
+                                            color: tpinMouse.containsMouse ? root.overlay : (tpin.isActive ? root.surface : "transparent")
+                                            Behavior on color { ColorAnimation { duration: root.animMs } }
+                                        }
+                                        IconImage {
+                                            anchors.centerIn: parent
+                                            implicitSize: 42
+                                            scale: tpinMouse.pressed ? 0.85 : (tpinMouse.containsMouse ? 1.15 : 1)
+                                            Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+                                            source: tpin.entry ? Quickshell.iconPath(tpin.entry.icon, "application-x-executable") : ""
+                                        }
+                                        // dot under open apps (longer for the focused one)
+                                        Rectangle {
+                                            visible: tpin.running
+                                            anchors.horizontalCenter: parent.horizontalCenter
+                                            anchors.bottom: parent.bottom
+                                            anchors.bottomMargin: 2
+                                            width: tpin.isActive ? 14 : 5
+                                            height: 3
+                                            radius: 2
+                                            color: root.accent
+                                        }
+                                        MouseArea {
+                                            id: tpinMouse
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
+                                            onClicked: mouse => {
+                                                if (mouse.button === Qt.RightButton) {
+                                                    launcher.openPinMenu(tpin, tpin.modelData, tpin.entry, tpin.wins);
+                                                    return;
+                                                }
+                                                root.launcherOpen = false;
+                                                if (mouse.button === Qt.MiddleButton || !tpin.running) root.launchApp(tpin.entry);
+                                                else {
+                                                    // already open: bring it up (or the next one if it's focused)
+                                                    let next = 0;
+                                                    for (let i = 0; i < tpin.wins.length; i++)
+                                                        if (tpin.wins[i].activated) { next = (i + 1) % tpin.wins.length; break; }
+                                                    tpin.wins[next].activate();
+                                                }
                                             }
                                         }
                                     }
@@ -8258,7 +8293,7 @@ ShellRoot {
                             }
                         }
                         Text {
-                            anchors.centerIn: parent
+                            anchors.centerIn: taskFlick
                             visible: taskRow.width === 0
                             text: "Right-click any app above to pin it here"
                             color: root.muted
@@ -8597,7 +8632,7 @@ ShellRoot {
                     id: pinMenu
                     visible: launcher.menuItems.length > 0
                     x: Math.max(10, Math.min(card.width - width - 10, launcher.menuX - width / 2))
-                    y: card.height - 92 - height
+                    y: card.height - 104 - height
                     width: 200
                     height: pinMenuCol.implicitHeight + 12
                     radius: 14
