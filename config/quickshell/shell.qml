@@ -208,6 +208,17 @@ ShellRoot {
             property bool topPillAlways: true    // the top pill stays on screen (no pull tab)
             property bool lyricsOpen: false      // the left panel stays open across restarts
             property string leftTab: "lyrics"    // which tab the left panel shows
+            property bool inputTouched: false    // Input tab: only apply once you've changed something
+            property real inSens: 0              //   mouse speed (-1 to 1)
+            property string inAccel: "adaptive"  //   "flat" or "adaptive"
+            property real inScroll: 1            //   scroll speed
+            property bool inNatural: false       //   reversed scrolling
+            property int inRepeatRate: 25        //   key repeats per second
+            property int inRepeatDelay: 600      //   ms before a held key repeats
+            property int mouseDpi: 0             //   libratbag DPI (0 = never set)
+            property int mouseRate: 0            //   libratbag polling rate
+            property string rgbColor: ""         //   OpenRGB colour ("" = never set)
+            property bool rgbFollowTheme: false  //   lights follow the theme colour
             property bool micDenoise: false      // Capture tab: background noise removal for the mic
             property string micDenoiseLevel: "normal"
             property int recSysLevel: 70         // Capture tab: computer sound level in "Both" recordings (%)
@@ -4202,8 +4213,8 @@ ShellRoot {
                     Keys.onPressed: event => {
                         if (event.key === Qt.Key_Escape && root.devPicker !== "") root.devPicker = "";
                         else if (event.key === Qt.Key_Escape) root.hubOpen = false;
-                        else if (event.key === Qt.Key_Tab) root.hubTab = (root.hubTab + 1) % 9;
-                        else if (event.key === Qt.Key_Backtab) root.hubTab = (root.hubTab + 8) % 9;
+                        else if (event.key === Qt.Key_Tab) root.hubTab = (root.hubTab + 1) % 10;
+                        else if (event.key === Qt.Key_Backtab) root.hubTab = (root.hubTab + 9) % 10;
                         else return;
                         event.accepted = true;
                     }
@@ -4423,7 +4434,8 @@ ShellRoot {
                                                 { name: "System", icon: "" },
                                                 { name: "Capture", icon: "" },
                                                 { name: "Sports", icon: "\udb82\udc06" },
-                                                { name: "Themes", icon: "\uf53f" }
+                                                { name: "Themes", icon: "\uf53f" },
+                                                { name: "Input", icon: "\uf11c" }
                                             ]
 
                                         delegate: Rectangle {
@@ -7498,6 +7510,11 @@ ShellRoot {
                                         }
                                     }
                                 }
+                                // ===== 9: Input (keyboard & mouse) =====
+                                Loader {
+                                    active: root.hubTab === 9
+                                    sourceComponent: inputPage
+                                }
                             }
                         }
                     }
@@ -9619,9 +9636,453 @@ ShellRoot {
         { id: "display", name: "Display",   icon: "" },
         { id: "monitors", name: "Monitors", icon: "\uf26c" },
         { id: "clip",    name: "Clipboard", icon: "" },
-        { id: "notes",   name: "Notes",     icon: "" }
+        { id: "notes",   name: "Notes",     icon: "" },
+        { id: "input",   name: "Input",     icon: "\uf11c" }
     ]
     readonly property string leftTab: pins.adapter.leftTab || "lyrics"
+
+    // ---------- Keyboard & mouse (the Input tab in the hub and the left panel) ----------
+    // Speed, acceleration, scrolling and key repeat are Hyprland settings (set live with
+    // hyprctl and put back after every restart). Lighting uses OpenRGB, mouse DPI and
+    // polling rate use libratbag; those parts show up once the tool is installed.
+    readonly property var inp: pins.adapter
+    property bool hasOpenRgb: false
+    property bool hasRatbag: false
+    property string ratbagDev: ""            // the first mouse libratbag knows, e.g. "warbling-mara"
+    property string ratbagName: ""
+    property string rgbStatus: ""            // a short message after changing the lighting
+
+    function inputLua() {
+        const f = v => Number(v).toFixed(3);
+        return 'hl.config({ input = { sensitivity = ' + f(inp.inSens)
+            + ', accel_profile = "' + inp.inAccel + '"'
+            + ', scroll_factor = ' + f(inp.inScroll)
+            + ', natural_scroll = ' + (inp.inNatural ? "true" : "false")
+            + ', repeat_rate = ' + Math.round(inp.inRepeatRate)
+            + ', repeat_delay = ' + Math.round(inp.inRepeatDelay) + ' } })';
+    }
+    function setInput(key, v) {
+        inp[key] = v;
+        inp.inputTouched = true;
+        inputTimer.restart();
+    }
+    function applyInput() {
+        if (!inp.inputTouched) return;      // never override your Hyprland config until you change something here
+        Quickshell.execDetached(["hyprctl", "eval", inputLua()]);
+    }
+    Timer { id: inputTimer; interval: 150; onTriggered: root.applyInput() }
+
+    // first time: read what Hyprland is using now, so the sliders start at your real settings
+    Process {
+        id: inputRead
+        command: ["sh", "-c", 'for k in sensitivity accel_profile scroll_factor natural_scroll repeat_rate repeat_delay; do '
+            + 'printf "%s=" "$k"; hyprctl getoption "input:$k" -j 2>/dev/null | jq -r "if .float != null then .float elif .int != null then .int else .str end" 2>/dev/null || echo; done']
+        stdout: StdioCollector {
+            onStreamFinished: {
+                if (root.inp.inputTouched) return;
+                for (const line of text.split("\n")) {
+                    const eq = line.indexOf("=");
+                    if (eq < 0) continue;
+                    const k = line.slice(0, eq), v = line.slice(eq + 1).trim();
+                    if (v === "" || v === "null") continue;
+                    if (k === "sensitivity") root.inp.inSens = parseFloat(v);
+                    else if (k === "accel_profile") root.inp.inAccel = v === "flat" ? "flat" : "adaptive";
+                    else if (k === "scroll_factor") root.inp.inScroll = parseFloat(v);
+                    else if (k === "natural_scroll") root.inp.inNatural = v === "1" || v === "true";
+                    else if (k === "repeat_rate") root.inp.inRepeatRate = parseInt(v);
+                    else if (k === "repeat_delay") root.inp.inRepeatDelay = parseInt(v);
+                }
+            }
+        }
+    }
+    // which optional tools are installed (and which mouse libratbag sees)
+    Process {
+        id: inputTools
+        command: ["sh", "-c", 'command -v openrgb >/dev/null && echo RGB; '
+            + 'command -v ratbagctl >/dev/null && ratbagctl list 2>/dev/null | head -n1 | sed "s/^/RAT /"']
+        stdout: StdioCollector {
+            onStreamFinished: {
+                root.hasOpenRgb = text.indexOf("RGB") >= 0;
+                const m = text.match(/^RAT ([^:]+):\s*(.*)$/m);
+                root.hasRatbag = !!m;
+                root.ratbagDev = m ? m[1].trim() : "";
+                root.ratbagName = m ? m[2].trim() : "";
+            }
+        }
+    }
+    function inputPageShown() {
+        if (!inputRead.running) inputRead.running = true;
+        if (!inputTools.running) inputTools.running = true;
+    }
+
+    // lighting: one colour on every RGB device OpenRGB can see ("" = leave it alone, "000000" = off)
+    function setRgb(hex) {
+        inp.rgbColor = hex;
+        rgbStatus = "Changing…";
+        rgbProc.command = ["sh", "-c", 'openrgb --mode static --color "$1" >/dev/null 2>&1 && echo ok || echo fail', "sh", hex];
+        rgbProc.running = true;
+    }
+    Process {
+        id: rgbProc
+        stdout: StdioCollector {
+            onStreamFinished: root.rgbStatus = text.trim() === "ok" ? "" : "OpenRGB couldn't change it. Open the OpenRGB app once so it can find your devices."
+        }
+    }
+    function themeHex() {
+        const c = accentBase;
+        const h = v => ("0" + Math.round(v * 255).toString(16)).slice(-2);
+        return h(c.r) + h(c.g) + h(c.b);
+    }
+    // keep the lights on the theme colour when the theme changes
+    onAccentBaseChanged: if (inp.rgbFollowTheme && hasOpenRgb) rgbThemeTimer.restart()
+    Timer { id: rgbThemeTimer; interval: 800; onTriggered: root.setRgb(root.themeHex()) }
+
+    // mouse DPI and polling rate (libratbag)
+    function setDpi(v) {
+        inp.mouseDpi = v;
+        Quickshell.execDetached(["ratbagctl", ratbagDev, "dpi", "set", String(v)]);
+    }
+    function setPollRate(v) {
+        inp.mouseRate = v;
+        Quickshell.execDetached(["ratbagctl", ratbagDev, "rate", "set", String(v)]);
+    }
+
+    // put everything back after starting up
+    Timer {
+        interval: 3500
+        running: true
+        onTriggered: {
+            root.applyInput();
+            inputTools.running = true;
+            if (root.inp.rgbFollowTheme || root.inp.rgbColor !== "") rgbRestore.start();
+        }
+    }
+    Timer {
+        id: rgbRestore
+        interval: 2500
+        onTriggered: if (root.hasOpenRgb) root.setRgb(root.inp.rgbFollowTheme ? root.themeHex() : root.inp.rgbColor)
+    }
+
+    // ---- the page itself (shown in the hub and in the left panel) ----
+    Component {
+        id: inputPage
+
+        Flickable {
+            id: ipFlick
+            clip: true
+            contentWidth: width
+            contentHeight: ipGrid.implicitHeight + 6
+            boundsBehavior: Flickable.StopAtBounds
+            readonly property bool wide: width > 640
+            Component.onCompleted: root.inputPageShown()
+
+            GridLayout {
+                id: ipGrid
+                width: ipFlick.width
+                columns: ipFlick.wide ? 2 : 1
+                columnSpacing: 14
+                rowSpacing: 14
+
+                // ================= Mouse =================
+                HubCard {
+                    theme: root
+                    Layout.fillWidth: true
+                    Layout.preferredWidth: 1
+                    Layout.alignment: Qt.AlignTop
+                    implicitHeight: mouseCol.implicitHeight + 28
+                    radius: 20
+
+                    ColumnLayout {
+                        id: mouseCol
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: 14
+                        spacing: 10
+
+                        RowLayout {
+                            spacing: 8
+                            Text { text: ""; color: root.accent; font.family: root.iconFont; font.pixelSize: 15 }
+                            Text { text: "Mouse"; color: root.fg; font.pixelSize: 15; font.bold: true }
+                            Text { visible: root.ratbagName !== ""; text: root.ratbagName; color: root.muted; font.pixelSize: 11; elide: Text.ElideRight; Layout.maximumWidth: 180 }
+                        }
+
+                        // speed
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Text { Layout.fillWidth: true; text: "Speed"; color: root.fg; font.pixelSize: 12 }
+                            Text { text: (root.inp.inSens > 0 ? "+" : "") + Math.round(root.inp.inSens * 100); color: root.muted; font.pixelSize: 12 }
+                        }
+                        ValueBar {
+                            Layout.fillWidth: true
+                            theme: root
+                            value: (root.inp.inSens + 1) / 2
+                            onMoved: v => root.setInput("inSens", Math.round((v * 2 - 1) * 20) / 20)
+                        }
+
+                        // acceleration
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 6
+                            Text { Layout.fillWidth: true; text: "Acceleration"; color: root.fg; font.pixelSize: 12 }
+                            SportChip {
+                                theme: root
+                                label: "Off (best for games)"
+                                active: root.inp.inAccel === "flat"
+                                onClicked: root.setInput("inAccel", "flat")
+                            }
+                            SportChip {
+                                theme: root
+                                label: "On"
+                                active: root.inp.inAccel !== "flat"
+                                onClicked: root.setInput("inAccel", "adaptive")
+                            }
+                        }
+
+                        // scrolling
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Text { Layout.fillWidth: true; text: "Scroll speed"; color: root.fg; font.pixelSize: 12 }
+                            Text { text: root.inp.inScroll.toFixed(1) + "×"; color: root.muted; font.pixelSize: 12 }
+                        }
+                        ValueBar {
+                            Layout.fillWidth: true
+                            theme: root
+                            value: (root.inp.inScroll - 0.2) / 2.8
+                            onMoved: v => root.setInput("inScroll", Math.round((0.2 + v * 2.8) * 10) / 10)
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 6
+                            Text { Layout.fillWidth: true; text: "Scroll direction"; color: root.fg; font.pixelSize: 12 }
+                            SportChip { theme: root; label: "Normal"; active: !root.inp.inNatural; onClicked: root.setInput("inNatural", false) }
+                            SportChip { theme: root; label: "Reversed"; active: root.inp.inNatural; onClicked: root.setInput("inNatural", true) }
+                        }
+
+                        // DPI + polling rate (libratbag)
+                        Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: root.glassEdge }
+                        Text {
+                            visible: root.hasRatbag
+                            text: "DPI (sensor speed)"
+                            color: root.fg
+                            font.pixelSize: 12
+                        }
+                        Flow {
+                            visible: root.hasRatbag
+                            Layout.fillWidth: true
+                            spacing: 6
+                            Repeater {
+                                model: [400, 800, 1200, 1600, 2400, 3200]
+                                delegate: SportChip {
+                                    required property int modelData
+                                    theme: root
+                                    label: String(modelData)
+                                    active: root.inp.mouseDpi === modelData
+                                    onClicked: root.setDpi(modelData)
+                                }
+                            }
+                        }
+                        RowLayout {
+                            visible: root.hasRatbag
+                            Layout.fillWidth: true
+                            spacing: 6
+                            Text { Layout.fillWidth: true; text: "Response (polling rate)"; color: root.fg; font.pixelSize: 12 }
+                            Repeater {
+                                model: [125, 500, 1000]
+                                delegate: SportChip {
+                                    required property int modelData
+                                    theme: root
+                                    label: modelData + " Hz"
+                                    active: root.inp.mouseRate === modelData
+                                    onClicked: root.setPollRate(modelData)
+                                }
+                            }
+                        }
+                        Text {
+                            visible: !root.hasRatbag
+                            Layout.fillWidth: true
+                            text: "For DPI and polling rate on gaming mice, install libratbag (sudo pacman -S libratbag, then sudo systemctl enable --now ratbagd)."
+                            color: root.muted
+                            font.pixelSize: 11
+                            wrapMode: Text.Wrap
+                        }
+                    }
+                }
+
+                // ================= Keyboard =================
+                HubCard {
+                    theme: root
+                    Layout.fillWidth: true
+                    Layout.preferredWidth: 1
+                    Layout.alignment: Qt.AlignTop
+                    implicitHeight: kbCol.implicitHeight + 28
+                    radius: 20
+
+                    ColumnLayout {
+                        id: kbCol
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: 14
+                        spacing: 10
+
+                        RowLayout {
+                            spacing: 8
+                            Text { text: ""; color: root.accent; font.family: root.iconFont; font.pixelSize: 15 }
+                            Text { text: "Keyboard"; color: root.fg; font.pixelSize: 15; font.bold: true }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Text { Layout.fillWidth: true; text: "Wait before a held key repeats"; color: root.fg; font.pixelSize: 12 }
+                            Text { text: root.inp.inRepeatDelay + " ms"; color: root.muted; font.pixelSize: 12 }
+                        }
+                        ValueBar {
+                            Layout.fillWidth: true
+                            theme: root
+                            value: (root.inp.inRepeatDelay - 150) / 850
+                            onMoved: v => root.setInput("inRepeatDelay", Math.round((150 + v * 850) / 25) * 25)
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Text { Layout.fillWidth: true; text: "Repeat speed"; color: root.fg; font.pixelSize: 12 }
+                            Text { text: root.inp.inRepeatRate + " per second"; color: root.muted; font.pixelSize: 12 }
+                        }
+                        ValueBar {
+                            Layout.fillWidth: true
+                            theme: root
+                            value: (root.inp.inRepeatRate - 10) / 70
+                            onMoved: v => root.setInput("inRepeatRate", Math.round(10 + v * 70))
+                        }
+                        // try it out
+                        Rectangle {
+                            Layout.fillWidth: true
+                            implicitHeight: 34
+                            radius: 12
+                            color: root.bg
+                            border.width: 1
+                            border.color: kbTest.activeFocus ? root.accent : root.glassEdge
+                            TextInput {
+                                id: kbTest
+                                anchors.fill: parent
+                                anchors.leftMargin: 12
+                                anchors.rightMargin: 12
+                                verticalAlignment: TextInput.AlignVCenter
+                                color: root.fg
+                                font.pixelSize: 13
+                                clip: true
+                                Keys.onEscapePressed: text = ""
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    visible: kbTest.text === ""
+                                    text: "Click and hold a key here to try it"
+                                    color: root.muted
+                                    font.pixelSize: 12
+                                }
+                            }
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 6
+                            Text { Layout.fillWidth: true; text: "Quick set"; color: root.muted; font.pixelSize: 11 }
+                            SportChip { theme: root; label: "Gaming"; onClicked: { root.setInput("inRepeatDelay", 200); root.setInput("inRepeatRate", 50); } }
+                            SportChip { theme: root; label: "Normal"; onClicked: { root.setInput("inRepeatDelay", 600); root.setInput("inRepeatRate", 25); } }
+                        }
+                    }
+                }
+
+                // ================= Lighting (OpenRGB) =================
+                HubCard {
+                    theme: root
+                    Layout.fillWidth: true
+                    Layout.columnSpan: ipFlick.wide ? 2 : 1
+                    implicitHeight: rgbCol.implicitHeight + 28
+                    radius: 20
+
+                    ColumnLayout {
+                        id: rgbCol
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: 14
+                        spacing: 10
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+                            Text { text: ""; color: root.accent; font.family: root.iconFont; font.pixelSize: 15 }
+                            Text { text: "Lighting"; color: root.fg; font.pixelSize: 15; font.bold: true }
+                            Text { visible: ipFlick.wide; text: "keyboard, mouse and other RGB"; color: root.muted; font.pixelSize: 11 }
+                            Item { Layout.fillWidth: true }
+                            SportChip {
+                                visible: root.hasOpenRgb
+                                theme: root
+                                icon: ""
+                                label: "Match my theme"
+                                active: root.inp.rgbFollowTheme
+                                onClicked: {
+                                    root.inp.rgbFollowTheme = !root.inp.rgbFollowTheme;
+                                    if (root.inp.rgbFollowTheme) root.setRgb(root.themeHex());
+                                }
+                            }
+                            SportChip {
+                                visible: root.hasOpenRgb
+                                theme: root
+                                label: "Off"
+                                active: !root.inp.rgbFollowTheme && root.inp.rgbColor === "000000"
+                                onClicked: { root.inp.rgbFollowTheme = false; root.setRgb("000000"); }
+                            }
+                        }
+                        Flow {
+                            visible: root.hasOpenRgb
+                            Layout.fillWidth: true
+                            spacing: 8
+                            Repeater {
+                                model: ["ffffff", "ff2d2d", "ff7a1a", "ffd21a", "7dff1a", "1aff6e", "1affe0", "1ab4ff",
+                                        "2d5bff", "7a2dff", "c92dff", "ff2dc9", "ff8fb3", "ffb38f", "b3ffd9", "b3c9ff"]
+                                delegate: Rectangle {
+                                    id: rgbSw
+                                    required property string modelData
+                                    readonly property bool current: !root.inp.rgbFollowTheme && root.inp.rgbColor === rgbSw.modelData
+                                    width: 28
+                                    height: 28
+                                    radius: 14
+                                    color: "#" + rgbSw.modelData
+                                    border.width: rgbSw.current ? 3 : 1
+                                    border.color: rgbSw.current ? root.fg : Qt.rgba(1, 1, 1, 0.35)
+                                    scale: rgbSwMouse.pressed ? 0.85 : (rgbSwMouse.containsMouse ? 1.15 : 1)
+                                    Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutBack } }
+                                    MouseArea {
+                                        id: rgbSwMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: { root.inp.rgbFollowTheme = false; root.setRgb(rgbSw.modelData); }
+                                    }
+                                }
+                            }
+                        }
+                        Text {
+                            visible: root.hasOpenRgb && root.rgbStatus !== ""
+                            Layout.fillWidth: true
+                            text: root.rgbStatus
+                            color: root.muted
+                            font.pixelSize: 11
+                            wrapMode: Text.Wrap
+                        }
+                        Text {
+                            visible: !root.hasOpenRgb
+                            Layout.fillWidth: true
+                            text: "To change your keyboard and mouse colours, install OpenRGB: sudo pacman -S openrgb  (then open the OpenRGB app once so it finds your devices)."
+                            color: root.muted
+                            font.pixelSize: 11
+                            wrapMode: Text.Wrap
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // ----- Monitors tab -----
     property bool hasNwgDisplays: true
@@ -9885,7 +10346,7 @@ ShellRoot {
                 color: "transparent"
                 WlrLayershell.layer: WlrLayer.Top
                 WlrLayershell.namespace: "quickshell-lyrics"
-                WlrLayershell.keyboardFocus: lyrScope.here && (root.leftTab === "clip" || root.leftTab === "notes")
+                WlrLayershell.keyboardFocus: lyrScope.here && (root.leftTab === "clip" || root.leftTab === "notes" || root.leftTab === "input")
                     ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None   // only takes typing on Clipboard / Notes, when you click in
                 // only the card catches the mouse; everything else goes to the windows underneath
                 readonly property bool showing: lyrScope.here || lyrCard.x > -lyrCard.width
@@ -10754,6 +11215,12 @@ ShellRoot {
                                         onClicked: noteEdit.forceActiveFocus()
                                     }
                                 }
+                            }
+
+                            // ===== Input (keyboard & mouse) =====
+                            Loader {
+                                active: lyrScope.here && root.leftTab === "input"
+                                sourceComponent: inputPage
                             }
                         }
                     }
