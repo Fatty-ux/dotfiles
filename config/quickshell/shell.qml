@@ -7645,6 +7645,94 @@ ShellRoot {
         }
     }
 
+    // ---------- Games library (in the launcher: the Games button) ----------
+    // scripts/games.py reads Steam, Heroic and recomp folders and prints every game as JSON.
+    // The last list is kept in ~/.cache/joeos/games.json so it shows instantly next time.
+    property bool gamesMode: false
+    property var gamesAll: []
+    property var gamesCols: []               // Steam collections [{ id, name }]
+    property string gamesRecompLauncher: ""
+    property bool gamesLoading: false
+    property int gamesMissingNames: 0
+    property string gamesSrc: "all"          // all, steam, heroic, recomp
+    property string gamesCol: ""             // a Steam collection id, "" = none picked
+    property bool gamesInstalledOnly: false
+    property string gamesSort: "recent"      // recent or az
+    property string gamesQuery: ""
+    readonly property string gamesScript: Quickshell.env("HOME") + "/.config/quickshell/scripts/games.py"
+    readonly property string gamesCachePath: Quickshell.env("HOME") + "/.cache/joeos/games.json"
+
+    readonly property var gamesShown: {
+        const q = gamesQuery.trim().toLowerCase();
+        let list = gamesAll.filter(g =>
+            (gamesSrc === "all" || g.src === gamesSrc)
+            && (gamesCol === "" || (g.cols && g.cols.indexOf(gamesCol) >= 0))
+            && (!gamesInstalledOnly || g.installed)
+            && (q === "" || g.name.toLowerCase().indexOf(q) >= 0));
+        if (gamesSort === "recent")
+            list = list.slice().sort((a, b) => (b.last || 0) - (a.last || 0) || a.name.localeCompare(b.name));
+        return list;
+    }
+    function gamesCount(src) {
+        return src === "all" ? gamesAll.length : gamesAll.filter(g => g.src === src).length;
+    }
+
+    function gamesApply(text) {
+        try {
+            const d = JSON.parse(text);
+            gamesAll = d.games || [];
+            gamesCols = d.collections || [];
+            gamesRecompLauncher = d.recompLauncher || "";
+            gamesMissingNames = d.missingNames || 0;
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+    FileView {
+        id: gamesCache
+        path: root.gamesCachePath
+        printErrors: false
+        onLoaded: if (root.gamesAll.length === 0) root.gamesApply(text())
+    }
+    Process {
+        id: gamesScan
+        property bool names: false
+        command: ["python3", root.gamesScript].concat(names ? ["--names"] : [])
+        stdout: StdioCollector {
+            onStreamFinished: {
+                if (root.gamesApply(text)) {
+                    Quickshell.execDetached(["sh", "-c", 'mkdir -p "$(dirname "$2")" && printf "%s" "$1" > "$2"', "sh", text, root.gamesCachePath]);
+                    // names of Steam games that aren't installed come from the Steam store, a few at a time
+                    if (root.gamesMissingNames > 0 && !gamesScan.names) gamesNamesLater.start();
+                }
+                root.gamesLoading = false;
+            }
+        }
+        onExited: { root.gamesLoading = false; names = false; }
+    }
+    Timer {
+        id: gamesNamesLater
+        interval: 1500
+        onTriggered: { gamesScan.names = true; root.gamesRefresh(); }
+    }
+    function gamesRefresh() {
+        if (gamesScan.running) return;
+        gamesLoading = true;
+        gamesScan.running = true;
+    }
+    function openGames() {
+        gamesMode = true;
+        gamesQuery = "";
+        gamesRefresh();
+    }
+    onLauncherOpenChanged: if (!launcherOpen) gamesMode = false
+
+    function gamePlay(g) {
+        launcherOpen = false;
+        Quickshell.execDetached(g.installed ? g.play : (g.install && g.install.length ? g.install : g.play));
+    }
+
     // ---------- App launcher (search menu) ----------
     Variants {
         model: Quickshell.screens
@@ -7769,8 +7857,9 @@ ShellRoot {
                 readonly property real pillW: root.dockPillW
                 readonly property real pillH: 22
                 readonly property real pillGap: -10         // the tab hangs off the bottom edge like this
-                width: launcher.grown ? 760 : pillW
-                height: launcher.grown ? 640 : pillH
+                // the Games library makes it bigger
+                width: !launcher.grown ? pillW : (root.gamesMode ? Math.min(1240, launcher.width - 80) : 760)
+                height: !launcher.grown ? pillH : (root.gamesMode ? Math.min(760, launcher.height - 60) : 640)
                 anchors.horizontalCenter: parent.horizontalCenter
                 anchors.bottom: parent.bottom
                 anchors.bottomMargin: launcher.grown ? 14 : pillGap
@@ -7806,6 +7895,7 @@ ShellRoot {
                     anchors.bottom: parent.bottom
                     anchors.bottomMargin: 20
                     spacing: 14
+                    visible: !root.gamesMode
                     opacity: launcher.grown ? 1 : 0
                     Behavior on opacity { NumberAnimation { duration: launcher.grown ? root.animMs * 3 : root.animMs; easing.type: Easing.OutCubic } }
 
@@ -8071,6 +8161,27 @@ ShellRoot {
                         Layout.fillWidth: true
                         implicitHeight: 58
 
+                        // ---- Games library button ----
+                        Rectangle {
+                            anchors.left: parent.left
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: gBtnRow.implicitWidth + 26
+                            height: 44
+                            radius: 22
+                            color: gBtnMouse.containsMouse ? root.accent : root.surface
+                            border.width: 1
+                            border.color: root.glassEdge
+                            Behavior on color { ColorAnimation { duration: root.animMs } }
+                            Row {
+                                id: gBtnRow
+                                anchors.centerIn: parent
+                                spacing: 8
+                                Text { anchors.verticalCenter: parent.verticalCenter; text: "\uf11b"; font.family: root.iconFont; font.pixelSize: 16; color: gBtnMouse.containsMouse ? root.bg : root.accent }
+                                Text { anchors.verticalCenter: parent.verticalCenter; text: "Games"; font.pixelSize: 13; font.bold: true; color: gBtnMouse.containsMouse ? root.bg : root.fg }
+                            }
+                            MouseArea { id: gBtnMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.openGames() }
+                        }
+
                         Row {
                             id: taskRow
                             anchors.centerIn: parent
@@ -8152,6 +8263,331 @@ ShellRoot {
                             text: "Right-click any app above to pin it here"
                             color: root.muted
                             font.pixelSize: 12
+                        }
+                    }
+                }
+
+                // ===== Games library =====
+                Item {
+                    id: gamesView
+                    anchors.fill: parent
+                    anchors.margins: 20
+                    visible: root.gamesMode
+                    opacity: launcher.grown && root.gamesMode ? 1 : 0
+                    Behavior on opacity { NumberAnimation { duration: root.animMs * 2 } }
+                    onVisibleChanged: if (visible) gamesSearch.forceActiveFocus()
+
+                    RowLayout {
+                        anchors.fill: parent
+                        spacing: 16
+
+                        // ---- sidebar: where from, collections, filters ----
+                        ColumnLayout {
+                            Layout.preferredWidth: 220
+                            Layout.maximumWidth: 220
+                            Layout.fillWidth: false
+                            Layout.fillHeight: true
+                            spacing: 6
+
+                            Rectangle {
+                                Layout.fillWidth: true
+                                implicitHeight: 40
+                                radius: 14
+                                color: gBack.containsMouse ? root.overlay : root.surface
+                                border.width: 1
+                                border.color: root.glassEdge
+                                Row {
+                                    anchors.centerIn: parent
+                                    spacing: 8
+                                    Text { text: ""; font.family: root.iconFont; font.pixelSize: 13; color: root.fg; anchors.verticalCenter: parent.verticalCenter }
+                                    Text { text: "Apps"; color: root.fg; font.pixelSize: 13; anchors.verticalCenter: parent.verticalCenter }
+                                }
+                                MouseArea { id: gBack; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.gamesMode = false }
+                            }
+
+                            Text { text: "Library"; color: root.muted; font.pixelSize: 11; Layout.topMargin: 8 }
+                            Repeater {
+                                model: [
+                                    { id: "all", name: "All games", icon: "" },
+                                    { id: "steam", name: "Steam", icon: "" },
+                                    { id: "heroic", name: "Heroic", icon: "" },
+                                    { id: "recomp", name: "Recomp", icon: "" }
+                                ]
+                                delegate: Rectangle {
+                                    id: gs
+                                    required property var modelData
+                                    readonly property bool sel: root.gamesSrc === modelData.id && root.gamesCol === ""
+                                    Layout.fillWidth: true
+                                    implicitHeight: 38
+                                    radius: 12
+                                    color: gs.sel ? root.accent : (gsMouse.containsMouse ? root.overlay : "transparent")
+                                    Behavior on color { ColorAnimation { duration: root.animMs } }
+                                    RowLayout {
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 12
+                                        anchors.rightMargin: 12
+                                        spacing: 10
+                                        Text { text: gs.modelData.icon; font.family: root.iconFont; font.pixelSize: 14; color: gs.sel ? root.bg : root.accent }
+                                        Text { Layout.fillWidth: true; text: gs.modelData.name; color: gs.sel ? root.bg : root.fg; font.pixelSize: 13; font.bold: gs.sel }
+                                        Text { text: root.gamesCount(gs.modelData.id); color: gs.sel ? root.bg : root.muted; font.pixelSize: 11 }
+                                    }
+                                    MouseArea {
+                                        id: gsMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: { root.gamesSrc = gs.modelData.id; root.gamesCol = ""; }
+                                    }
+                                }
+                            }
+
+                            Text { visible: root.gamesCols.length > 0; text: "Steam collections"; color: root.muted; font.pixelSize: 11; Layout.topMargin: 8 }
+                            ListView {
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                clip: true
+                                spacing: 2
+                                boundsBehavior: Flickable.StopAtBounds
+                                model: root.gamesCols
+                                delegate: Rectangle {
+                                    id: gc2
+                                    required property var modelData
+                                    readonly property bool sel: root.gamesCol === modelData.id
+                                    width: ListView.view.width
+                                    height: 34
+                                    radius: 11
+                                    color: gc2.sel ? root.accent : (gcMouse.containsMouse ? root.overlay : "transparent")
+                                    Text {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        x: 12
+                                        width: parent.width - 24
+                                        text: gc2.modelData.name
+                                        elide: Text.ElideRight
+                                        color: gc2.sel ? root.bg : root.fg
+                                        font.pixelSize: 12
+                                        font.bold: gc2.sel
+                                    }
+                                    MouseArea {
+                                        id: gcMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: { root.gamesSrc = "steam"; root.gamesCol = gc2.sel ? "" : gc2.modelData.id; }
+                                    }
+                                }
+                            }
+                            Item { visible: root.gamesCols.length === 0; Layout.fillHeight: true }
+
+                            // open the launchers themselves
+                            Text { text: "Open"; color: root.muted; font.pixelSize: 11 }
+                            Flow {
+                                Layout.fillWidth: true
+                                spacing: 6
+                                SportChip { theme: root; label: "Steam"; onClicked: { root.launcherOpen = false; Quickshell.execDetached(["steam"]); } }
+                                SportChip { theme: root; label: "Heroic"; onClicked: { root.launcherOpen = false; Quickshell.execDetached(["sh", "-c", "heroic || flatpak run com.heroicgameslauncher.hgl"]); } }
+                                SportChip {
+                                    visible: root.gamesRecompLauncher !== ""
+                                    theme: root
+                                    label: "RecompLauncher"
+                                    onClicked: { root.launcherOpen = false; Quickshell.execDetached([root.gamesRecompLauncher]); }
+                                }
+                            }
+                        }
+
+                        // ---- search, filters and the covers ----
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            spacing: 12
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 8
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    implicitHeight: 44
+                                    radius: 16
+                                    color: root.surface
+                                    border.width: 1
+                                    border.color: gamesSearch.activeFocus ? root.accent : root.glassEdge
+                                    Text {
+                                        id: gSearchIcon
+                                        anchors.left: parent.left
+                                        anchors.leftMargin: 14
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: ""
+                                        font.family: root.iconFont
+                                        font.pixelSize: 14
+                                        color: root.accent
+                                    }
+                                    TextInput {
+                                        id: gamesSearch
+                                        anchors.left: gSearchIcon.right
+                                        anchors.leftMargin: 10
+                                        anchors.right: parent.right
+                                        anchors.rightMargin: 14
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        color: root.fg
+                                        font.pixelSize: 14
+                                        clip: true
+                                        text: root.gamesQuery
+                                        onTextChanged: root.gamesQuery = text
+                                        Keys.onEscapePressed: { if (text !== "") text = ""; else root.launcherOpen = false; }
+                                        Keys.onReturnPressed: if (gamesGrid.count > 0) root.gamePlay(root.gamesShown[0])
+                                        Text {
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            visible: gamesSearch.text === ""
+                                            text: "Search " + root.gamesShown.length + " games"
+                                            color: root.muted
+                                            font.pixelSize: 14
+                                        }
+                                    }
+                                }
+                                SportChip { theme: root; label: "Installed"; icon: ""; active: root.gamesInstalledOnly; onClicked: root.gamesInstalledOnly = !root.gamesInstalledOnly }
+                                SportChip { theme: root; label: "Recent"; active: root.gamesSort === "recent"; onClicked: root.gamesSort = "recent" }
+                                SportChip { theme: root; label: "A–Z"; active: root.gamesSort === "az"; onClicked: root.gamesSort = "az" }
+                                SportChip { theme: root; icon: root.gamesLoading ? "" : ""; label: ""; onClicked: root.gamesRefresh() }
+                            }
+
+                            GridView {
+                                id: gamesGrid
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                clip: true
+                                boundsBehavior: Flickable.StopAtBounds
+                                model: root.gamesShown
+                                readonly property int cols: Math.max(3, Math.floor(width / 160))
+                                cellWidth: Math.floor(width / cols)
+                                cellHeight: cellWidth * 1.5 + 34
+                                cacheBuffer: 1200
+
+                                delegate: Item {
+                                    id: gcard
+                                    required property var modelData
+                                    width: gamesGrid.cellWidth
+                                    height: gamesGrid.cellHeight
+
+                                    Rectangle {
+                                        id: gArt
+                                        anchors.top: parent.top
+                                        anchors.horizontalCenter: parent.horizontalCenter
+                                        width: parent.width - 14
+                                        height: width * 1.5
+                                        radius: 14
+                                        color: root.overlay
+                                        border.width: gMouse.containsMouse ? 2 : 1
+                                        border.color: gMouse.containsMouse ? root.accent : root.glassEdge
+                                        scale: gMouse.pressed ? 0.96 : (gMouse.containsMouse ? 1.04 : 1)
+                                        Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutCubic } }
+                                        clip: true
+
+                                        // a plain tile with the name while there's no picture
+                                        Text {
+                                            anchors.centerIn: parent
+                                            width: parent.width - 16
+                                            visible: gImg.status !== Image.Ready
+                                            text: gcard.modelData.name
+                                            horizontalAlignment: Text.AlignHCenter
+                                            wrapMode: Text.Wrap
+                                            color: root.fg
+                                            font.pixelSize: 13
+                                            font.bold: true
+                                        }
+                                        Image {
+                                            id: gImg
+                                            anchors.fill: parent
+                                            anchors.margins: 1
+                                            property int tryNo: 0
+                                            source: tryNo === 0 ? (gcard.modelData.cover || gcard.modelData.header || "") : (tryNo === 1 ? (gcard.modelData.header || "") : "")
+                                            onStatusChanged: if (status === Image.Error && tryNo < 2) tryNo++
+                                            fillMode: Image.PreserveAspectCrop
+                                            asynchronous: true
+                                            cache: true
+                                            sourceSize.width: 300
+                                            opacity: gcard.modelData.installed ? 1 : 0.55
+                                        }
+                                        // where it's from
+                                        Rectangle {
+                                            anchors.top: parent.top
+                                            anchors.left: parent.left
+                                            anchors.margins: 6
+                                            width: gSrc.implicitWidth + 12
+                                            height: 20
+                                            radius: 10
+                                            color: Qt.rgba(0, 0, 0, 0.55)
+                                            Text {
+                                                id: gSrc
+                                                anchors.centerIn: parent
+                                                text: gcard.modelData.src === "steam" ? "Steam" : gcard.modelData.src === "heroic" ? (gcard.modelData.store || "Heroic") : "Recomp"
+                                                color: "white"
+                                                font.pixelSize: 9
+                                                font.bold: true
+                                            }
+                                        }
+                                        // play / install button on hover
+                                        Rectangle {
+                                            anchors.centerIn: parent
+                                            visible: gMouse.containsMouse
+                                            width: 54
+                                            height: 54
+                                            radius: 27
+                                            color: root.accent
+                                            Text {
+                                                anchors.centerIn: parent
+                                                anchors.horizontalCenterOffset: gcard.modelData.installed ? 2 : 0
+                                                text: gcard.modelData.installed ? "" : ""
+                                                font.family: root.iconFont
+                                                font.pixelSize: 20
+                                                color: root.bg
+                                            }
+                                        }
+                                    }
+                                    Text {
+                                        anchors.top: gArt.bottom
+                                        anchors.topMargin: 6
+                                        anchors.horizontalCenter: parent.horizontalCenter
+                                        width: gArt.width
+                                        text: gcard.modelData.name
+                                        elide: Text.ElideRight
+                                        horizontalAlignment: Text.AlignHCenter
+                                        color: gcard.modelData.installed ? root.fg : root.muted
+                                        font.pixelSize: 12
+                                    }
+                                    Text {
+                                        anchors.top: gArt.bottom
+                                        anchors.topMargin: 21
+                                        anchors.horizontalCenter: parent.horizontalCenter
+                                        visible: !gcard.modelData.installed
+                                        text: "Not installed"
+                                        color: root.muted
+                                        font.pixelSize: 9
+                                    }
+                                    MouseArea {
+                                        id: gMouse
+                                        anchors.fill: gArt
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: root.gamePlay(gcard.modelData)
+                                    }
+                                }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                visible: gamesGrid.count === 0
+                                horizontalAlignment: Text.AlignHCenter
+                                text: root.gamesLoading ? "Finding your games…"
+                                    : root.gamesAll.length === 0 ? "No games found. Open Steam or Heroic once, then press refresh."
+                                    : "Nothing matches"
+                                color: root.muted
+                                font.pixelSize: 13
+                            }
+                            Text {
+                                visible: root.gamesMissingNames > 0
+                                text: "Looking up the names of " + root.gamesMissingNames + " more Steam games…"
+                                color: root.muted
+                                font.pixelSize: 11
+                            }
                         }
                     }
                 }
