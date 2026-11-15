@@ -705,6 +705,15 @@ ShellRoot {
     }
 
     // quick toggle: step through the styles (everything else is on the Themes tab)
+    // the pages that have a tab, in order (Calendar is on Home now; Bluetooth opens from its tile)
+    readonly property var hubTabPages: [0, 1, 2, 4, 5, 6, 7, 8, 9]
+    function hubNextTab(step) {
+        const l = hubTabPages;
+        let i = l.indexOf(hubTab);
+        if (i < 0) i = 0;
+        return l[(i + step + l.length) % l.length];
+    }
+
     function cycleTheme() {
         const ids = themeStyles.map(s => s.id);
         pins.adapter.themeStyle = ids[(ids.indexOf(themeStyle) + 1) % ids.length];
@@ -4486,8 +4495,8 @@ ShellRoot {
                     Keys.onPressed: event => {
                         if (event.key === Qt.Key_Escape && root.devPicker !== "") root.devPicker = "";
                         else if (event.key === Qt.Key_Escape) root.hubOpen = false;
-                        else if (event.key === Qt.Key_Tab) root.hubTab = (root.hubTab + 1) % 10;
-                        else if (event.key === Qt.Key_Backtab) root.hubTab = (root.hubTab + 9) % 10;
+                        else if (event.key === Qt.Key_Tab) root.hubTab = root.hubNextTab(1);
+                        else if (event.key === Qt.Key_Backtab) root.hubTab = root.hubNextTab(-1);
                         else return;
                         event.accepted = true;
                     }
@@ -4740,23 +4749,22 @@ ShellRoot {
 
                                     Repeater {
                                         model: [
-                                                { name: "Home", icon: "" },
-                                                { name: "Media", icon: "" },
-                                                { name: "Apps", icon: "" },
-                                                { name: "Calendar", icon: "" },
-                                                { name: "Alerts", icon: "" },
-                                                { name: "System", icon: "" },
-                                                { name: "Capture", icon: "" },
-                                                { name: "Sports", icon: "\udb82\udc06" },
-                                                { name: "Themes", icon: "\uf53f" },
-                                                { name: "Input", icon: "\uf11c" }
+                                                { page: 0, name: "Home", icon: "" },
+                                                { page: 1, name: "Media", icon: "" },
+                                                { page: 2, name: "Apps", icon: "" },
+                                                { page: 4, name: "Alerts", icon: "" },
+                                                { page: 5, name: "System", icon: "" },
+                                                { page: 6, name: "Capture", icon: "" },
+                                                { page: 7, name: "Sports", icon: "\udb82\udc06" },
+                                                { page: 8, name: "Themes", icon: "\uf53f" },
+                                                { page: 9, name: "Input", icon: "\uf11c" }
                                             ]
 
                                         delegate: Rectangle {
                                             id: htab
                                             required property var modelData
                                             required property int index
-                                            readonly property bool current: root.hubTab === htab.index
+                                            readonly property bool current: root.hubTab === htab.modelData.page
                                             Layout.fillWidth: true
                                             Layout.fillHeight: true
                                             radius: 16
@@ -4789,7 +4797,7 @@ ShellRoot {
                                                 anchors.fill: parent
                                                 hoverEnabled: true
                                                 cursorShape: Qt.PointingHandCursor
-                                                onClicked: root.hubTab = htab.index
+                                                onClicked: root.hubTab = htab.modelData.page
                                             }
                                         }
                                     }
@@ -4804,90 +4812,37 @@ ShellRoot {
 
                                 // ===== 0: Home =====
                                 ColumnLayout {
-                                    spacing: 16
+                                    spacing: 12
 
-                                    // Quick toggles
-                                    GridLayout {
-                                        Layout.fillWidth: true
-                                        columns: 4
-                                        rowSpacing: 14
-                                        columnSpacing: 14
-
-                                        Repeater {
-                                            model: [
-                                                {
-                                                    icon: "", title: "Wi-Fi",
-                                                    sub: !root.wifiOn ? "Off" : (root.netKind === "wifi" ? root.netName : "On"),
-                                                    active: root.wifiOn, ok: true,
-                                                    run: () => root.run("nmcli radio wifi " + (root.wifiOn ? "off" : "on"))
-                                                },
-                                                {
-                                                    icon: "", title: "Bluetooth",
-                                                    sub: root.btState === "none" ? "Not available" : (root.btState === "yes" ? (root.btDevices.some(d => d.connected) ? root.btDevices.filter(d => d.connected)[0].name : "On · tap for devices") : "Off · tap for devices"),
-                                                    active: root.btState === "yes", ok: root.btState !== "none",
-                                                    run: () => { root.hubTab = 10; root.btRefresh(); }
-                                                },
-                                                {
-                                                    icon: "", title: "Do not disturb",
-                                                    sub: root.dnd ? "On" : "Off",
-                                                    active: root.dnd, ok: true,
-                                                    run: () => { root.dnd = !root.dnd; }
-                                                },
-                                                {
-                                                    icon: "", title: "Night light",
-                                                    sub: root.nightState === "none" ? "Needs hyprsunset" : (root.nightState === "on" ? "On" : "Off"),
-                                                    active: root.nightState === "on", ok: root.nightState !== "none",
-                                                    run: () => root.run(root.nightState === "on" ? "pkill -x hyprsunset" : "hyprsunset -t 4000 >/dev/null 2>&1")
-                                                },
-                                                {
-                                                    icon: "", title: "Screenshot", sub: "Area · more in Capture",
-                                                    active: false, ok: true,
-                                                    run: () => root.takeScreenshot()
-                                                },
-                                                {
-                                                    icon: "", title: "Wallpaper", sub: "Choose one",
-                                                    active: false, ok: true,
-                                                    run: () => { root.hubOpen = false; root.wallPickerOpen = true; }
-                                                },
-                                                {
-                                                    icon: "\uf11b", title: "Game mode",
-                                                    sub: root.gameMode ? "On · max FPS" : "Off",
-                                                    active: root.gameMode, ok: true,
-                                                    run: () => root.setGameMode(!root.gameMode)
-                                                },
-                                                {
-                                                    icon: "\uf019", title: "Updates",
-                                                    sub: root.updRunning ? "Updating…" : root.updChecking ? "Checking…"
-                                                        : !root.updAuto ? (root.updTotal > 0 ? root.updTotal + " waiting · tap to set up auto" : "Tap to set up auto updates")
-                                                        : root.updState === "restart" ? "Restart to finish"
-                                                        : root.updState === "failed" ? "Needs you · tap to fix"
-                                                        : (root.updSystem + root.updFlatpak) > 0 ? (root.updSystem + root.updFlatpak) + " waiting · tap to install"
-                                                        : root.updAur > 0 ? root.updAur + " AUR · tap to install"
-                                                        : "Auto · " + (root.updStateAt ? "updated " + root.updAgo(root.updStateAt) : "daily"),
-                                                    active: root.updRunning || root.updTotal > 0, ok: true,
-                                                    run: () => {
-                                                        if (!root.updAuto || root.updTotal > 0 || root.updState === "failed") { root.hubOpen = false; root.runUpdates(); }
-                                                        else root.checkUpdates();
-                                                    }
-                                                }
-
-                                            ]
-
-                                            delegate: HubToggle {
-                                                required property var modelData
-                                                theme: root
-                                                item: modelData
-                                                Layout.fillWidth: true
-                                                Layout.preferredHeight: 72
-                                            }
-                                        }
-                                    }
-
-                                    // Now playing + stats
                                     RowLayout {
                                         Layout.fillWidth: true
-                                        Layout.preferredHeight: 138
+                                        Layout.preferredHeight: 128
+                                        Layout.maximumHeight: 128
                                         spacing: 12
+
+                                        // the time, nice and big
+                                        HubCard {
+                                            theme: root
+                                            Layout.preferredWidth: 250
+                                            Layout.fillHeight: true
+                                            ColumnLayout {
+                                                anchors.centerIn: parent
+                                                spacing: 2
+                                                Text {
+                                                    Layout.alignment: Qt.AlignHCenter
+                                                    text: Qt.formatDateTime(clock.date, root.timePattern)
+                                                    color: root.fg
+                                                    font.pixelSize: 44
+                                                    font.bold: true
+                                                }
+                                                Text {
+                                                    Layout.alignment: Qt.AlignHCenter
+                                                    text: Qt.formatDateTime(clock.date, "dddd, MMMM d")
+                                                    color: root.accent
+                                                    font.pixelSize: 13
+                                                }
+                                            }
+                                        }
 
                                         HubCard {
                                             theme: root
@@ -5064,119 +5019,10 @@ ShellRoot {
                                         }
                                     }
 
-                                    // Sound output + microphone
-                                    HubCard {
-                                        theme: root
+                                    // calendar (moved here from its own tab)
+                                    RowLayout {
                                         Layout.fillWidth: true
-                                        Layout.preferredHeight: 100
-
-                                        ColumnLayout {
-                                            anchors.fill: parent
-                                            anchors.leftMargin: 14
-                                            anchors.rightMargin: 14
-                                            anchors.topMargin: 10
-                                            anchors.bottomMargin: 10
-                                            spacing: 8
-                                            AudioRow { theme: root; Layout.fillWidth: true; input: false }
-                                            AudioRow { theme: root; Layout.fillWidth: true; input: true }
-                                        }
-                                    }
-
-                                    Item { Layout.fillHeight: true }
-                                }
-
-                                // ===== 1: Media =====
-                                HubCard {
-                                    theme: root
-                                    clip: true
-
-                                    NowPlaying {
-                                        theme: root
-                                        player: root.player
-                                        visible: root.player !== null
-                                        artSize: 360
-                                        wide: true
-                                        backdropMargin: 40
-                                        anchors.centerIn: parent
-                                    }
-
-                                    Column {
-                                        anchors.centerIn: parent
-                                        visible: root.player === null
-                                        spacing: 8
-                                        Text {
-                                            anchors.horizontalCenter: parent.horizontalCenter
-                                            text: "\uf001"
-                                            color: root.muted
-                                            font.family: root.iconFont
-                                            font.pixelSize: 44
-                                        }
-                                        Text {
-                                            anchors.horizontalCenter: parent.horizontalCenter
-                                            text: "Nothing playing right now"
-                                            color: root.muted
-                                            font.pixelSize: 14
-                                        }
-                                    }
-                                }
-
-                                // ===== 2: Apps =====
-                                ColumnLayout {
-                                    spacing: 10
-
-                                    Text {
-                                        text: "Pinned"
-                                        color: root.fg
-                                        font.pixelSize: 14
-                                        font.bold: true
-                                    }
-                                    Flow {
-                                        Layout.fillWidth: true
-                                        spacing: 6
-                                        Repeater {
-                                            model: panel.hubHere && root.hubTab === 2 ? root.appsForTab(3, "") : []
-                                            delegate: AppTile {
-                                                required property var modelData
-                                                theme: root
-                                                entry: modelData
-                                                onLaunched: { root.hubOpen = false; root.launchApp(modelData); }
-                                            }
-                                        }
-                                    }
-
-                                    Text {
-                                        text: "Recent"
-                                        color: root.fg
-                                        font.pixelSize: 14
-                                        font.bold: true
-                                    }
-                                    Flow {
-                                        Layout.fillWidth: true
-                                        spacing: 6
-                                        Repeater {
-                                            model: panel.hubHere && root.hubTab === 2 ? root.appsForTab(1, "").slice(0, 8) : []
-                                            delegate: AppTile {
-                                                required property var modelData
-                                                theme: root
-                                                entry: modelData
-                                                onLaunched: { root.hubOpen = false; root.launchApp(modelData); }
-                                            }
-                                        }
-                                    }
-
-                                    Item { Layout.fillHeight: true }
-
-                                    BarButton {
-                                        theme: root
-                                        Layout.alignment: Qt.AlignHCenter
-                                        icon: ""
-                                        label: "All apps"
-                                        onClicked: mouse => { root.hubOpen = false; root.launcherOpen = true; }
-                                    }
-                                }
-
-                                // ===== 3: Calendar =====
-                                RowLayout {
+                                        Layout.fillHeight: true
                                     spacing: 12
 
                                     HubCard {
@@ -5346,6 +5192,100 @@ ShellRoot {
                                         }
                                     }
                                 }
+                                }
+
+                                // ===== 1: Media =====
+                                HubCard {
+                                    theme: root
+                                    clip: true
+
+                                    NowPlaying {
+                                        theme: root
+                                        player: root.player
+                                        visible: root.player !== null
+                                        artSize: 360
+                                        wide: true
+                                        backdropMargin: 40
+                                        anchors.centerIn: parent
+                                    }
+
+                                    Column {
+                                        anchors.centerIn: parent
+                                        visible: root.player === null
+                                        spacing: 8
+                                        Text {
+                                            anchors.horizontalCenter: parent.horizontalCenter
+                                            text: "\uf001"
+                                            color: root.muted
+                                            font.family: root.iconFont
+                                            font.pixelSize: 44
+                                        }
+                                        Text {
+                                            anchors.horizontalCenter: parent.horizontalCenter
+                                            text: "Nothing playing right now"
+                                            color: root.muted
+                                            font.pixelSize: 14
+                                        }
+                                    }
+                                }
+
+                                // ===== 2: Apps =====
+                                ColumnLayout {
+                                    spacing: 10
+
+                                    Text {
+                                        text: "Pinned"
+                                        color: root.fg
+                                        font.pixelSize: 14
+                                        font.bold: true
+                                    }
+                                    Flow {
+                                        Layout.fillWidth: true
+                                        spacing: 6
+                                        Repeater {
+                                            model: panel.hubHere && root.hubTab === 2 ? root.appsForTab(3, "") : []
+                                            delegate: AppTile {
+                                                required property var modelData
+                                                theme: root
+                                                entry: modelData
+                                                onLaunched: { root.hubOpen = false; root.launchApp(modelData); }
+                                            }
+                                        }
+                                    }
+
+                                    Text {
+                                        text: "Recent"
+                                        color: root.fg
+                                        font.pixelSize: 14
+                                        font.bold: true
+                                    }
+                                    Flow {
+                                        Layout.fillWidth: true
+                                        spacing: 6
+                                        Repeater {
+                                            model: panel.hubHere && root.hubTab === 2 ? root.appsForTab(1, "").slice(0, 8) : []
+                                            delegate: AppTile {
+                                                required property var modelData
+                                                theme: root
+                                                entry: modelData
+                                                onLaunched: { root.hubOpen = false; root.launchApp(modelData); }
+                                            }
+                                        }
+                                    }
+
+                                    Item { Layout.fillHeight: true }
+
+                                    BarButton {
+                                        theme: root
+                                        Layout.alignment: Qt.AlignHCenter
+                                        icon: ""
+                                        label: "All apps"
+                                        onClicked: mouse => { root.hubOpen = false; root.launcherOpen = true; }
+                                    }
+                                }
+
+                                // ===== 3: Calendar =====
+                                Item {}   // (the calendar now lives on Home)
 
                                 // ===== 4: Alerts =====
                                 ColumnLayout {
@@ -5478,7 +5418,111 @@ ShellRoot {
                                 }
 
                                 // ===== 5: System =====
-                                ColumnLayout {
+                                Flickable {
+                                    id: sysFlick
+                                    clip: true
+                                    contentWidth: width
+                                    contentHeight: sysCol.implicitHeight + 4
+                                    boundsBehavior: Flickable.StopAtBounds
+
+                                    ColumnLayout {
+                                        id: sysCol
+                                        width: sysFlick.width
+                                    // Quick toggles (moved here from Home)
+                                    GridLayout {
+                                        Layout.fillWidth: true
+                                        columns: 4
+                                        rowSpacing: 14
+                                        columnSpacing: 14
+
+                                        Repeater {
+                                            model: [
+                                                {
+                                                    icon: "", title: "Wi-Fi",
+                                                    sub: !root.wifiOn ? "Off" : (root.netKind === "wifi" ? root.netName : "On"),
+                                                    active: root.wifiOn, ok: true,
+                                                    run: () => root.run("nmcli radio wifi " + (root.wifiOn ? "off" : "on"))
+                                                },
+                                                {
+                                                    icon: "", title: "Bluetooth",
+                                                    sub: root.btState === "none" ? "Not available" : (root.btState === "yes" ? (root.btDevices.some(d => d.connected) ? root.btDevices.filter(d => d.connected)[0].name : "On · tap for devices") : "Off · tap for devices"),
+                                                    active: root.btState === "yes", ok: root.btState !== "none",
+                                                    run: () => { root.hubTab = 10; root.btRefresh(); }
+                                                },
+                                                {
+                                                    icon: "", title: "Do not disturb",
+                                                    sub: root.dnd ? "On" : "Off",
+                                                    active: root.dnd, ok: true,
+                                                    run: () => { root.dnd = !root.dnd; }
+                                                },
+                                                {
+                                                    icon: "", title: "Night light",
+                                                    sub: root.nightState === "none" ? "Needs hyprsunset" : (root.nightState === "on" ? "On" : "Off"),
+                                                    active: root.nightState === "on", ok: root.nightState !== "none",
+                                                    run: () => root.run(root.nightState === "on" ? "pkill -x hyprsunset" : "hyprsunset -t 4000 >/dev/null 2>&1")
+                                                },
+                                                {
+                                                    icon: "", title: "Screenshot", sub: "Area · more in Capture",
+                                                    active: false, ok: true,
+                                                    run: () => root.takeScreenshot()
+                                                },
+                                                {
+                                                    icon: "", title: "Wallpaper", sub: "Choose one",
+                                                    active: false, ok: true,
+                                                    run: () => { root.hubOpen = false; root.wallPickerOpen = true; }
+                                                },
+                                                {
+                                                    icon: "\uf11b", title: "Game mode",
+                                                    sub: root.gameMode ? "On · max FPS" : "Off",
+                                                    active: root.gameMode, ok: true,
+                                                    run: () => root.setGameMode(!root.gameMode)
+                                                },
+                                                {
+                                                    icon: "\uf019", title: "Updates",
+                                                    sub: root.updRunning ? "Updating…" : root.updChecking ? "Checking…"
+                                                        : !root.updAuto ? (root.updTotal > 0 ? root.updTotal + " waiting · tap to set up auto" : "Tap to set up auto updates")
+                                                        : root.updState === "restart" ? "Restart to finish"
+                                                        : root.updState === "failed" ? "Needs you · tap to fix"
+                                                        : (root.updSystem + root.updFlatpak) > 0 ? (root.updSystem + root.updFlatpak) + " waiting · tap to install"
+                                                        : root.updAur > 0 ? root.updAur + " AUR · tap to install"
+                                                        : "Auto · " + (root.updStateAt ? "updated " + root.updAgo(root.updStateAt) : "daily"),
+                                                    active: root.updRunning || root.updTotal > 0, ok: true,
+                                                    run: () => {
+                                                        if (!root.updAuto || root.updTotal > 0 || root.updState === "failed") { root.hubOpen = false; root.runUpdates(); }
+                                                        else root.checkUpdates();
+                                                    }
+                                                }
+
+                                            ]
+
+                                            delegate: HubToggle {
+                                                required property var modelData
+                                                theme: root
+                                                item: modelData
+                                                Layout.fillWidth: true
+                                                Layout.preferredHeight: 72
+                                            }
+                                        }
+                                    }
+
+                                    // Sound output + microphone
+                                    HubCard {
+                                        theme: root
+                                        Layout.fillWidth: true
+                                        Layout.preferredHeight: 100
+
+                                        ColumnLayout {
+                                            anchors.fill: parent
+                                            anchors.leftMargin: 14
+                                            anchors.rightMargin: 14
+                                            anchors.topMargin: 10
+                                            anchors.bottomMargin: 10
+                                            spacing: 8
+                                            AudioRow { theme: root; Layout.fillWidth: true; input: false }
+                                            AudioRow { theme: root; Layout.fillWidth: true; input: true }
+                                        }
+                                    }
+
                                     spacing: 12
 
                                     // settings you set once
@@ -5620,6 +5664,8 @@ ShellRoot {
                                             label: "Shut down"
                                             onConfirmed: root.powerAction("poweroff")
                                         }
+                                    }
+                                
                                     }
                                 }
 
