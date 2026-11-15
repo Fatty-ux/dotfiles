@@ -211,6 +211,7 @@ ShellRoot {
             property var gameHidden: []          // Games: hidden games (their keys)
             property var gameCollections: []     // Games: your own collections
             property var gameAdded: []           // Games: games you added yourself
+            property var gameEdits: ({})         // Games: your changes to names, covers and programs
             property bool inputTouched: false    // Input tab: only apply once you've changed something
             property real inSens: 0              //   mouse speed (-1 to 1)
             property string inAccel: "adaptive"  //   "flat" or "adaptive"
@@ -7665,6 +7666,42 @@ ShellRoot {
     readonly property string gamesScript: Quickshell.env("HOME") + "/.config/quickshell/scripts/games.py"
     readonly property string gamesCachePath: Quickshell.env("HOME") + "/.cache/joeos/games.json"
 
+    // ---- your edits to a game's details (name, cover, how it starts) ----
+    readonly property var gamesEdits: pins.adapter.gameEdits || ({})        // key -> { name, cover, path }
+    function gamesSaveEdit(key, e) {
+        const all = {};
+        for (const k in gamesEdits) all[k] = gamesEdits[k];
+        const clean = {};
+        if (e.name && e.name.trim() !== "") clean.name = e.name.trim();
+        if (e.cover && e.cover.trim() !== "") clean.cover = e.cover.trim();
+        if (e.path && e.path.trim() !== "") clean.path = e.path.trim();
+        if (Object.keys(clean).length) all[key] = clean;
+        else delete all[key];
+        pins.adapter.gameEdits = all;
+    }
+    // pick a picture for a cover
+    property var gamesArtPicked: null           // function(path) waiting for the picker
+    Process {
+        id: gamesArtPicker
+        property string mode: "image"           // "image" or "program"
+        command: ["sh", "-c", mode === "image"
+            ? 'zenity --file-selection --title="Pick a cover picture" --file-filter="Pictures | *.png *.jpg *.jpeg *.webp *.gif *.bmp" 2>/dev/null || kdialog --getopenfilename "$HOME/Pictures" "image/png image/jpeg image/webp" 2>/dev/null'
+            : 'zenity --file-selection --title="Pick the game program" 2>/dev/null || kdialog --getopenfilename "$HOME/Games" 2>/dev/null']
+        stdout: StdioCollector {
+            onStreamFinished: {
+                const v = text.trim();
+                if (v !== "" && root.gamesArtPicked) root.gamesArtPicked(v);
+                root.gamesArtPicked = null;
+            }
+        }
+    }
+    function gamesPickFile(mode, cb) {
+        if (gamesArtPicker.running) return;
+        gamesArtPicker.mode = mode;
+        gamesArtPicked = cb;
+        gamesArtPicker.running = true;
+    }
+
     // ---- your own touches: hidden games, your collections, games you added yourself ----
     readonly property var gamesHidden: pins.adapter.gameHidden || []
     readonly property var gamesMyCols: pins.adapter.gameCollections || []     // [{ id, name, keys: [...] }]
@@ -7737,7 +7774,17 @@ ShellRoot {
         }));
         const known = {};
         for (const g of gamesAll) known[g.id] = true;
-        return gamesAll.concat(added.filter(a => !known[a.id]));
+        const all = gamesAll.concat(added.filter(a => !known[a.id]));
+        // your edits on top (the originals are kept so "Original" / "Undo" work)
+        return all.map(g => {
+            const e = gamesEdits[g.key];
+            if (!e) return g;
+            const o = Object.assign({}, g, { origName: g.name, origCover: g.cover, origId: g.id });
+            if (e.name) o.name = e.name;
+            if (e.cover) o.cover = e.cover.indexOf("/") === 0 ? "file://" + e.cover : e.cover;
+            if (e.path) o.play = ["sh", "-c", 'chmod +x "$1" 2>/dev/null; cd "$(dirname "$1")" && exec "$1"', "sh", e.path];
+            return o;
+        });
     }
 
     readonly property var gamesShown: {
@@ -7752,6 +7799,8 @@ ShellRoot {
             && (q === "" || g.name.toLowerCase().indexOf(q) >= 0));
         if (gamesSort === "recent")
             list = list.slice().sort((a, b) => (b.last || 0) - (a.last || 0) || a.name.localeCompare(b.name));
+        else
+            list = list.slice().sort((a, b) => a.name.localeCompare(b.name));
         return list;
     }
     function gamesCount(src) {
@@ -8870,6 +8919,7 @@ ShellRoot {
                             out.push({ text: (has ? "Remove from " : "Add to ") + c.name, icon: has ? "" : "",
                                        act: () => root.gamesToggleCol(c.id, g.key) });
                         }
+                        out.push({ text: "Edit details…", icon: "\uf044", act: () => gamesView.openEdit(g) });
                         out.push({ text: "New collection with this game…", icon: "", act: () => { gamesView.pendingKey = g.key; newColIn.forceActiveFocus(); } });
                         const hid = root.gamesIsHidden(g.key);
                         out.push({ text: hid ? "Show this game again" : "Hide this game", icon: hid ? "" : "", act: () => root.gamesHide(g.key, !hid) });
@@ -8936,6 +8986,212 @@ ShellRoot {
                                             act();
                                         }
                                     }
+                                }
+                            }
+                        }
+                    }
+                
+                    // ---- edit a game's details ----
+                    property var editGame: null
+                    property string editName: ""
+                    property string editCover: ""
+                    property string editPath: ""
+                    function openEdit(g) {
+                        const e = root.gamesEdits[g.key] || {};
+                        editName = e.name || g.name;
+                        editCover = e.cover || "";
+                        editPath = e.path || "";
+                        editGame = g;
+                        editNameIn.forceActiveFocus();
+                    }
+                    function saveEdit() {
+                        const g = editGame;
+                        if (!g) return;
+                        const base = g.origName || g.name;
+                        root.gamesSaveEdit(g.key, {
+                            name: editName.trim() === base ? "" : editName,
+                            cover: editCover,
+                            path: editPath
+                        });
+                        editGame = null;
+                        gamesSearch.forceActiveFocus();
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        visible: gamesView.editGame !== null
+                        z: 50
+                        onClicked: gamesView.editGame = null
+                        Rectangle { anchors.fill: parent; radius: 20; color: Qt.rgba(0, 0, 0, 0.35) }
+                    }
+                    Rectangle {
+                        id: editBox
+                        visible: gamesView.editGame !== null
+                        z: 51
+                        anchors.centerIn: parent
+                        width: 620
+                        height: 400
+                        radius: 24
+                        color: root.bg
+                        border.width: 1
+                        border.color: root.glassEdge
+                        MouseArea { anchors.fill: parent }        // clicks inside stay inside
+
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.margins: 22
+                            spacing: 22
+
+                            // cover preview
+                            Rectangle {
+                                Layout.preferredWidth: 220
+                                Layout.preferredHeight: 330
+                                Layout.alignment: Qt.AlignTop
+                                radius: 16
+                                color: root.overlay
+                                clip: true
+                                Text {
+                                    anchors.centerIn: parent
+                                    width: parent.width - 20
+                                    visible: editImg.status !== Image.Ready
+                                    text: gamesView.editName
+                                    wrapMode: Text.Wrap
+                                    horizontalAlignment: Text.AlignHCenter
+                                    color: root.fg
+                                    font.pixelSize: 15
+                                    font.bold: true
+                                }
+                                Image {
+                                    id: editImg
+                                    anchors.fill: parent
+                                    fillMode: Image.PreserveAspectCrop
+                                    asynchronous: true
+                                    sourceSize.width: 440
+                                    source: gamesView.editCover !== ""
+                                        ? (gamesView.editCover.indexOf("/") === 0 ? "file://" + gamesView.editCover : gamesView.editCover)
+                                        : (gamesView.editGame ? (gamesView.editGame.origCover || gamesView.editGame.cover || "") : "")
+                                }
+                            }
+
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                spacing: 10
+
+                                Text { text: "Edit game"; color: root.fg; font.pixelSize: 18; font.bold: true }
+
+                                Text { text: "Name"; color: root.muted; font.pixelSize: 11; Layout.topMargin: 4 }
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    implicitHeight: 40
+                                    radius: 12
+                                    color: root.surface
+                                    border.width: 1
+                                    border.color: editNameIn.activeFocus ? root.accent : root.glassEdge
+                                    TextInput {
+                                        id: editNameIn
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 12
+                                        anchors.rightMargin: 12
+                                        verticalAlignment: TextInput.AlignVCenter
+                                        color: root.fg
+                                        font.pixelSize: 14
+                                        clip: true
+                                        text: gamesView.editName
+                                        onTextChanged: gamesView.editName = text
+                                        Keys.onReturnPressed: gamesView.saveEdit()
+                                        Keys.onEscapePressed: gamesView.editGame = null
+                                    }
+                                }
+
+                                Text { text: "Cover picture"; color: root.muted; font.pixelSize: 11; Layout.topMargin: 4 }
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 6
+                                    SportChip {
+                                        theme: root
+                                        icon: ""
+                                        label: "Pick a picture"
+                                        onClicked: root.gamesPickFile("image", p => gamesView.editCover = p)
+                                    }
+                                    SportChip {
+                                        theme: root
+                                        visible: gamesView.editCover !== ""
+                                        icon: ""
+                                        label: "Original"
+                                        onClicked: gamesView.editCover = ""
+                                    }
+                                    Item { Layout.fillWidth: true }
+                                }
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    implicitHeight: 36
+                                    radius: 12
+                                    color: root.surface
+                                    border.width: 1
+                                    border.color: editUrlIn.activeFocus ? root.accent : root.glassEdge
+                                    TextInput {
+                                        id: editUrlIn
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 12
+                                        anchors.rightMargin: 12
+                                        verticalAlignment: TextInput.AlignVCenter
+                                        color: root.fg
+                                        font.pixelSize: 12
+                                        clip: true
+                                        text: gamesView.editCover.indexOf("http") === 0 ? gamesView.editCover : ""
+                                        onEditingFinished: if (text.trim().indexOf("http") === 0) gamesView.editCover = text.trim()
+                                        Keys.onReturnPressed: { if (text.trim().indexOf("http") === 0) gamesView.editCover = text.trim(); }
+                                        Text {
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            visible: editUrlIn.text === ""
+                                            text: "…or paste a picture's web link and press Enter"
+                                            color: root.muted
+                                            font.pixelSize: 12
+                                        }
+                                    }
+                                }
+
+                                // how it starts: only for games that are a program on this PC (recomp / added)
+                                Text {
+                                    visible: !!gamesView.editGame && gamesView.editGame.src === "recomp"
+                                    text: "Game program"
+                                    color: root.muted
+                                    font.pixelSize: 11
+                                    Layout.topMargin: 4
+                                }
+                                RowLayout {
+                                    visible: !!gamesView.editGame && gamesView.editGame.src === "recomp"
+                                    Layout.fillWidth: true
+                                    spacing: 6
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: gamesView.editPath !== "" ? gamesView.editPath : (gamesView.editGame ? (gamesView.editGame.origId || gamesView.editGame.id) : "")
+                                        elide: Text.ElideMiddle
+                                        color: root.fg
+                                        font.pixelSize: 11
+                                    }
+                                    SportChip {
+                                        theme: root
+                                        label: "Change"
+                                        onClicked: root.gamesPickFile("program", p => gamesView.editPath = p)
+                                    }
+                                }
+
+                                Item { Layout.fillHeight: true }
+
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 8
+                                    SportChip {
+                                        theme: root
+                                        visible: !!gamesView.editGame && !!root.gamesEdits[gamesView.editGame.key]
+                                        icon: ""
+                                        label: "Undo all my changes"
+                                        onClicked: { root.gamesSaveEdit(gamesView.editGame.key, {}); gamesView.editGame = null; }
+                                    }
+                                    Item { Layout.fillWidth: true }
+                                    SportChip { theme: root; label: "Cancel"; onClicked: gamesView.editGame = null }
+                                    SportChip { theme: root; icon: ""; label: "Save"; active: true; onClicked: gamesView.saveEdit() }
                                 }
                             }
                         }
