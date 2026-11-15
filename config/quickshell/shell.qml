@@ -208,6 +208,8 @@ ShellRoot {
             property bool topPillAlways: true    // the top pill stays on screen (no pull tab)
             property bool lyricsOpen: false      // the left panel stays open across restarts
             property string leftTab: "lyrics"    // which tab the left panel shows
+            property bool micDenoise: false      // Capture tab: background noise removal for the mic
+            property string micDenoiseLevel: "normal"
             property int recSysLevel: 70         // Capture tab: computer sound level in "Both" recordings (%)
             property string capMonitor: ""       // Capture tab: which screen to capture ("" = where the mouse is)
             property int dispSat: 100            // Display tab: saturation %
@@ -2611,7 +2613,7 @@ ShellRoot {
     property int hubTab: 0           // 0 home, 1 media, 2 apps, 3 calendar, 4 alerts, 5 system, 6 capture, 7 sports, 8 themes
     property int calOffset: 0        // how many months away from this one the calendar shows
     readonly property int hubW: 900
-    readonly property int hubH: 560
+    readonly property int hubH: 640           // taller so the big tab row fits
 
     function openHub(tab) {
         hubTab = tab;
@@ -2758,6 +2760,37 @@ ShellRoot {
             }
         }
         onRunningChanged: if (!running) root.micLevel = 0
+    }
+
+    // ----- background noise removal for the mic (scripts/denoise.sh, RNNoise) -----
+    readonly property string denoiseScript: Quickshell.env("HOME") + "/.config/quickshell/scripts/denoise.sh"
+    property string denoiseState: "off"     // "off", "on", "missing" or "busy"
+    readonly property string denoiseLevel: pins.adapter.micDenoiseLevel
+    function setDenoise(on, level) {
+        pins.adapter.micDenoise = on;
+        if (level) pins.adapter.micDenoiseLevel = level;
+        denoiseState = "busy";
+        denoiseProc.command = ["bash", denoiseScript].concat(on ? ["on", pins.adapter.micDenoiseLevel] : ["off"]);
+        denoiseProc.running = true;
+    }
+    Process {
+        id: denoiseProc
+        onRunningChanged: if (!running) denoiseCheck.running = true
+    }
+    Process {
+        id: denoiseCheck
+        command: ["bash", root.denoiseScript, "status"]
+        stdout: StdioCollector { onStreamFinished: root.denoiseState = text.trim() || "off" }
+    }
+    // check when the Microphone card opens, and turn it back on after a restart if it was on
+    onMicPanelChanged: if (micPanel && !denoiseProc.running) denoiseCheck.running = true
+    Timer {
+        interval: 5000
+        running: true
+        onTriggered: {
+            if (pins.adapter.micDenoise) root.setDenoise(true, "");
+            else denoiseCheck.running = true;
+        }
     }
 
     // test: record 4 seconds, then play it back so you hear what others hear
@@ -4277,7 +4310,7 @@ ShellRoot {
                             anchors.margins: 20
                             spacing: 14
 
-                            // ---- Header: big clock + tabs ----
+                            // ---- Header: big clock ----
                             RowLayout {
                                 Layout.fillWidth: true
                                 spacing: 14
@@ -4301,21 +4334,24 @@ ShellRoot {
 
                                 Item { Layout.fillWidth: true }
 
-                                Rectangle {
-                                    implicitHeight: 42
-                                    implicitWidth: tabRow.implicitWidth + 8
-                                    radius: 14
-                                    color: root.surface
-                                    border.width: 1
-                                    border.color: root.glassEdge
+                            }
 
-                                    Row {
-                                        id: tabRow
-                                        anchors.centerIn: parent
-                                        spacing: 3
+                            // ---- Tabs: big buttons with their names, one row across the hub ----
+                            Rectangle {
+                                Layout.fillWidth: true
+                                implicitHeight: 66
+                                radius: 20
+                                color: root.surface
+                                border.width: 1
+                                border.color: root.glassEdge
 
-                                        Repeater {
-                                            model: [
+                                RowLayout {
+                                    anchors.fill: parent
+                                    anchors.margins: 5
+                                    spacing: 4
+
+                                    Repeater {
+                                        model: [
                                                 { name: "Home", icon: "" },
                                                 { name: "Media", icon: "" },
                                                 { name: "Apps", icon: "" },
@@ -4327,49 +4363,44 @@ ShellRoot {
                                                 { name: "Themes", icon: "\uf53f" }
                                             ]
 
-                                            delegate: Rectangle {
-                                                id: htab
-                                                required property var modelData
-                                                required property int index
-                                                readonly property bool current: root.hubTab === htab.index
-                                                width: htabRow.implicitWidth + 20
-                                                height: 34
-                                                radius: 11
-                                                Behavior on width { NumberAnimation { duration: root.animMs; easing.type: Easing.OutCubic } }
-                                                color: htab.current ? root.accent : (htabMouse.containsMouse ? root.overlay : "transparent")
-                                                scale: htabMouse.pressed ? 0.94 : 1
-                                                Behavior on color { ColorAnimation { duration: root.animMs } }
-                                                Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+                                        delegate: Rectangle {
+                                            id: htab
+                                            required property var modelData
+                                            required property int index
+                                            readonly property bool current: root.hubTab === htab.index
+                                            Layout.fillWidth: true
+                                            Layout.fillHeight: true
+                                            radius: 16
+                                            color: htab.current ? root.accent : (htabMouse.containsMouse ? root.overlay : "transparent")
+                                            scale: htabMouse.pressed ? 0.94 : (htabMouse.containsMouse && !htab.current ? 1.04 : 1)
+                                            Behavior on color { ColorAnimation { duration: root.animMs } }
+                                            Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
 
-                                                Row {
-                                                    id: htabRow
-                                                    anchors.centerIn: parent
-                                                    spacing: 6
-                                                    Text {
-                                                        anchors.verticalCenter: parent.verticalCenter
-                                                        text: htab.modelData.icon
-                                                        color: htab.current ? root.bg : root.accent
-                                                        font.family: root.iconFont
-                                                        font.pixelSize: 13
-                                                    }
-                                                    // the name shows on the open tab (and when you point at one), so all 9 fit
-                                                    Text {
-                                                        anchors.verticalCenter: parent.verticalCenter
-                                                        visible: htab.current || htabMouse.containsMouse
-                                                        text: htab.modelData.name
-                                                        color: htab.current ? root.bg : root.fg
-                                                        font.pixelSize: 12
-                                                        font.bold: htab.current
-                                                    }
+                                            Column {
+                                                anchors.centerIn: parent
+                                                spacing: 4
+                                                Text {
+                                                    anchors.horizontalCenter: parent.horizontalCenter
+                                                    text: htab.modelData.icon
+                                                    color: htab.current ? root.bg : root.accent
+                                                    font.family: root.iconFont
+                                                    font.pixelSize: 20
                                                 }
+                                                Text {
+                                                    anchors.horizontalCenter: parent.horizontalCenter
+                                                    text: htab.modelData.name
+                                                    color: htab.current ? root.bg : root.fg
+                                                    font.pixelSize: 13
+                                                    font.bold: htab.current
+                                                }
+                                            }
 
-                                                MouseArea {
-                                                    id: htabMouse
-                                                    anchors.fill: parent
-                                                    hoverEnabled: true
-                                                    cursorShape: Qt.PointingHandCursor
-                                                    onClicked: root.hubTab = htab.index
-                                                }
+                                            MouseArea {
+                                                id: htabMouse
+                                                anchors.fill: parent
+                                                hoverEnabled: true
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: root.hubTab = htab.index
                                             }
                                         }
                                     }
@@ -5514,7 +5545,7 @@ ShellRoot {
                                         theme: root
                                         visible: root.micPanel
                                         Layout.fillWidth: true
-                                        Layout.preferredHeight: 128
+                                        Layout.preferredHeight: 168
 
                                         ColumnLayout {
                                             anchors.fill: parent
@@ -5605,6 +5636,57 @@ ShellRoot {
                                                         onMoved: v => pins.adapter.recSysLevel = Math.max(5, Math.round(v * 20) * 5)
                                                     }
                                                 }
+                                            }
+
+                                            // ---- background noise removal ----
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 8
+                                                HubToggle {
+                                                    theme: root
+                                                    visible: root.denoiseState !== "missing"
+                                                    Layout.preferredWidth: 250
+                                                    Layout.preferredHeight: 50
+                                                    item: ({
+                                                        icon: "\uf131",
+                                                        title: "Remove background noise",
+                                                        sub: root.denoiseState === "busy" ? "Switching…"
+                                                            : root.denoiseState === "on" ? "Fans, keys and hum filtered out" : "Off",
+                                                        active: root.denoiseState === "on" || (root.denoiseState === "busy" && pins.adapter.micDenoise),
+                                                        ok: root.denoiseState !== "busy",
+                                                        run: () => root.setDenoise(!pins.adapter.micDenoise, "")
+                                                    })
+                                                }
+                                                Repeater {
+                                                    model: [ { id: "light", name: "Light" }, { id: "normal", name: "Normal" }, { id: "strong", name: "Strong" } ]
+                                                    delegate: SportChip {
+                                                        required property var modelData
+                                                        visible: root.denoiseState !== "missing"
+                                                        theme: root
+                                                        label: modelData.name
+                                                        active: root.denoiseLevel === modelData.id
+                                                        onClicked: {
+                                                            if (pins.adapter.micDenoise) root.setDenoise(true, modelData.id);
+                                                            else pins.adapter.micDenoiseLevel = modelData.id;
+                                                        }
+                                                    }
+                                                }
+                                                // the filter isn't installed yet
+                                                Text {
+                                                    visible: root.denoiseState === "missing"
+                                                    text: "\uf131  Noise removal needs one small package:"
+                                                    font.family: root.iconFont
+                                                    color: root.muted
+                                                    font.pixelSize: 12
+                                                }
+                                                BarButton {
+                                                    visible: root.denoiseState === "missing"
+                                                    theme: root
+                                                    icon: "\uf0c5"
+                                                    label: "sudo pacman -S noise-suppression-for-voice"
+                                                    onClicked: mouse => Quickshell.execDetached(["wl-copy", "sudo pacman -S noise-suppression-for-voice"])
+                                                }
+                                                Item { Layout.fillWidth: true }
                                             }
                                         }
                                     }
