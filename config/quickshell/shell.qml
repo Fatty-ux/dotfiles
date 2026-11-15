@@ -208,6 +208,8 @@ ShellRoot {
             property bool topPillAlways: true    // the top pill stays on screen (no pull tab)
             property bool lyricsOpen: false      // the left panel stays open across restarts
             property string leftTab: "lyrics"    // which tab the left panel shows
+            property int recSysLevel: 70         // Capture tab: computer sound level in "Both" recordings (%)
+            property string capMonitor: ""       // Capture tab: which screen to capture ("" = where the mouse is)
             property int dispSat: 100            // Display tab: saturation %
             property int dispCon: 100            //   contrast %
             property int dispTemp: 6500          //   warmth in Kelvin (6500 = off)
@@ -2717,11 +2719,81 @@ ShellRoot {
         onTriggered: if (!gpuProc.running) gpuProc.running = true
     }
 
+    // ----- Microphone helpers (Capture tab) -----
+    property bool micPanel: false
+    property real micLevel: 0
+    property string micTest: ""            // "", "rec" (recording the test) or "play"
+    readonly property int recSysLevel: pins.adapter.recSysLevel
+    property real micVolPending: -1
+    readonly property real micVolShown: micVolPending >= 0 ? micVolPending
+        : (source && source.audio ? source.audio.volume : 1)
+
+    // up to 200%: quiet mics often need more than 100
+    function setMicVolume(v) {
+        micVolPending = Math.max(0, Math.min(2, v));
+        micVolTimer.restart();
+    }
+    Timer {
+        id: micVolTimer
+        interval: 80
+        onTriggered: {
+            Quickshell.execDetached(["wpctl", "set-volume", "@DEFAULT_AUDIO_SOURCE@", root.micVolPending.toFixed(2)]);
+            micVolClear.restart();
+        }
+    }
+    Timer { id: micVolClear; interval: 600; onTriggered: root.micVolPending = -1 }
+
+    // live mic level while the Microphone card is showing
+    Process {
+        id: micMeter
+        running: root.hubOpen && root.hubTab === 6 && root.micPanel && root.micTest !== "rec"
+        command: ["sh", "-c",
+            'command -v parec >/dev/null && command -v python3 >/dev/null || exit 0; '
+            + 'parec --format=s16le --rate=16000 --channels=1 --latency-msec=30 2>/dev/null | python3 -u -c '
+            + '"import sys,array\nr=sys.stdin.buffer\nwhile True:\n b=r.read(1600)\n if not b: break\n a=array.array(\'h\'); a.frombytes(b[:len(b)//2*2])\n print(round(max(abs(min(a)),abs(max(a)))/32768,3) if a else 0, flush=True)"']
+        stdout: SplitParser {
+            onRead: data => {
+                const v = parseFloat(data);
+                if (!isNaN(v)) root.micLevel = Math.max(v, root.micLevel * 0.6);
+            }
+        }
+        onRunningChanged: if (!running) root.micLevel = 0
+    }
+
+    // test: record 4 seconds, then play it back so you hear what others hear
+    function runMicTest() {
+        if (micTest !== "") return;
+        micTest = "rec";
+        micTestProc.running = true;
+    }
+    Process {
+        id: micTestProc
+        command: ["sh", "-c",
+            'f="${XDG_RUNTIME_DIR:-/tmp}/joeos-mictest.wav"; rm -f "$f"; '
+            + 'timeout 4 parecord --file-format=wav "$f" 2>/dev/null; echo PLAY; paplay "$f" 2>/dev/null; rm -f "$f"']
+        stdout: SplitParser { onRead: data => { if (data.trim() === "PLAY") root.micTest = "play"; } }
+        onRunningChanged: if (!running) root.micTest = ""
+    }
+
     // ----- Screenshots and screen recording (Capture tab) -----
     // The work is done by scripts/capture.sh next to this file.
     readonly property string captureScript: Quickshell.env("HOME") + "/.config/quickshell/scripts/capture.sh"
     property int shotDelay: 0             // seconds to wait before a screenshot
-    property string recAudio: "none"      // "none", "system" or "mic"
+    property string recAudio: "none"      // "none", "system", "mic" or "both"
+    // which monitor "Screen" captures use: "" = the one your mouse is on
+    readonly property string capMon: pins.adapter.capMonitor
+    readonly property string capMonUsed: {
+        const want = capMon;
+        const ms = Hyprland.monitors.values;
+        for (let i = 0; i < ms.length; i++) if (ms[i].name === want) return want;
+        return focusedMonitorName2();
+    }
+    function monLabel(name) {
+        const ms = Hyprland.monitors.values;
+        for (let i = 0; i < ms.length; i++)
+            if (ms[i].name === name) return "Screen " + (i + 1) + " · " + name;
+        return name;
+    }
     property bool canRecord: false        // wf-recorder installed?
     readonly property bool recording: recProc.running
     property double recStartedAt: 0
@@ -2750,17 +2822,17 @@ ShellRoot {
     }
 
     function shot(mode) {
-        const mon = focusedMonitorName2();
+        const mon = capMonUsed;
         const delay = String(shotDelay);
         capture(() => Quickshell.execDetached(["bash", root.captureScript, "shot", mode, delay, mon]));
     }
 
     function record(mode) {
         if (recording || !canRecord) return;
-        const mon = focusedMonitorName2();
+        const mon = capMonUsed;
         const audio = recAudio;
         capture(() => {
-            recProc.command = ["bash", root.captureScript, "rec", mode, audio, mon];
+            recProc.command = ["bash", root.captureScript, "rec", mode, audio, mon, String(root.recSysLevel)];
             recProc.running = true;
         });
     }
@@ -5122,6 +5194,34 @@ ShellRoot {
                                 ColumnLayout {
                                     spacing: 12
 
+                                    // ---- Which screen to capture ----
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 8
+                                        Text { text: "\uf108"; color: root.accent; font.family: root.iconFont; font.pixelSize: 13 }
+                                        Text { text: "Screen"; color: root.fg; font.pixelSize: 13; font.bold: true }
+                                        Item { implicitWidth: 4 }
+                                        SportChip {
+                                            theme: root
+                                            icon: "\uf245"
+                                            label: "Where my mouse is"
+                                            active: root.capMon === ""
+                                            onClicked: pins.adapter.capMonitor = ""
+                                        }
+                                        Repeater {
+                                            model: Hyprland.monitors
+                                            delegate: SportChip {
+                                                required property var modelData
+                                                required property int index
+                                                theme: root
+                                                label: (index + 1) + " · " + modelData.name + "  " + modelData.width + "×" + modelData.height
+                                                active: root.capMon === modelData.name
+                                                onClicked: pins.adapter.capMonitor = modelData.name
+                                            }
+                                        }
+                                        Item { Layout.fillWidth: true }
+                                    }
+
                                     RowLayout {
                                         Layout.fillWidth: true
                                         Layout.fillHeight: true
@@ -5155,7 +5255,7 @@ ShellRoot {
                                                         model: [
                                                             { icon: "\uf125", title: "Area", sub: "Drag a box", mode: "area" },
                                                             { icon: "\uf2d0", title: "Window", sub: "Click a window", mode: "window" },
-                                                            { icon: "\uf108", title: "This screen", sub: "The monitor you're on", mode: "screen" },
+                                                            { icon: "\uf108", title: "Screen", sub: root.capMon === "" ? "The one your mouse is on" : root.monLabel(root.capMonUsed), mode: "screen" },
                                                             { icon: "\uf26c", title: "All screens", sub: "Every monitor", mode: "all" }
                                                         ]
                                                         delegate: Rectangle {
@@ -5319,7 +5419,7 @@ ShellRoot {
                                                     Repeater {
                                                         model: [
                                                             { icon: "\uf125", title: "Record an area", sub: "Drag a box, then it starts", mode: "area" },
-                                                            { icon: "\uf108", title: "Record this screen", sub: "The monitor you're on", mode: "screen" }
+                                                            { icon: "\uf108", title: "Record a screen", sub: root.capMon === "" ? "The one your mouse is on" : root.monLabel(root.capMonUsed), mode: "screen" }
                                                         ]
                                                         delegate: Rectangle {
                                                             id: rcap
@@ -5372,7 +5472,8 @@ ShellRoot {
                                                             model: [
                                                                 { key: "none", name: "None" },
                                                                 { key: "system", name: "Computer" },
-                                                                { key: "mic", name: "Mic" }
+                                                                { key: "mic", name: "Mic" },
+                                                                { key: "both", name: "Both" }
                                                             ]
                                                             delegate: Rectangle {
                                                                 id: aud
@@ -5389,6 +5490,18 @@ ShellRoot {
                                                                 MouseArea { id: audMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.recAudio = aud.modelData.key }
                                                             }
                                                         }
+                                                        // opens the Microphone card (level, test, volume) below
+                                                        Rectangle {
+                                                            width: 30
+                                                            height: 30
+                                                            radius: 15
+                                                            color: root.micPanel ? root.accent : (micBtnMouse.containsMouse ? root.overlay : root.bg)
+                                                            border.width: 1
+                                                            border.color: root.glassEdge
+                                                            Behavior on color { ColorAnimation { duration: root.animMs } }
+                                                            Text { anchors.centerIn: parent; text: "\uf130"; font.family: root.iconFont; font.pixelSize: 13; color: root.micPanel ? root.bg : root.fg }
+                                                            MouseArea { id: micBtnMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.micPanel = !root.micPanel }
+                                                        }
                                                     }
                                                     Item { Layout.fillHeight: true }
                                                 }
@@ -5396,9 +5509,110 @@ ShellRoot {
                                         }
                                     }
 
-                                    // ---- Recent screenshots ----
+                                    // ---- Microphone: level meter, test, volume (opened from the mic button by Sound) ----
                                     HubCard {
                                         theme: root
+                                        visible: root.micPanel
+                                        Layout.fillWidth: true
+                                        Layout.preferredHeight: 128
+
+                                        ColumnLayout {
+                                            anchors.fill: parent
+                                            anchors.margins: 14
+                                            spacing: 10
+
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 10
+                                                Text { text: ""; color: root.accent; font.family: root.iconFont; font.pixelSize: 14 }
+                                                Text { text: "Microphone"; color: root.fg; font.pixelSize: 13; font.bold: true }
+                                                Text {
+                                                    Layout.maximumWidth: 150
+                                                    text: root.source ? (root.source.description || root.source.name) : "No microphone found"
+                                                    color: root.muted
+                                                    font.pixelSize: 11
+                                                    elide: Text.ElideRight
+                                                }
+                                                // live level: talk and watch it move
+                                                Rectangle {
+                                                    Layout.fillWidth: true
+                                                    implicitHeight: 12
+                                                    radius: 6
+                                                    color: root.bg
+                                                    border.width: 1
+                                                    border.color: root.glassEdge
+                                                    Rectangle {
+                                                        anchors.left: parent.left
+                                                        anchors.verticalCenter: parent.verticalCenter
+                                                        anchors.leftMargin: 2
+                                                        height: parent.height - 4
+                                                        radius: height / 2
+                                                        width: Math.max(height, (parent.width - 4) * Math.min(1, root.micLevel))
+                                                        color: root.micLevel > 0.9 ? root.danger : root.accent
+                                                        Behavior on width { NumberAnimation { duration: 70 } }
+                                                    }
+                                                    // a mark at the level a good, clear voice reaches
+                                                    Rectangle {
+                                                        x: (parent.width - 4) * 0.5 + 2
+                                                        width: 1
+                                                        height: parent.height
+                                                        color: root.muted
+                                                        opacity: 0.6
+                                                    }
+                                                }
+                                                BarButton {
+                                                    theme: root
+                                                    icon: root.micTest === "" ? "" : (root.micTest === "rec" ? "" : "")
+                                                    label: root.micTest === "" ? "Test" : (root.micTest === "rec" ? "Talk now…" : "Playing")
+                                                    onClicked: mouse => root.runMicTest()
+                                                }
+                                            }
+
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 16
+
+                                                ColumnLayout {
+                                                    Layout.fillWidth: true
+                                                    Layout.preferredWidth: 1
+                                                    spacing: 6
+                                                    RowLayout {
+                                                        Layout.fillWidth: true
+                                                        Text { Layout.fillWidth: true; text: "Mic volume (everywhere)"; color: root.fg; font.pixelSize: 12 }
+                                                        Text { text: Math.round(root.micVolShown * 100) + "%"; color: root.muted; font.pixelSize: 12 }
+                                                    }
+                                                    ValueBar {
+                                                        Layout.fillWidth: true
+                                                        theme: root
+                                                        value: root.micVolShown / 2
+                                                        onMoved: v => root.setMicVolume(Math.round(v * 40) / 20)
+                                                    }
+                                                }
+                                                ColumnLayout {
+                                                    Layout.fillWidth: true
+                                                    Layout.preferredWidth: 1
+                                                    spacing: 6
+                                                    opacity: root.recAudio === "both" ? 1 : 0.5
+                                                    RowLayout {
+                                                        Layout.fillWidth: true
+                                                        Text { Layout.fillWidth: true; text: "Computer sound when using Both"; color: root.fg; font.pixelSize: 12; elide: Text.ElideRight }
+                                                        Text { text: root.recSysLevel + "%"; color: root.muted; font.pixelSize: 12 }
+                                                    }
+                                                    ValueBar {
+                                                        Layout.fillWidth: true
+                                                        theme: root
+                                                        value: root.recSysLevel / 100
+                                                        onMoved: v => pins.adapter.recSysLevel = Math.max(5, Math.round(v * 20) * 5)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // ---- Recent screenshots (the Microphone card takes its place while open) ----
+                                    HubCard {
+                                        theme: root
+                                        visible: !root.micPanel
                                         Layout.fillWidth: true
                                         Layout.preferredHeight: 128
 
