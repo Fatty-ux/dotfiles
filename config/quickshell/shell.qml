@@ -11637,7 +11637,17 @@ ShellRoot {
     Process {
         id: sigDaemon
         running: root.sigAccount !== "" && !root.sigCliMissing
-        command: ["sh", "-c", 'rm -f "$1"; exec signal-cli -a "$2" daemon --socket="$1" --receive-mode=on-connection',
+        // what signal-cli says goes to ~/.cache/joeos/signal.log (handy when something's wrong)
+        command: ["sh", "-c", 'log="$HOME/.cache/joeos/signal.log"; mkdir -p "${log%/*}"; '
+            + 'tail -n 300 "$log" > "$log.tmp" 2>/dev/null; mv -f "$log.tmp" "$log" 2>/dev/null; '
+            + '[ -n "$2" ] || exit 0; '
+            // a signal-cli left over from before the bar restarted would hold the account locked
+            // (and the new one would delete its socket), so stop any old ones first
+            + 'pkill -f "signal-cli .*daemon --socket=$1" 2>/dev/null; '
+            + 'for i in $(seq 1 50); do pgrep -f "signal-cli .*daemon --socket=$1" >/dev/null || break; sleep 0.2; done; '
+            + 'pkill -9 -f "signal-cli .*daemon --socket=$1" 2>/dev/null; '
+            + 'echo "== $(date) starting signal-cli for $2" >> "$log"; rm -f "$1"; '
+            + 'exec signal-cli -a "$2" daemon --socket="$1" --receive-mode=on-connection >> "$log" 2>&1',
             "sh", root.sigSocketPath, root.sigAccount]
         onRunningChanged: if (!running && root.sigAccount !== "") sigRestart.restart()
     }
