@@ -1972,7 +1972,8 @@ ShellRoot {
                     if (root.sessionSkip.indexOf(cls.toLowerCase()) >= 0) continue;
                     const e = DesktopEntries.heuristicLookup(cls) || DesktopEntries.heuristicLookup(c.initialClass || "");
                     if (!e) continue;                                            // nothing to reopen it with
-                    out.push({ cls: cls, entry: e.id, ws: c.workspace.id, mon: root.sessionMonitorName(c.monitor), title: c.title || "" });
+                    out.push({ cls: cls, icls: c.initialClass || "", entry: e.id, ws: c.workspace.id,
+                               mon: root.sessionMonitorName(c.monitor), title: c.title || "" });
                 }
                 // closing apps during shutdown shouldn't wipe the list: a drop must show up twice in a row
                 if (out.length < root.sessionLastCount && root.sessionDropSeen !== out.length) {
@@ -1991,6 +1992,23 @@ ShellRoot {
         repeat: true
         running: root.sessionReady && pins.adapter.restoreSession
         onTriggered: sessionSnap.running = true
+    }
+    // also save a few seconds after you open, close or move a window, so the list is never
+    // more than a moment out of date when the computer turns off
+    Timer {
+        id: sessionSoon
+        interval: 4000
+        onTriggered: sessionSnap.running = true
+    }
+    Connections {
+        target: Hyprland
+        enabled: root.sessionReady && pins.adapter.restoreSession
+        function onRawEvent(event) {
+            const n = event.name;
+            if (n === "openwindow" || n === "closewindow" || n === "movewindow" || n === "movewindowv2"
+                || n === "moveworkspace" || n === "moveworkspacev2")
+                sessionSoon.restart();
+        }
     }
 
     // first start of the bar since logging in? (a marker in the runtime folder, wiped at logout/reboot)
@@ -2021,7 +2039,9 @@ ShellRoot {
     }
 
     function sessionRestore(wins) {
-        sessionPending = wins.slice();
+        // one "slot" per saved window; each gets matched to a real window as apps open
+        sessionPending = wins.map(w => ({ cls: w.cls.toLowerCase(), icls: (w.icls || "").toLowerCase(), ws: w.ws,
+                                         mon: w.mon || "", title: w.title || "", addr: "", okCount: 0 }));
         sessionRestoring = true;
         // open each app once (terminals once per window); browsers reopen their own windows
         const launched = {};
@@ -2036,6 +2056,78 @@ ShellRoot {
         toastModel.append({ tid: root.toastSeq, nid: -1, appName: "JoeOS", critical: false,
             summary: "Welcome back", body: "Reopening " + wins.length + " window" + (wins.length === 1 ? "" : "s") + " from last time." });
         sessionGiveUp.restart();
+        sessionPlace.restart();
+    }
+
+    // Every 1.5 seconds while restoring: look at all windows and move any that belong
+    // somewhere else. Checking again and again (instead of once when a window opens) catches
+    // apps that show a splash or login window first (Discord, Steam), and apps that only say
+    // what they are a moment after opening (Spotify).
+    Timer {
+        id: sessionPlace
+        interval: 1500
+        repeat: true
+        running: root.sessionRestoring
+        onTriggered: if (!sessionPlaceProc.running) sessionPlaceProc.running = true
+    }
+    Process {
+        id: sessionPlaceProc
+        command: ["hyprctl", "clients", "-j"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                let list = [];
+                try { list = JSON.parse(text); } catch (e) { return; }
+                root.sessionPlaceWindows(list.filter(c => c.mapped && c.workspace && c.workspace.id > 0));
+            }
+        }
+    }
+    function sessionPlaceWindows(list) {
+        const slots = sessionPending;
+        const byAddr = {};
+        for (const c of list) byAddr[c.address] = c;
+        const taken = {};
+        // windows that closed (a splash screen, say) free their slot again
+        for (const s of slots) {
+            if (s.addr && !byAddr[s.addr]) { s.addr = ""; s.okCount = 0; }
+            if (s.addr) taken[s.addr] = true;
+        }
+        const matches = (s, c) => {
+            const a = (c["class"] || "").toLowerCase(), b = (c.initialClass || "").toLowerCase();
+            return a === s.cls || b === s.cls || (s.icls !== "" && (a === s.icls || b === s.icls));
+        };
+        // give each empty slot a window: same title first, then any window of that app
+        for (const s of slots) {
+            if (s.addr) continue;
+            let pick = null;
+            for (const c of list) if (!taken[c.address] && matches(s, c) && c.title === s.title) { pick = c; break; }
+            if (!pick) for (const c of list) if (!taken[c.address] && matches(s, c)) { pick = c; break; }
+            if (pick) { s.addr = pick.address; taken[pick.address] = true; }
+        }
+        // move what's in the wrong place
+        const cmds = [], monsDone = {};
+        let allSettled = slots.length > 0;
+        for (const s of slots) {
+            if (!s.addr) { allSettled = false; continue; }
+            const c = byAddr[s.addr];
+            if (s.okCount >= 3) continue;               // already settled: leave it alone if you move it
+            if (c.workspace.id !== s.ws) {
+                cmds.push('hl.dsp.window.move({ workspace = ' + s.ws + ', follow = false, window = "address:' + s.addr + '" })');
+                s.okCount = 0;
+            } else {
+                s.okCount++;
+            }
+            if (s.mon && !monsDone[s.ws]) {
+                monsDone[s.ws] = true;
+                const m = Hyprland.monitors.values.find(x => x.name === s.mon);
+                const wsNow = Hyprland.workspaces.values.find(x => x.id === s.ws);
+                if (m && (!wsNow || !wsNow.monitor || wsNow.monitor.name !== s.mon))
+                    cmds.push('hl.dsp.workspace.move({ workspace = ' + s.ws + ', monitor = "' + s.mon + '" })');
+            }
+            if (s.okCount < 3) allSettled = false;      // in place for ~5 seconds = done
+        }
+        if (cmds.length > 0) root.hyprList(cmds);
+        sessionPending = slots;
+        if (allSettled) sessionFinish();
     }
 
     function sessionFinish() {
@@ -2048,36 +2140,7 @@ ShellRoot {
     }
     Timer {
         id: sessionGiveUp
-        interval: 90000             // slow apps get 90 seconds to appear
-        onTriggered: root.sessionFinish()
-    }
-
-    // a window appeared: if it's one we're waiting for, send it to its desktop
-    Connections {
-        target: Hyprland
-        enabled: root.sessionRestoring
-        function onRawEvent(event) {
-            if (event.name !== "openwindow") return;
-            const parts = event.data.split(",");
-            if (parts.length < 3) return;
-            const addr = parts[0].indexOf("0x") === 0 ? parts[0] : "0x" + parts[0];
-            const cls = parts[2].toLowerCase();
-            const pend = root.sessionPending.slice();
-            for (let i = 0; i < pend.length; i++) {
-                if (pend[i].cls.toLowerCase() !== cls) continue;
-                const w = pend.splice(i, 1)[0];
-                root.sessionPending = pend;
-                const cmds = ['hl.dsp.window.move({ workspace = ' + w.ws + ', follow = false, window = "address:' + addr + '" })'];
-                if (w.mon) cmds.push('hl.dsp.workspace.move({ workspace = ' + w.ws + ', monitor = "' + w.mon + '" })');
-                root.hyprList(cmds);
-                if (pend.length === 0) sessionDone.restart();
-                return;
-            }
-        }
-    }
-    Timer {
-        id: sessionDone
-        interval: 1500
+        interval: 120000            // slow apps get 2 minutes to appear
         onTriggered: root.sessionFinish()
     }
 
@@ -9505,7 +9568,11 @@ ShellRoot {
     // It stays on screen until you press its close button, and takes its colours from the theme.
     readonly property bool lyricsOpen: pins.adapter.lyricsOpen
     property string lyricsScreen: ""      // which monitor the panel is on
-    onLyricsOpenChanged: if (lyricsOpen) fetchLyrics()
+    onLyricsOpenChanged: {
+        if (!lyricsOpen) return;
+        fetchLyrics();
+        if (leftTab === "monitors") { Hyprland.refreshMonitors(); nwgCheck.running = true; }
+    }
 
     // colours for the lyrics, taken from the theme (and the wallpaper on the neutral glass theme)
     readonly property var lyricsColors: {
@@ -9550,10 +9617,42 @@ ShellRoot {
     readonly property var leftTabs: [
         { id: "lyrics",  name: "Lyrics",    icon: "" },
         { id: "display", name: "Display",   icon: "" },
+        { id: "monitors", name: "Monitors", icon: "\uf26c" },
         { id: "clip",    name: "Clipboard", icon: "" },
         { id: "notes",   name: "Notes",     icon: "" }
     ]
     readonly property string leftTab: pins.adapter.leftTab || "lyrics"
+
+    // ----- Monitors tab -----
+    property bool hasNwgDisplays: true
+    // everything the Monitors tab shows, read from Hyprland
+    readonly property var monInfo: {
+        const out = [], ms = Hyprland.monitors.values;
+        for (let i = 0; i < ms.length; i++) {
+            const m = ms[i], o = m.lastIpcObject || {};
+            const sc = m.scale || o.scale || 1;
+            const rot = (o.transform || 0) % 2 === 1;
+            const w = m.width || o.width || 1920, h = m.height || o.height || 1080;
+            out.push({
+                name: m.name,
+                model: (o.make ? o.make + " " : "") + (o.model || ""),
+                width: w, height: h,
+                hz: o.refreshRate || 0,
+                scale: Math.round(sc * 100) / 100,
+                x: m.x !== undefined ? m.x : (o.x || 0),
+                y: m.y !== undefined ? m.y : (o.y || 0),
+                lw: (rot ? h : w) / sc, lh: (rot ? w : h) / sc,     // size on the desktop
+                focused: m.focused
+            });
+        }
+        return out;
+    }
+    Process {
+        id: nwgCheck
+        command: ["sh", "-c", "command -v nwg-displays >/dev/null && echo yes || echo no"]
+        stdout: StdioCollector { onStreamFinished: root.hasNwgDisplays = text.trim() === "yes" }
+    }
+    onLeftTabChanged: if (leftTab === "monitors") { Hyprland.refreshMonitors(); nwgCheck.running = true; }
 
     // ----- Display tab: screen colours (a Hyprland screen shader) -----
     readonly property int dispSat: pins.adapter.dispSat
@@ -10255,6 +10354,180 @@ ShellRoot {
                                         icon: ""
                                         label: "Back to normal"
                                         onClicked: mouse => root.setDisplay(100, 100, 6500, 100)
+                                    }
+                                }
+                            }
+
+                            // ===== Monitors =====
+                            Flickable {
+                                clip: true
+                                contentWidth: width
+                                contentHeight: monCol.implicitHeight
+                                boundsBehavior: Flickable.StopAtBounds
+
+                                ColumnLayout {
+                                    id: monCol
+                                    width: parent.width
+                                    spacing: 12
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        Text { Layout.fillWidth: true; text: "Monitors"; color: root.fg; font.pixelSize: 17; font.bold: true }
+                                        Text {
+                                            text: root.monInfo.length + (root.monInfo.length === 1 ? " screen" : " screens")
+                                            color: root.muted
+                                            font.pixelSize: 12
+                                        }
+                                    }
+
+                                    // ---- a little map of how your screens are arranged ----
+                                    Rectangle {
+                                        id: monMap
+                                        Layout.fillWidth: true
+                                        Layout.preferredHeight: 150
+                                        radius: 18
+                                        color: root.surface
+                                        border.width: 1
+                                        border.color: root.glassEdge
+                                        readonly property var box: {
+                                            const ms = root.monInfo;
+                                            if (ms.length === 0) return { x: 0, y: 0, w: 1, h: 1 };
+                                            let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+                                            for (const m of ms) {
+                                                x0 = Math.min(x0, m.x); y0 = Math.min(y0, m.y);
+                                                x1 = Math.max(x1, m.x + m.lw); y1 = Math.max(y1, m.y + m.lh);
+                                            }
+                                            return { x: x0, y: y0, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0) };
+                                        }
+                                        readonly property real k: Math.min((width - 30) / box.w, (height - 30) / box.h)
+                                        readonly property real offX: (width - box.w * k) / 2
+                                        readonly property real offY: (height - box.h * k) / 2
+
+                                        Repeater {
+                                            model: root.monInfo
+                                            delegate: Rectangle {
+                                                id: mm
+                                                required property var modelData
+                                                required property int index
+                                                x: monMap.offX + (mm.modelData.x - monMap.box.x) * monMap.k + 2
+                                                y: monMap.offY + (mm.modelData.y - monMap.box.y) * monMap.k + 2
+                                                width: mm.modelData.lw * monMap.k - 4
+                                                height: mm.modelData.lh * monMap.k - 4
+                                                radius: 8
+                                                color: mm.modelData.focused ? root.accent : root.overlay
+                                                border.width: 1
+                                                border.color: root.glassEdge
+                                                Column {
+                                                    anchors.centerIn: parent
+                                                    Text {
+                                                        anchors.horizontalCenter: parent.horizontalCenter
+                                                        text: mm.index + 1
+                                                        color: mm.modelData.focused ? root.bg : root.fg
+                                                        font.pixelSize: 20
+                                                        font.bold: true
+                                                    }
+                                                    Text {
+                                                        anchors.horizontalCenter: parent.horizontalCenter
+                                                        text: mm.modelData.name
+                                                        color: mm.modelData.focused ? root.bg : root.muted
+                                                        font.pixelSize: 10
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // ---- details for each screen ----
+                                    Repeater {
+                                        model: root.monInfo
+                                        delegate: HubCard {
+                                            id: mc
+                                            required property var modelData
+                                            required property int index
+                                            theme: root
+                                            Layout.fillWidth: true
+                                            Layout.preferredHeight: 64
+                                            radius: 16
+                                            RowLayout {
+                                                anchors.fill: parent
+                                                anchors.margins: 12
+                                                spacing: 12
+                                                Rectangle {
+                                                    Layout.preferredWidth: 36
+                                                    Layout.preferredHeight: 36
+                                                    radius: 18
+                                                    color: mc.modelData.focused ? root.accent : root.overlay
+                                                    Text {
+                                                        anchors.centerIn: parent
+                                                        text: mc.index + 1
+                                                        color: mc.modelData.focused ? root.bg : root.fg
+                                                        font.pixelSize: 15
+                                                        font.bold: true
+                                                    }
+                                                }
+                                                ColumnLayout {
+                                                    Layout.fillWidth: true
+                                                    spacing: 2
+                                                    Text {
+                                                        Layout.fillWidth: true
+                                                        text: mc.modelData.name + (mc.modelData.model ? "  ·  " + mc.modelData.model : "")
+                                                        color: root.fg
+                                                        font.pixelSize: 13
+                                                        font.bold: true
+                                                        elide: Text.ElideRight
+                                                    }
+                                                    Text {
+                                                        Layout.fillWidth: true
+                                                        text: mc.modelData.width + "×" + mc.modelData.height
+                                                            + (mc.modelData.hz > 0 ? "  ·  " + Math.round(mc.modelData.hz) + " Hz" : "")
+                                                            + "  ·  scale " + mc.modelData.scale
+                                                        color: root.muted
+                                                        font.pixelSize: 12
+                                                        elide: Text.ElideRight
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // ---- open nwg-displays (or how to get it) ----
+                                    Rectangle {
+                                        Layout.fillWidth: true
+                                        Layout.preferredHeight: 56
+                                        radius: 18
+                                        color: nwgMouse.containsMouse ? Qt.lighter(root.accent, 1.08) : root.accent
+                                        scale: nwgMouse.pressed ? 0.97 : 1
+                                        Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+                                        RowLayout {
+                                            anchors.centerIn: parent
+                                            spacing: 10
+                                            Text { text: ""; color: root.bg; font.family: root.iconFont; font.pixelSize: 17 }
+                                            Text {
+                                                text: root.hasNwgDisplays ? "Open nwg-displays" : "Copy install command"
+                                                color: root.bg
+                                                font.pixelSize: 15
+                                                font.bold: true
+                                            }
+                                        }
+                                        MouseArea {
+                                            id: nwgMouse
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                if (root.hasNwgDisplays) Quickshell.execDetached(["nwg-displays"]);
+                                                else Quickshell.execDetached(["wl-copy", "sudo pacman -S nwg-displays"]);
+                                            }
+                                        }
+                                    }
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: root.hasNwgDisplays
+                                            ? "Drag your screens into place and change resolution, refresh rate and scale. Press Apply in nwg-displays to save."
+                                            : "nwg-displays isn't installed yet. The button copies: sudo pacman -S nwg-displays"
+                                        color: root.muted
+                                        font.pixelSize: 12
+                                        wrapMode: Text.Wrap
                                     }
                                 }
                             }
