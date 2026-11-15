@@ -11740,21 +11740,23 @@ ShellRoot {
         if (!env) return;
         const ts = env.timestamp || Date.now();
         const dm = env.dataMessage;
-        if (dm && dm.message) {
+        if (dm && (dm.message || (dm.attachments && dm.attachments.length))) {
             const gid = dm.groupInfo && dm.groupInfo.groupId;
             const who = env.sourceNumber || env.source || env.sourceUuid || "";
             const from = env.sourceName || sigNames[who] || who;
-            if (gid) sigAdd("g:" + gid, sigGroupNames[gid] || dm.groupInfo.groupName || "Group", true, gid, { me: false, from: from, text: dm.message, ts: ts });
-            else sigAdd("u:" + who, from, false, who, { me: false, from: from, text: dm.message, ts: ts });
+            const m = { me: false, from: from, text: dm.message || "", ts: ts, files: sigFilesFrom(dm.attachments) };
+            if (gid) sigAdd("g:" + gid, sigGroupNames[gid] || dm.groupInfo.groupName || "Group", true, gid, m);
+            else sigAdd("u:" + who, from, false, who, m);
             return;
         }
         // something you sent from your phone or Signal Desktop
         const sm = env.syncMessage && env.syncMessage.sentMessage;
-        if (sm && sm.message) {
+        if (sm && (sm.message || (sm.attachments && sm.attachments.length))) {
             const gid = sm.groupInfo && sm.groupInfo.groupId;
             const to = sm.destinationNumber || sm.destination || sm.destinationUuid || "";
-            if (gid) sigAdd("g:" + gid, sigGroupNames[gid] || "Group", true, gid, { me: true, from: "You", text: sm.message, ts: sm.timestamp || ts });
-            else if (to) sigAdd("u:" + to, sigNames[to] || to, false, to, { me: true, from: "You", text: sm.message, ts: sm.timestamp || ts });
+            const m = { me: true, from: "You", text: sm.message || "", ts: sm.timestamp || ts, files: sigFilesFrom(sm.attachments) };
+            if (gid) sigAdd("g:" + gid, sigGroupNames[gid] || "Group", true, gid, m);
+            else if (to) sigAdd("u:" + to, sigNames[to] || to, false, to, m);
         }
     }
 
@@ -11805,11 +11807,88 @@ ShellRoot {
     function sigSend(key, text) {
         text = text.trim();
         const c = sigChats[key];
-        if (!c || text === "" || !sigReady) return false;
-        sigCall("send", c.group ? { groupId: c.id, message: text } : { recipient: [c.id], message: text });
-        sigAdd(key, c.name, c.group, c.id, { me: true, from: "You", text: text, ts: Date.now() });
+        const paths = sigAttach.map(f => f.path);
+        if (!c || (text === "" && paths.length === 0) || !sigReady) return false;
+        const p = c.group ? { groupId: c.id, message: text } : { recipient: [c.id], message: text };
+        if (paths.length) p.attachments = paths;
+        sigCall("send", p);
+        sigAdd(key, c.name, c.group, c.id, { me: true, from: "You", text: text, ts: Date.now(), files: sigAttach.slice() });
+        sigAttach = [];
         return true;
     }
+
+    // ----- pictures, videos and files -----
+    property var sigAttach: []                 // waiting to be sent: [{ path, name, type }]
+    property string sigAttachNote: ""
+    readonly property string sigAttachDir: Quickshell.env("HOME") + "/.local/share/signal-cli/attachments"
+
+    function sigKind(name, mime) {
+        const m = (mime || "").toLowerCase(), n = (name || "").toLowerCase();
+        if (m.indexOf("image/") === 0 || /\.(png|jpe?g|gif|webp|bmp|avif|heic)$/.test(n)) return "image";
+        if (m.indexOf("video/") === 0 || /\.(mp4|mkv|webm|mov|avi|m4v)$/.test(n)) return "video";
+        if (m.indexOf("audio/") === 0 || /\.(mp3|ogg|opus|m4a|aac|wav|flac)$/.test(n)) return "audio";
+        return "file";
+    }
+    function sigFileEntry(path, mime) {
+        const name = path.split("/").pop();
+        return { path: path, name: name, type: sigKind(name, mime) };
+    }
+    // attachments in a message from signal-cli -> files saved on this PC
+    function sigFilesFrom(atts) {
+        if (!atts || !atts.length) return [];
+        return atts.filter(a => a && a.id).map(a => {
+            const e = sigFileEntry(sigAttachDir + "/" + a.id, a.contentType);
+            if (a.filename) e.name = a.filename;
+            return e;
+        });
+    }
+    function sigAddAttach(paths) {
+        const out = sigAttach.slice();
+        for (const p of paths) {
+            const clean = p.trim();
+            if (clean === "" || out.some(f => f.path === clean)) continue;
+            out.push(sigFileEntry(clean, ""));
+        }
+        sigAttach = out.slice(0, 10);
+        sigAttachNote = "";
+    }
+    function sigRemoveAttach(path) { sigAttach = sigAttach.filter(f => f.path !== path); }
+    onSigCurrentChanged: sigAttach = []
+
+    // pick files with a normal file window (zenity or kdialog)
+    Process {
+        id: sigPicker
+        command: ["sh", "-c",
+            'if command -v zenity >/dev/null; then zenity --file-selection --multiple --separator="|" --title="Send in Signal" 2>/dev/null; '
+            + 'elif command -v kdialog >/dev/null; then kdialog --getopenfilename "$HOME" --multiple --separate-output 2>/dev/null; '
+            + 'else echo NOPICKER; fi']
+        stdout: StdioCollector {
+            onStreamFinished: {
+                if (text.trim() === "NOPICKER") { root.sigAttachNote = "To pick files, install zenity: sudo pacman -S zenity"; return; }
+                root.sigAddAttach(text.split(/[|\n]/));
+            }
+        }
+    }
+    function sigPickFiles() { if (!sigPicker.running) sigPicker.running = true; }
+
+    // send a picture that's on the clipboard (like a screenshot)
+    Process {
+        id: sigPaster
+        command: ["sh", "-c",
+            't=$(wl-paste --list-types 2>/dev/null | grep -m1 "^image/"); [ -n "$t" ] || { echo NOIMG; exit 0; }; '
+            + 'd="$HOME/.local/share/joeos/signal-sent"; mkdir -p "$d"; ext="${t#image/}"; [ "$ext" = jpeg ] && ext=jpg; '
+            + 'f="$d/pasted-$(date +%Y%m%d-%H%M%S).$ext"; wl-paste --type "$t" > "$f" && echo "$f"']
+        stdout: StdioCollector {
+            onStreamFinished: {
+                const v = text.trim();
+                if (v === "NOIMG" || v === "") { if (!root.sigPasteQuiet) root.sigAttachNote = "There's no picture on the clipboard"; return; }
+                root.sigAddAttach([v]);
+            }
+        }
+    }
+    function sigPasteImage() { sigPasteQuiet = false; if (!sigPaster.running) sigPaster.running = true; }
+    property bool sigPasteQuiet: false
+    function sigPasteImageQuiet() { sigPasteQuiet = true; if (!sigPaster.running) sigPaster.running = true; }
 
     readonly property var sigChatList: {
         const out = [];
@@ -12723,17 +12802,95 @@ ShellRoot {
                                             y: bubName.visible ? bubName.implicitHeight + 2 : 0
                                             anchors.right: bub.modelData.me ? parent.right : undefined
                                             anchors.left: bub.modelData.me ? undefined : parent.left
-                                            width: Math.min(bubText.implicitWidth + 24, msgList.width * 0.8)
-                                            height: bubText.implicitHeight + bubTime.implicitHeight + 16
+                                            width: Math.min(Math.max(bubText.implicitWidth + 24, bubFiles.implicitWidth + 20, 70), msgList.width * 0.8)
+                                            height: (bubText.visible ? bubText.implicitHeight + 4 : 0) + (bubFiles.visible ? bubFiles.implicitHeight + 6 : 0)
+                                                + bubTime.implicitHeight + 14
                                             radius: 16
                                             color: bub.modelData.me ? Qt.rgba(0.23, 0.46, 0.94, 0.85) : root.overlay
                                             border.width: 1
                                             border.color: root.glassEdge
 
+                                            // pictures, videos and files in this message
+                                            Column {
+                                                id: bubFiles
+                                                visible: !!bub.modelData.files && bub.modelData.files.length > 0
+                                                x: 10
+                                                y: 8
+                                                spacing: 6
+                                                Repeater {
+                                                    model: bub.modelData.files || []
+                                                    delegate: Item {
+                                                        id: bf
+                                                        required property var modelData
+                                                        readonly property bool pic: bf.modelData.type === "image"
+                                                        width: bf.pic ? Math.min(220, msgList.width * 0.8 - 20) : bfChip.width
+                                                        height: bf.pic ? Math.max(40, Math.min(240, bfImg.paintedHeight || 140)) : 38
+                                                        Rectangle {
+                                                            anchors.fill: parent
+                                                            visible: bf.pic
+                                                            radius: 12
+                                                            color: Qt.rgba(0, 0, 0, 0.2)
+                                                            clip: true
+                                                            Image {
+                                                                id: bfImg
+                                                                anchors.fill: parent
+                                                                source: bf.pic ? "file://" + bf.modelData.path : ""
+                                                                fillMode: Image.PreserveAspectFit
+                                                                asynchronous: true
+                                                                sourceSize.width: 440
+                                                            }
+                                                            Text {
+                                                                anchors.centerIn: parent
+                                                                visible: bfImg.status === Image.Error
+                                                                text: "Picture not on this PC"
+                                                                color: root.muted
+                                                                font.pixelSize: 11
+                                                            }
+                                                        }
+                                                        Rectangle {
+                                                            id: bfChip
+                                                            visible: !bf.pic
+                                                            width: Math.min(bfRow.implicitWidth + 20, msgList.width * 0.8 - 20)
+                                                            height: 38
+                                                            radius: 12
+                                                            color: Qt.rgba(0, 0, 0, 0.2)
+                                                            Row {
+                                                                id: bfRow
+                                                                anchors.verticalCenter: parent.verticalCenter
+                                                                x: 10
+                                                                spacing: 8
+                                                                Text {
+                                                                    anchors.verticalCenter: parent.verticalCenter
+                                                                    text: bf.modelData.type === "video" ? "\uf03d" : (bf.modelData.type === "audio" ? "\uf001" : "\uf15b")
+                                                                    font.family: root.iconFont
+                                                                    font.pixelSize: 14
+                                                                    color: bub.modelData.me ? "white" : root.accent
+                                                                }
+                                                                Text {
+                                                                    anchors.verticalCenter: parent.verticalCenter
+                                                                    width: Math.min(implicitWidth, msgList.width * 0.8 - 70)
+                                                                    text: bf.modelData.name
+                                                                    elide: Text.ElideMiddle
+                                                                    color: bub.modelData.me ? "white" : root.fg
+                                                                    font.pixelSize: 12
+                                                                }
+                                                            }
+                                                        }
+                                                        // open it with the normal app
+                                                        MouseArea {
+                                                            anchors.fill: parent
+                                                            cursorShape: Qt.PointingHandCursor
+                                                            onClicked: Quickshell.execDetached(["xdg-open", bf.modelData.path])
+                                                        }
+                                                    }
+                                                }
+                                            }
+
                                             Text {
                                                 id: bubText
+                                                visible: bub.modelData.text !== ""
                                                 x: 12
-                                                y: 7
+                                                y: bubFiles.visible ? bubFiles.y + bubFiles.implicitHeight + 6 : 7
                                                 width: Math.min(implicitWidth, msgList.width * 0.8 - 24)
                                                 text: bub.modelData.text
                                                 wrapMode: Text.Wrap
@@ -12754,6 +12911,29 @@ ShellRoot {
                                     }
                                 }
 
+                                // drag files here from Thunar to attach them
+                                DropArea {
+                                    id: sigDrop
+                                    anchors.fill: parent
+                                    onDropped: drop => {
+                                        const paths = [];
+                                        for (const u of drop.urls) {
+                                            const s = u.toString();
+                                            if (s.indexOf("file://") === 0) paths.push(decodeURIComponent(s.slice(7)));
+                                        }
+                                        root.sigAddAttach(paths);
+                                    }
+                                }
+                                Rectangle {
+                                    anchors.fill: parent
+                                    visible: sigDrop.containsDrag
+                                    radius: parent.radius
+                                    color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18)
+                                    border.width: 2
+                                    border.color: root.accent
+                                    Text { anchors.centerIn: parent; text: "Drop to attach"; color: root.fg; font.pixelSize: 14; font.bold: true }
+                                }
+
                                 Text {
                                     anchors.centerIn: parent
                                     visible: msgList.count === 0
@@ -12763,10 +12943,99 @@ ShellRoot {
                                 }
                             }
 
+                            // ---- files waiting to be sent ----
+                            Flow {
+                                Layout.fillWidth: true
+                                visible: root.sigAttach.length > 0 || root.sigAttachNote !== ""
+                                spacing: 6
+                                Repeater {
+                                    model: root.sigAttach
+                                    delegate: Rectangle {
+                                        id: pa
+                                        required property var modelData
+                                        width: paRow.implicitWidth + 16
+                                        height: 30
+                                        radius: 15
+                                        color: root.surface
+                                        border.width: 1
+                                        border.color: root.glassEdge
+                                        Row {
+                                            id: paRow
+                                            anchors.centerIn: parent
+                                            spacing: 6
+                                            Text {
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                text: pa.modelData.type === "image" ? "\uf03e" : (pa.modelData.type === "video" ? "\uf03d" : "\uf15b")
+                                                font.family: root.iconFont
+                                                font.pixelSize: 11
+                                                color: root.accent
+                                            }
+                                            Text {
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                width: Math.min(implicitWidth, 150)
+                                                text: pa.modelData.name
+                                                elide: Text.ElideMiddle
+                                                color: root.fg
+                                                font.pixelSize: 11
+                                            }
+                                            Text {
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                text: "\uf00d"
+                                                font.family: root.iconFont
+                                                font.pixelSize: 10
+                                                color: root.muted
+                                                MouseArea {
+                                                    anchors.fill: parent
+                                                    anchors.margins: -6
+                                                    cursorShape: Qt.PointingHandCursor
+                                                    onClicked: root.sigRemoveAttach(pa.modelData.path)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                Text {
+                                    visible: root.sigAttachNote !== ""
+                                    text: root.sigAttachNote
+                                    color: root.muted
+                                    font.pixelSize: 11
+                                }
+                            }
+
                             // ---- type + send ----
                             RowLayout {
                                 Layout.fillWidth: true
                                 spacing: 8
+
+                                // attach: click for files, right-click to paste a picture from the clipboard
+                                Rectangle {
+                                    Layout.preferredWidth: 44
+                                    Layout.preferredHeight: 44
+                                    radius: 22
+                                    color: attachMouse.containsMouse ? root.overlay : root.surface
+                                    border.width: 1
+                                    border.color: root.glassEdge
+                                    scale: attachMouse.pressed ? 0.9 : 1
+                                    Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: "\uf0c6"
+                                        color: root.fg
+                                        font.family: root.iconFont
+                                        font.pixelSize: 16
+                                    }
+                                    MouseArea {
+                                        id: attachMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                        onClicked: mouse => {
+                                            if (mouse.button === Qt.RightButton) root.sigPasteImage();
+                                            else root.sigPickFiles();
+                                        }
+                                    }
+                                }
 
                                 Rectangle {
                                     Layout.fillWidth: true
@@ -12786,6 +13055,10 @@ ShellRoot {
                                         font.pixelSize: 13
                                         clip: true
                                         selectByMouse: true
+                                        Keys.onPressed: event => {
+                                            // Ctrl+V with a picture on the clipboard attaches it (text pastes as normal)
+                                            if (event.key === Qt.Key_V && (event.modifiers & Qt.ControlModifier)) root.sigPasteImageQuiet();
+                                        }
                                         Keys.onReturnPressed: sendBtn.send()
                                         Keys.onEnterPressed: sendBtn.send()
                                         Keys.onEscapePressed: root.sideView = "signal"
@@ -12794,7 +13067,7 @@ ShellRoot {
                                             anchors.fill: parent
                                             verticalAlignment: Text.AlignVCenter
                                             visible: sigInput.text === ""
-                                            text: root.sigReady ? "Message" : "Connecting to Signal…"
+                                            text: root.sigReady ? "Message  (Ctrl+V pastes a picture)" : "Connecting to Signal…"
                                             color: root.muted
                                             font.pixelSize: 13
                                         }
@@ -12814,7 +13087,7 @@ ShellRoot {
                                     Layout.preferredWidth: 44
                                     Layout.preferredHeight: 44
                                     radius: 22
-                                    readonly property bool ok: root.sigReady && sigInput.text.trim() !== ""
+                                    readonly property bool ok: root.sigReady && (sigInput.text.trim() !== "" || root.sigAttach.length > 0)
                                     color: sendBtn.ok ? "#3a76f0" : root.overlay
                                     scale: sendMouse.pressed ? 0.9 : 1
                                     Behavior on color { ColorAnimation { duration: root.animMs } }
