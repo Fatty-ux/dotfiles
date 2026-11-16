@@ -297,6 +297,78 @@ def recomp_games():
                 })
     return out
 
+
+# ---------------------------------------------------------------- Eglantine (Switch 2 emulator)
+EMU_EXT = (".xci", ".nsp", ".xcz", ".nsz", ".nro", ".nca")
+
+def eglantine_exe():
+    """The Eglantine program: an AppImage, the extracted tar.gz build, or eglantine on your PATH."""
+    hits = []
+    for d in [os.path.join(HOME, x) for x in (".local/bin", "Applications", "Games", "Downloads", "Emulators", "Games/Emulators")] \
+             + os.environ.get("PATH", "").split(":"):
+        if not os.path.isdir(d):
+            continue
+        hits += glob.glob(os.path.join(d, "[Ee]glantine*.AppImage")) + glob.glob(os.path.join(d, "eglantine"))
+        hits += glob.glob(os.path.join(d, "*[Ee]glantine*", "eglantine")) + glob.glob(os.path.join(d, "*[Ee]glantine*", "*.AppImage"))
+    hits = [h for h in hits if os.path.isfile(h)]
+    hits.sort(key=lambda h: os.path.getmtime(h))       # newest build wins
+    return hits[-1] if hits else ""
+
+def eglantine_dirs():
+    """Game folders: the ones set in Eglantine's settings, plus your usual Switch 2 folders."""
+    dirs = []
+    for cfg in glob.glob(os.path.join(HOME, ".config", "*", "qt-config.ini")):
+        if not re.search(r"eglantine|eden", cfg, re.I):
+            continue
+        for line in (read(cfg) or "").splitlines():
+            m = re.match(r"^Paths\\gamedirs\\\d+\\path=(.+)$", line.strip())
+            if m and not m.group(1).startswith(("SDMC", "UserNAND", "SysNAND")):
+                dirs.append(os.path.expanduser(m.group(1).strip()))
+    for pat in ("~/Games/*/Roms/Switch 2*", "~/Games/*/Switch 2*", "~/Games/Switch 2*", "~/Games/Roms/Switch*",
+                "~/Games/*/Roms/Switch*", "~/Roms/Switch*", "~/Games/Eglantine*"):
+        dirs += glob.glob(os.path.expanduser(pat))
+    return [d for d in dict.fromkeys(dirs) if os.path.isdir(d)]
+
+def clean_title(s):
+    s = re.sub(r"\[[^\]]*\]|\([^)]*\)", "", s)            # [0100...] (v1.0) tags
+    s = re.sub(r"(?i)\b(switch ?2|nsp|xci|base game|update|dlc)\b", "", s)
+    return re.sub(r"\s+", " ", s.replace("_", " ")).strip(" -._") or s
+
+def eglantine_games():
+    exe = eglantine_exe()
+    out, seen = [], set()
+    for root in eglantine_dirs():
+        for dirpath, dirs, files in os.walk(root):
+            rel = os.path.relpath(dirpath, root)
+            if rel != "." and rel.count(os.sep) >= 3:
+                dirs[:] = []
+                continue
+            # a dumped game left as folders: <Game>/exefs/main + romfs
+            if os.path.isfile(os.path.join(dirpath, "exefs", "main")):
+                path = os.path.join(dirpath, "exefs", "main")
+                name = clean_title(os.path.basename(dirpath))
+                dirs[:] = []
+            else:
+                path = ""
+            cands = [(path, name)] if path else []
+            for fn in files:
+                if fn.lower().endswith(EMU_EXT):
+                    cands.append((os.path.join(dirpath, fn), clean_title(os.path.splitext(fn)[0])))
+            for p, n in cands:
+                real = os.path.realpath(p)
+                if real in seen:
+                    continue
+                seen.add(real)
+                d = os.path.dirname(p) if not p.endswith("/exefs/main") else os.path.dirname(os.path.dirname(p))
+                icon = first(*[os.path.join(d, x) for x in ("cover.png", "cover.jpg", "icon.png", "icon.jpg", "icon_AmericanEnglish.dat")])
+                out.append({
+                    "key": "eglantine:" + real, "id": p, "name": n, "src": "emu", "store": "Switch 2",
+                    "installed": bool(exe), "cover": ("file://" + icon) if icon and not icon.endswith(".dat") else "",
+                    "header": "", "last": int(os.path.getatime(p)),
+                    "play": [exe, "-g", p] if exe else [], "install": [], "cols": [],
+                })
+    return out, exe
+
 # ---------------------------------------------------------------- main
 def main():
     want_names = "--names" in sys.argv
@@ -304,7 +376,8 @@ def main():
     if want_names and missing:
         if fetch_names(missing):
             steam, cols, missing = steam_games()
-    games = steam + heroic_games() + recomp_games()
+    emu, emu_exe = eglantine_games()
+    games = steam + heroic_games() + recomp_games() + emu
     games.sort(key=lambda g: g["name"].lower())
     recomp_launcher = ""
     for p in [os.path.join(HOME, ".local/bin")] + os.environ.get("PATH", "").split(":"):
@@ -313,7 +386,7 @@ def main():
             recomp_launcher = hits[-1]
             break
     print(json.dumps({"games": games, "collections": cols, "missingNames": len(missing),
-                      "recompLauncher": recomp_launcher, "at": int(time.time())}))
+                      "recompLauncher": recomp_launcher, "eglantine": emu_exe, "at": int(time.time())}))
 
 if __name__ == "__main__":
     main()

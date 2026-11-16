@@ -8176,6 +8176,7 @@ ShellRoot {
     property var gamesAll: []
     property var gamesCols: []               // Steam collections [{ id, name }]
     property string gamesRecompLauncher: ""
+    property string gamesEglantine: ""         // the Eglantine (Switch 2 emulator) program, if found
     property bool gamesLoading: false
     property int gamesMissingNames: 0
     property string gamesSrc: "all"          // all, steam, heroic, recomp
@@ -8333,6 +8334,7 @@ ShellRoot {
             gamesAll = d.games || [];
             gamesCols = d.collections || [];
             gamesRecompLauncher = d.recompLauncher || "";
+            gamesEglantine = d.eglantine || "";
             gamesMissingNames = d.missingNames || 0;
             return true;
         } catch (e) {
@@ -8380,6 +8382,10 @@ ShellRoot {
     onLauncherOpenChanged: if (!launcherOpen) { gamesMode = false; gamesHiddenView = false; storeMode = false; }
 
     function gamePlay(g) {
+        if (g.src === "emu" && (!g.play || g.play.length === 0)) {
+            gamesNote = "Eglantine wasn't found. Put its AppImage in ~/.local/bin (or ~/Applications), then press refresh.";
+            return;
+        }
         launcherOpen = false;
         Quickshell.execDetached(g.installed ? g.play : (g.install && g.install.length ? g.install : g.play));
     }
@@ -9291,7 +9297,8 @@ ShellRoot {
                                             { id: "all", name: "All games", icon: "" },
                                             { id: "steam", name: "Steam", icon: "" },
                                             { id: "heroic", name: "Heroic", icon: "" },
-                                            { id: "recomp", name: "Recomp", icon: "" }
+                                            { id: "recomp", name: "Recomp", icon: "" },
+                                            { id: "emu", name: "Switch 2", icon: "\uf11b" }
                                         ]
                                         delegate: Rectangle {
                                             id: gs
@@ -9484,6 +9491,12 @@ ShellRoot {
                                     label: "RecompLauncher"
                                     onClicked: { root.launcherOpen = false; Quickshell.execDetached([root.gamesRecompLauncher]); }
                                 }
+                                SportChip {
+                                    visible: root.gamesEglantine !== ""
+                                    theme: root
+                                    label: "Eglantine"
+                                    onClicked: { root.launcherOpen = false; Quickshell.execDetached([root.gamesEglantine]); }
+                                }
                                 SportChip { theme: root; icon: ""; label: "Add a game"; onClicked: root.gamesPickToAdd() }
                             }
                             Text {
@@ -9620,7 +9633,8 @@ ShellRoot {
                                             Text {
                                                 id: gSrc
                                                 anchors.centerIn: parent
-                                                text: gcard.modelData.src === "steam" ? "Steam" : gcard.modelData.src === "heroic" ? (gcard.modelData.store || "Heroic") : (gcard.modelData.added ? "Added" : "Recomp")
+                                                text: gcard.modelData.src === "steam" ? "Steam" : gcard.modelData.src === "heroic" ? (gcard.modelData.store || "Heroic")
+                                                    : gcard.modelData.src === "emu" ? "Switch 2" : (gcard.modelData.added ? "Added" : "Recomp")
                                                 color: "white"
                                                 font.pixelSize: 9
                                                 font.bold: true
