@@ -12353,7 +12353,7 @@ ShellRoot {
     function applyDisplay() {
         const lua = p => 'hl.config({ decoration = { screen_shader = "' + p + '" } })';
         const plain = dispSat === 100 && dispCon === 100 && dispTemp >= 6500 && dispBri === 100;
-        if (plain || gameMode) {
+        if (plain) {                         // (stays on in game mode too, so games keep your colours)
             Quickshell.execDetached(["hyprctl", "eval", lua("")]);
             return;
         }
@@ -12912,9 +12912,9 @@ ShellRoot {
                                     Text { text: "Screen colours"; color: root.fg; font.pixelSize: 17; font.bold: true }
                                     Text {
                                         Layout.fillWidth: true
-                                        text: root.gameMode ? "Paused while game mode is on, so games run at full speed."
+                                        text: root.gameMode ? "Game mode is on: your colours stay on in games too."
                                             : "Changes every monitor. Pick a look, or fine-tune it below."
-                                        color: root.gameMode ? root.danger : root.muted
+                                        color: root.gameMode ? root.accent : root.muted
                                         font.pixelSize: 12
                                         wrapMode: Text.Wrap
                                     }
