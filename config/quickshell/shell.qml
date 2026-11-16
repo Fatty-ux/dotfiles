@@ -8048,6 +8048,127 @@ ShellRoot {
         }
     }
 
+    // ---------- App store (in the launcher: the Store button) ----------
+    // scripts/store.py searches Flathub, the Arch repos and the AUR. Flathub apps install
+    // straight away for just you; Arch and AUR packages install in a terminal (password + you can watch).
+    property bool storeMode: false
+    property var storeResults: []
+    property bool storeLoading: false
+    property string storeQuery: ""
+    property string storeSrc: "all"         // all, flatpak, repo, aur
+    property bool storeHasParu: true
+    property bool storeHasFlatpak: true
+    property var storeBusy: ({})            // id -> "install" / "remove" while it's happening
+    readonly property string storeScript: Quickshell.env("HOME") + "/.config/quickshell/scripts/store.py"
+    readonly property var storeShown: storeResults.filter(r => storeSrc === "all" || r.src === storeSrc)
+
+    Process {
+        id: storeSearchProc
+        property string q: ""
+        command: q === "" ? ["python3", root.storeScript, "featured"] : ["python3", root.storeScript, "search", q]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    const d = JSON.parse(text);
+                    if ((d.query || "") === root.storeQuery.trim() || storeSearchProc.q === "") {
+                        root.storeResults = d.results || [];
+                        root.storeHasParu = d.hasParu !== false;
+                        root.storeHasFlatpak = d.hasFlatpak !== false;
+                    }
+                } catch (e) {}
+                root.storeLoading = false;
+            }
+        }
+        onExited: root.storeLoading = false
+    }
+    Timer {
+        id: storeSearchTimer
+        interval: 450                        // wait until you stop typing
+        onTriggered: root.storeSearchNow()
+    }
+    function storeSearchNow() {
+        if (storeSearchProc.running) { storeSearchTimer.restart(); return; }
+        storeSearchProc.q = storeQuery.trim();
+        storeLoading = true;
+        storeSearchProc.running = true;
+    }
+    onStoreQueryChanged: storeSearchTimer.restart()
+    function openStore() {
+        storeMode = true;
+        gamesMode = false;
+        if (storeResults.length === 0) storeSearchNow();
+    }
+
+    function storeSetBusy(id, what) {
+        const b = {};
+        for (const k in storeBusy) b[k] = storeBusy[k];
+        if (what) b[id] = what; else delete b[id];
+        storeBusy = b;
+    }
+    function storeMark(id, installed) {
+        storeResults = storeResults.map(r => r.id === id ? Object.assign({}, r, { installed: installed }) : r);
+    }
+    function storeInstall(r) {
+        if (storeBusy[r.id]) return;
+        if (r.src === "flatpak") {
+            storeSetBusy(r.id, "install");
+            const p = storeFlatComp.createObject(root, { appId: r.id, appName: r.name, removing: false });
+            p.running = true;
+        } else {
+            // Arch / AUR: in a terminal, so you can type your password and see what happens
+            const tool = r.src === "aur" ? "paru -S " : "sudo pacman -S ";
+            launcherOpen = false;
+            Quickshell.execDetached(["kitty", "--class", "joeos-store", "--title", "Installing " + r.name, "sh", "-c",
+                (r.src === "aur" ? "printf '\\n  AUR packages are made by other users. paru shows you the build files first.\\n\\n'; " : "")
+                + (r.src === "aur" ? (storeHasParu ? "if command -v paru >/dev/null; then paru -S \"$1\"; else yay -S \"$1\"; fi" : "echo 'Install paru first: sudo pacman -S paru'")
+                                    : "sudo pacman -S \"$1\"")
+                + "; printf '\\n  Done. Press Enter to close. '; read _", "sh", r.id]);
+        }
+    }
+    function storeRemove(r) {
+        if (storeBusy[r.id]) return;
+        if (r.src === "flatpak") {
+            storeSetBusy(r.id, "remove");
+            const p = storeFlatComp.createObject(root, { appId: r.id, appName: r.name, removing: true });
+            p.running = true;
+        } else {
+            launcherOpen = false;
+            Quickshell.execDetached(["kitty", "--class", "joeos-store", "--title", "Removing " + r.name, "sh", "-c",
+                "sudo pacman -Rns \"$1\"; printf '\\n  Done. Press Enter to close. '; read _", "sh", r.id]);
+        }
+    }
+    function storeOpen(r) {
+        launcherOpen = false;
+        if (r.src === "flatpak") Quickshell.execDetached(["flatpak", "run", r.id]);
+        else {
+            const e = DesktopEntries.heuristicLookup(r.id);
+            if (e) launchApp(e); else Quickshell.execDetached([r.id]);
+        }
+    }
+    Component {
+        id: storeFlatComp
+        Process {
+            id: sfp
+            property string appId: ""
+            property string appName: ""
+            property bool removing: false
+            command: ["python3", root.storeScript, removing ? "flatremove" : "flatinstall", appId]
+            stdout: StdioCollector {
+                onStreamFinished: {
+                    const ok = text.trim() === "ok";
+                    root.storeSetBusy(sfp.appId, "");
+                    if (ok) root.storeMark(sfp.appId, !sfp.removing);
+                    root.toastSeq += 1;
+                    toastModel.append({ tid: root.toastSeq, nid: -1, appName: "JoeOS", critical: !ok,
+                        summary: ok ? (sfp.removing ? "Removed " : "Installed ") + sfp.appName
+                                    : "Couldn't " + (sfp.removing ? "remove " : "install ") + sfp.appName,
+                        body: ok ? (sfp.removing ? "" : "Find it in your apps.") : "Check your internet and try again." });
+                    sfp.destroy();
+                }
+            }
+        }
+    }
+
     // ---------- Games library (in the launcher: the Games button) ----------
     // scripts/games.py reads Steam, Heroic and recomp folders and prints every game as JSON.
     // The last list is kept in ~/.cache/joeos/games.json so it shows instantly next time.
@@ -8251,11 +8372,12 @@ ShellRoot {
         gamesScan.running = true;
     }
     function openGames() {
+        storeMode = false;
         gamesMode = true;
         gamesQuery = "";
         gamesRefresh();
     }
-    onLauncherOpenChanged: if (!launcherOpen) { gamesMode = false; gamesHiddenView = false; }
+    onLauncherOpenChanged: if (!launcherOpen) { gamesMode = false; gamesHiddenView = false; storeMode = false; }
 
     function gamePlay(g) {
         launcherOpen = false;
@@ -8387,8 +8509,8 @@ ShellRoot {
                 readonly property real pillH: 22
                 readonly property real pillGap: -10         // the tab hangs off the bottom edge like this
                 // the Games library makes it bigger
-                width: !launcher.grown ? pillW : (root.gamesMode ? Math.min(1240, launcher.width - 80) : 760)
-                height: !launcher.grown ? pillH : (root.gamesMode ? Math.min(760, launcher.height - 60) : 640)
+                width: !launcher.grown ? pillW : ((root.gamesMode || root.storeMode) ? Math.min(1240, launcher.width - 80) : 760)
+                height: !launcher.grown ? pillH : ((root.gamesMode || root.storeMode) ? Math.min(760, launcher.height - 60) : 640)
                 anchors.horizontalCenter: parent.horizontalCenter
                 anchors.bottom: parent.bottom
                 anchors.bottomMargin: launcher.grown ? 14 : pillGap
@@ -8424,7 +8546,7 @@ ShellRoot {
                     anchors.bottom: parent.bottom
                     anchors.bottomMargin: 20
                     spacing: 14
-                    visible: !root.gamesMode
+                    visible: !root.gamesMode && !root.storeMode
                     opacity: launcher.grown ? 1 : 0
                     Behavior on opacity { NumberAnimation { duration: launcher.grown ? root.animMs * 3 : root.animMs; easing.type: Easing.OutCubic } }
 
@@ -8712,10 +8834,33 @@ ShellRoot {
                             MouseArea { id: gBtnMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.openGames() }
                         }
 
-                        // a thin line between Games and your apps
+                        // ---- App store button ----
+                        Rectangle {
+                            id: sBtn
+                            anchors.left: gBtn.right
+                            anchors.leftMargin: 8
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: sBtnRow.implicitWidth + 34
+                            height: 52
+                            radius: 26
+                            color: sBtnMouse.containsMouse ? root.accent : root.surface
+                            border.width: 1
+                            border.color: root.glassEdge
+                            Behavior on color { ColorAnimation { duration: root.animMs } }
+                            Row {
+                                id: sBtnRow
+                                anchors.centerIn: parent
+                                spacing: 8
+                                Text { anchors.verticalCenter: parent.verticalCenter; text: "\uf290"; font.family: root.iconFont; font.pixelSize: 18; color: sBtnMouse.containsMouse ? root.bg : root.accent }
+                                Text { anchors.verticalCenter: parent.verticalCenter; text: "Store"; font.pixelSize: 14; font.bold: true; color: sBtnMouse.containsMouse ? root.bg : root.fg }
+                            }
+                            MouseArea { id: sBtnMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.openStore() }
+                        }
+
+                        // a thin line between the buttons and your apps
                         Rectangle {
                             id: taskSep
-                            anchors.left: gBtn.right
+                            anchors.left: sBtn.right
                             anchors.leftMargin: 16
                             anchors.verticalCenter: parent.verticalCenter
                             width: 1
@@ -8827,6 +8972,263 @@ ShellRoot {
                             text: "Right-click any app above to pin it here"
                             color: root.muted
                             font.pixelSize: 12
+                        }
+                    }
+                }
+
+                // ===== App store =====
+                Item {
+                    id: storeView
+                    anchors.fill: parent
+                    anchors.margins: 20
+                    visible: root.storeMode
+                    opacity: launcher.grown && root.storeMode ? 1 : 0
+                    Behavior on opacity { NumberAnimation { duration: root.animMs * 2 } }
+                    onVisibleChanged: if (visible) storeSearch.forceActiveFocus()
+
+                    ColumnLayout {
+                        anchors.fill: parent
+                        spacing: 12
+
+                        // ---- top: back, search, where from ----
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+                            Rectangle {
+                                implicitWidth: 92
+                                implicitHeight: 46
+                                radius: 16
+                                color: sBack.containsMouse ? root.overlay : root.surface
+                                border.width: 1
+                                border.color: root.glassEdge
+                                Row {
+                                    anchors.centerIn: parent
+                                    spacing: 8
+                                    Text { text: ""; font.family: root.iconFont; font.pixelSize: 13; color: root.fg; anchors.verticalCenter: parent.verticalCenter }
+                                    Text { text: "Apps"; color: root.fg; font.pixelSize: 13; anchors.verticalCenter: parent.verticalCenter }
+                                }
+                                MouseArea { id: sBack; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.storeMode = false }
+                            }
+                            Rectangle {
+                                Layout.fillWidth: true
+                                implicitHeight: 46
+                                radius: 16
+                                color: root.surface
+                                border.width: 1
+                                border.color: storeSearch.activeFocus ? root.accent : root.glassEdge
+                                Text {
+                                    id: sSearchIcon
+                                    anchors.left: parent.left
+                                    anchors.leftMargin: 14
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: root.storeLoading ? "" : ""
+                                    font.family: root.iconFont
+                                    font.pixelSize: 14
+                                    color: root.accent
+                                }
+                                TextInput {
+                                    id: storeSearch
+                                    anchors.left: sSearchIcon.right
+                                    anchors.leftMargin: 10
+                                    anchors.right: parent.right
+                                    anchors.rightMargin: 14
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    color: root.fg
+                                    font.pixelSize: 15
+                                    clip: true
+                                    text: root.storeQuery
+                                    onTextChanged: root.storeQuery = text
+                                    Keys.onReturnPressed: root.storeSearchNow()
+                                    Keys.onEscapePressed: { if (text !== "") text = ""; else root.launcherOpen = false; }
+                                    Text {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        visible: storeSearch.text === ""
+                                        text: "Search Flathub, Arch and the AUR"
+                                        color: root.muted
+                                        font.pixelSize: 15
+                                    }
+                                }
+                            }
+                            Repeater {
+                                model: [ { id: "all", name: "All" }, { id: "flatpak", name: "Flathub" },
+                                         { id: "repo", name: "Arch" }, { id: "aur", name: "AUR" } ]
+                                delegate: SportChip {
+                                    required property var modelData
+                                    theme: root
+                                    label: modelData.name
+                                    active: root.storeSrc === modelData.id
+                                    onClicked: root.storeSrc = modelData.id
+                                }
+                            }
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: root.storeQuery.trim() === "" ? "Popular apps — or type above to search everything"
+                                : root.storeLoading ? "Searching…"
+                                : root.storeShown.length + " found"
+                            color: root.muted
+                            font.pixelSize: 12
+                        }
+
+                        // ---- results ----
+                        GridView {
+                            id: storeGrid
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            clip: true
+                            boundsBehavior: Flickable.StopAtBounds
+                            model: root.storeShown
+                            readonly property int cols: width > 900 ? 3 : 2
+                            cellWidth: Math.floor(width / cols)
+                            cellHeight: 104
+
+                            delegate: Item {
+                                id: sr
+                                required property var modelData
+                                readonly property string busy: root.storeBusy[sr.modelData.id] || ""
+                                width: storeGrid.cellWidth
+                                height: storeGrid.cellHeight
+
+                                Rectangle {
+                                    anchors.fill: parent
+                                    anchors.margins: 5
+                                    radius: 18
+                                    color: srMouse.containsMouse ? root.overlay : root.surface
+                                    border.width: 1
+                                    border.color: root.glassEdge
+                                    Behavior on color { ColorAnimation { duration: root.animMs } }
+
+                                    MouseArea { id: srMouse; anchors.fill: parent; hoverEnabled: true }
+
+                                    RowLayout {
+                                        anchors.fill: parent
+                                        anchors.margins: 12
+                                        spacing: 12
+
+                                        // icon: Flathub's picture, the app's own icon if it's on your PC, or a box
+                                        Item {
+                                            Layout.preferredWidth: 52
+                                            Layout.preferredHeight: 52
+                                            Rectangle {
+                                                anchors.fill: parent
+                                                radius: 14
+                                                color: root.overlay
+                                                visible: srImg.status !== Image.Ready
+                                                Text {
+                                                    anchors.centerIn: parent
+                                                    text: sr.modelData.src === "flatpak" ? "" : ""
+                                                    font.family: root.iconFont
+                                                    font.pixelSize: 20
+                                                    color: root.accent
+                                                }
+                                            }
+                                            Image {
+                                                id: srImg
+                                                anchors.fill: parent
+                                                asynchronous: true
+                                                fillMode: Image.PreserveAspectFit
+                                                sourceSize.width: 104
+                                                cache: false
+                                                source: sr.modelData.icon !== "" ? sr.modelData.icon
+                                                    : Quickshell.iconPath(sr.modelData.id, true)
+                                            }
+                                        }
+
+                                        ColumnLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 3
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 6
+                                                Text {
+                                                    Layout.fillWidth: true
+                                                    text: sr.modelData.name
+                                                    color: root.fg
+                                                    font.pixelSize: 14
+                                                    font.bold: true
+                                                    elide: Text.ElideRight
+                                                }
+                                                Rectangle {
+                                                    implicitWidth: srSrc.implicitWidth + 12
+                                                    implicitHeight: 18
+                                                    radius: 9
+                                                    color: sr.modelData.src === "aur" ? Qt.rgba(1, 0.6, 0.2, 0.25)
+                                                        : sr.modelData.src === "repo" ? Qt.rgba(0.2, 0.6, 1, 0.25) : Qt.rgba(0.4, 0.9, 0.5, 0.22)
+                                                    Text {
+                                                        id: srSrc
+                                                        anchors.centerIn: parent
+                                                        text: sr.modelData.src === "aur" ? "AUR" : sr.modelData.src === "repo" ? "Arch" : "Flathub"
+                                                        color: root.fg
+                                                        font.pixelSize: 9
+                                                        font.bold: true
+                                                    }
+                                                }
+                                            }
+                                            Text {
+                                                Layout.fillWidth: true
+                                                text: sr.modelData.desc
+                                                color: root.muted
+                                                font.pixelSize: 11
+                                                wrapMode: Text.Wrap
+                                                maximumLineCount: 2
+                                                elide: Text.ElideRight
+                                            }
+                                            Text {
+                                                visible: sr.modelData.src === "aur" && sr.modelData.votes > 0
+                                                text: sr.modelData.votes + " votes" + (sr.modelData.outdated ? " · out of date" : "")
+                                                color: root.muted
+                                                font.pixelSize: 9
+                                            }
+                                        }
+
+                                        // install / open / remove
+                                        ColumnLayout {
+                                            spacing: 6
+                                            SportChip {
+                                                visible: sr.busy === ""
+                                                theme: root
+                                                label: sr.modelData.installed ? "Open" : "Install"
+                                                icon: sr.modelData.installed ? "" : ""
+                                                active: !sr.modelData.installed
+                                                onClicked: sr.modelData.installed ? root.storeOpen(sr.modelData) : root.storeInstall(sr.modelData)
+                                            }
+                                            SportChip {
+                                                visible: sr.busy === "" && sr.modelData.installed
+                                                theme: root
+                                                label: "Remove"
+                                                onClicked: root.storeRemove(sr.modelData)
+                                            }
+                                            Row {
+                                                visible: sr.busy !== ""
+                                                spacing: 6
+                                                Text {
+                                                    text: ""
+                                                    font.family: root.iconFont
+                                                    font.pixelSize: 13
+                                                    color: root.accent
+                                                    RotationAnimation on rotation { running: sr.busy !== ""; loops: Animation.Infinite; from: 0; to: 360; duration: 1000 }
+                                                }
+                                                Text {
+                                                    text: sr.busy === "remove" ? "Removing…" : "Installing…"
+                                                    color: root.muted
+                                                    font.pixelSize: 11
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            visible: !root.storeHasFlatpak || !root.storeHasParu
+                            text: (!root.storeHasFlatpak ? "For Flathub apps install flatpak: sudo pacman -S flatpak.  " : "")
+                                + (!root.storeHasParu ? "For AUR packages install paru: sudo pacman -S paru" : "")
+                            color: root.muted
+                            font.pixelSize: 11
+                            wrapMode: Text.Wrap
                         }
                     }
                 }
