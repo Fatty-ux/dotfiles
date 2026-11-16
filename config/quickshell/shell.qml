@@ -8176,7 +8176,8 @@ ShellRoot {
     property var gamesAll: []
     property var gamesCols: []               // Steam collections [{ id, name }]
     property string gamesRecompLauncher: ""
-    property string gamesEglantine: ""         // the Eglantine (Switch 2 emulator) program, if found
+    property var gamesEglantine: []            // how to open Eglantine (Switch 2 emulator), if found
+    property var gamesEden: []                 // how to open Eden (Switch emulator); can be a Flatpak
     property bool gamesLoading: false
     property int gamesMissingNames: 0
     property string gamesSrc: "all"          // all, steam, heroic, recomp
@@ -8334,7 +8335,8 @@ ShellRoot {
             gamesAll = d.games || [];
             gamesCols = d.collections || [];
             gamesRecompLauncher = d.recompLauncher || "";
-            gamesEglantine = d.eglantine || "";
+            gamesEglantine = Array.isArray(d.eglantine) ? d.eglantine : (d.eglantine ? [d.eglantine] : []);
+            gamesEden = Array.isArray(d.eden) ? d.eden : (d.eden ? [d.eden] : []);
             gamesMissingNames = d.missingNames || 0;
             return true;
         } catch (e) {
@@ -8382,8 +8384,8 @@ ShellRoot {
     onLauncherOpenChanged: if (!launcherOpen) { gamesMode = false; gamesHiddenView = false; storeMode = false; }
 
     function gamePlay(g) {
-        if (g.src === "emu" && (!g.play || g.play.length === 0)) {
-            gamesNote = "Eglantine wasn't found. Put its AppImage in ~/.local/bin (or ~/Applications), then press refresh.";
+        if ((g.src === "switch1" || g.src === "switch2") && (!g.play || g.play.length === 0)) {
+            gamesNote = (g.src === "switch2" ? "Eglantine" : "Eden") + " wasn't found. Put its AppImage in ~/.local/bin (or ~/Applications), then press refresh.";
             return;
         }
         launcherOpen = false;
@@ -9298,7 +9300,8 @@ ShellRoot {
                                             { id: "steam", name: "Steam", icon: "" },
                                             { id: "heroic", name: "Heroic", icon: "" },
                                             { id: "recomp", name: "Recomp", icon: "" },
-                                            { id: "emu", name: "Switch 2", icon: "\uf11b" }
+                                            { id: "switch1", name: "Switch", icon: "\uf11b" },
+                                            { id: "switch2", name: "Switch 2", icon: "\uf11b" }
                                         ]
                                         delegate: Rectangle {
                                             id: gs
@@ -9492,10 +9495,16 @@ ShellRoot {
                                     onClicked: { root.launcherOpen = false; Quickshell.execDetached([root.gamesRecompLauncher]); }
                                 }
                                 SportChip {
-                                    visible: root.gamesEglantine !== ""
+                                    visible: root.gamesEden.length > 0
+                                    theme: root
+                                    label: "Eden"
+                                    onClicked: { root.launcherOpen = false; Quickshell.execDetached(root.gamesEden); }
+                                }
+                                SportChip {
+                                    visible: root.gamesEglantine.length > 0
                                     theme: root
                                     label: "Eglantine"
-                                    onClicked: { root.launcherOpen = false; Quickshell.execDetached([root.gamesEglantine]); }
+                                    onClicked: { root.launcherOpen = false; Quickshell.execDetached(root.gamesEglantine); }
                                 }
                                 SportChip { theme: root; icon: ""; label: "Add a game"; onClicked: root.gamesPickToAdd() }
                             }
@@ -9634,7 +9643,8 @@ ShellRoot {
                                                 id: gSrc
                                                 anchors.centerIn: parent
                                                 text: gcard.modelData.src === "steam" ? "Steam" : gcard.modelData.src === "heroic" ? (gcard.modelData.store || "Heroic")
-                                                    : gcard.modelData.src === "emu" ? "Switch 2" : (gcard.modelData.added ? "Added" : "Recomp")
+                                                    : (gcard.modelData.src === "switch1" || gcard.modelData.src === "switch2") ? gcard.modelData.store
+                                                    : (gcard.modelData.added ? "Added" : "Recomp")
                                                 color: "white"
                                                 font.pixelSize: 9
                                                 font.bold: true
