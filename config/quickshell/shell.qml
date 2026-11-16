@@ -883,7 +883,15 @@ ShellRoot {
         const list = Pipewire.nodes.values;
         for (let i = 0; i < list.length; i++) {
             const n = list[i];
-            if (n.isStream && !n.isSink && n.audio) out.push(n);
+            if (!n.isStream || n.isSink || !n.audio) continue;
+            // only apps that are playing sound: skip recording streams and the level meters
+            // pavucontrol makes ("PulseAudio Volume Control" / "Peak detect"), they aren't real apps
+            const p = n.properties || {};
+            const cls = p["media.class"] || "";
+            if (cls !== "" && cls !== "Stream/Output/Audio") continue;
+            const app = (p["application.name"] || "") + " " + (p["media.name"] || "");
+            if (/PulseAudio Volume Control|pavucontrol|Peak detect/i.test(app)) continue;
+            out.push(n);
         }
         return out;
     }
