@@ -7,7 +7,7 @@
 
 Only reads launcher files; it never changes anything.
 """
-import glob, json, os, re, shutil, subprocess, sys, time, urllib.request
+import glob, json, os, re, shutil, subprocess, sys, time, urllib.parse, urllib.request
 
 HOME = os.path.expanduser("~")
 CACHE = os.path.join(HOME, ".cache/joeos")
@@ -407,8 +407,120 @@ def emu_games():
                     })
     return out, exes
 
+
+# ---------------------------------------------------------------- cover art finder
+ART_DIR = os.path.join(HOME, ".local/share/joeos/game-art")
+COVERS = os.path.join(CACHE, "game-covers.json")     # game key -> picture file we found for it
+UA = {"User-Agent": "JoeOS-games/1.0 (personal game library)"}
+
+def fetch_json(url, headers=None, timeout=10):
+    req = urllib.request.Request(url, headers=dict(UA, **(headers or {})))
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.load(r)
+
+def search_name(name):
+    """Tidy a game name for searching: drop 'Recompiled', version tags, and so on."""
+    n = re.sub(r"(?i)\brecomp(iled)?\b", "", name)
+    n = re.sub(r"(?i)\b(remaster(ed)?|definitive edition|goty|game of the year)\b", "", n)
+    n = re.sub(r"[™®©]", "", n)
+    return re.sub(r"\s+", " ", n).strip()
+
+def find_covers(name, limit=8):
+    """Cover pictures for a game from SteamGridDB (with your key), Steam and Wikipedia."""
+    q = search_name(name)
+    out = []
+    key = os.environ.get("SGDB_KEY", "").strip()
+    if key:
+        try:
+            auth = {"Authorization": "Bearer " + key}
+            hits = fetch_json("https://www.steamgriddb.com/api/v2/search/autocomplete/" + urllib.parse.quote(q), auth).get("data", [])
+            for h in hits[:2]:
+                grids = fetch_json("https://www.steamgriddb.com/api/v2/grids/game/%s?dimensions=600x900,342x482,660x930" % h["id"], auth).get("data", [])
+                for g in grids[:6]:
+                    out.append({"url": g["url"], "thumb": g.get("thumb", g["url"]), "from": "SteamGridDB"})
+        except Exception:
+            pass
+    try:
+        items = fetch_json("https://store.steampowered.com/api/storesearch/?term=%s&l=english&cc=US" % urllib.parse.quote(q)).get("items", [])
+        for it in items[:3]:
+            u = "https://cdn.cloudflare.steamstatic.com/steam/apps/%s/library_600x900.jpg" % it["id"]
+            out.append({"url": u, "thumb": u, "from": "Steam · " + it.get("name", "")})
+    except Exception:
+        pass
+    try:
+        d = fetch_json("https://en.wikipedia.org/w/api.php?action=query&format=json&generator=search&gsrlimit=4"
+                       "&prop=pageimages&piprop=original|thumbnail&pithumbsize=400&gsrsearch=" + urllib.parse.quote(q + " video game"))
+        pages = sorted(d.get("query", {}).get("pages", {}).values(), key=lambda p: p.get("index", 99))
+        for pg in pages:
+            if "original" in pg:
+                out.append({"url": pg["original"]["source"], "thumb": pg.get("thumbnail", {}).get("source", pg["original"]["source"]),
+                            "from": "Wikipedia · " + pg.get("title", "")})
+    except Exception:
+        pass
+    seen, uniq = set(), []
+    for c in out:
+        if c["url"] not in seen:
+            seen.add(c["url"]); uniq.append(c)
+    return uniq[:limit]
+
+def download(url, key):
+    os.makedirs(ART_DIR, exist_ok=True)
+    import hashlib
+    ext = os.path.splitext(urllib.parse.urlparse(url).path)[1].lower()
+    ext = ext if ext in (".jpg", ".jpeg", ".png", ".webp") else ".jpg"
+    path = os.path.join(ART_DIR, hashlib.sha1(key.encode()).hexdigest()[:16] + ext)
+    req = urllib.request.Request(url, headers=UA)
+    with urllib.request.urlopen(req, timeout=20) as r:
+        data = r.read()
+    if len(data) < 2000:            # an error page, not a picture
+        raise ValueError("too small")
+    with open(path, "wb") as f:
+        f.write(data)
+    return path
+
+def auto_covers(games, edited):
+    """Find a cover for every game that has none (not ones you set yourself). Prints progress."""
+    covers = load_json(COVERS, {})
+    todo = [g for g in games if not g.get("cover") and g["key"] not in covers and g["key"] not in edited]
+    done = 0
+    for i, g in enumerate(todo):
+        print("PROGRESS %d %d %s" % (i + 1, len(todo), g["name"]), flush=True)
+        try:
+            cands = find_covers(g["name"], limit=3)
+            for c in cands:
+                try:
+                    covers[g["key"]] = download(c["url"], g["key"])
+                    done += 1
+                    break
+                except Exception:
+                    continue
+            else:
+                covers[g["key"]] = ""        # nothing found; don't keep trying every time
+        except Exception:
+            pass
+        os.makedirs(CACHE, exist_ok=True)
+        with open(COVERS, "w") as f:
+            json.dump(covers, f)
+    print("DONE %d %d" % (done, len(todo)), flush=True)
+
+def apply_covers(games):
+    covers = load_json(COVERS, {})
+    for g in games:
+        p = covers.get(g["key"])
+        if p and not g.get("cover") and os.path.exists(p):
+            g["cover"] = "file://" + p
+
 # ---------------------------------------------------------------- main
 def main():
+    if len(sys.argv) > 2 and sys.argv[1] == "findcover":
+        print(json.dumps({"covers": find_covers(" ".join(sys.argv[2:]))}))
+        return
+    if len(sys.argv) > 3 and sys.argv[1] == "savecover":      # savecover KEY URL -> local file path
+        try:
+            print(download(sys.argv[3], sys.argv[2]))
+        except Exception:
+            print("")
+        return
     want_names = "--names" in sys.argv
     steam, cols, missing = steam_games()
     if want_names and missing:
@@ -416,6 +528,11 @@ def main():
             steam, cols, missing = steam_games()
     emu, emu_exes = emu_games()
     games = steam + heroic_games() + recomp_games() + emu
+    if "--autocovers" in sys.argv:
+        edited = set(a for a in sys.argv[sys.argv.index("--autocovers") + 1:] if not a.startswith("--"))
+        auto_covers([g for g in games if g["src"] != "steam"], edited)
+        return
+    apply_covers(games)
     games.sort(key=lambda g: g["name"].lower())
     recomp_launcher = ""
     for p in [os.path.join(HOME, ".local/bin")] + os.environ.get("PATH", "").split(":"):

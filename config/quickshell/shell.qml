@@ -212,6 +212,7 @@ ShellRoot {
             property var gameCollections: []     // Games: your own collections
             property var gameAdded: []           // Games: games you added yourself
             property var gameEdits: ({})         // Games: your changes to names, covers and programs
+            property string sgdbKey: ""          // Games: your free SteamGridDB API key (better covers)
             property bool ambientFx: false       // always-moving decorations (spinning record, bobbing buddy, glow); off = less GPU
             property bool inputTouched: false    // Input tab: only apply once you've changed something
             property real inSens: 0              //   mouse speed (-1 to 1)
@@ -8188,6 +8189,77 @@ ShellRoot {
     readonly property string gamesScript: Quickshell.env("HOME") + "/.config/quickshell/scripts/games.py"
     readonly property string gamesCachePath: Quickshell.env("HOME") + "/.cache/joeos/games.json"
 
+    // ---- cover art finder (SteamGridDB with your free key, Steam, Wikipedia) ----
+    property bool gamesCoversBusy: false
+    property string gamesCoversNote: ""
+    property var gamesCoverCands: []          // pictures found for the game you're editing
+    property bool gamesCoverSearching: false
+    readonly property var gamesEnv: ({ SGDB_KEY: pins.adapter.sgdbKey || "" })
+    Process {
+        id: gamesCoverAll
+        environment: root.gamesEnv
+        command: ["python3", root.gamesScript, "--autocovers"].concat(Object.keys(root.gamesEdits))
+        stdout: SplitParser {
+            onRead: data => {
+                const m = data.match(/^PROGRESS (\d+) (\d+) (.*)$/);
+                if (m) root.gamesCoversNote = "Finding covers " + m[1] + " of " + m[2] + ": " + m[3];
+                const d = data.match(/^DONE (\d+) (\d+)$/);
+                if (d) root.gamesCoversNote = d[2] === "0" ? "Every game already has a cover"
+                    : "Found " + d[1] + " of " + d[2] + " covers" + (d[1] !== d[2] ? " (right-click a game → Edit details to pick one yourself)" : "");
+            }
+        }
+        onExited: { root.gamesCoversBusy = false; root.gamesRefresh(); }
+    }
+    function gamesFindAllCovers() {
+        if (gamesCoverAll.running) return;
+        gamesCoversBusy = true;
+        gamesCoversNote = "Looking for covers…";
+        gamesCoverAll.running = true;
+    }
+    Process {
+        id: gamesCoverOne
+        environment: root.gamesEnv
+        property string q: ""
+        command: ["python3", root.gamesScript, "findcover", q]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try { root.gamesCoverCands = JSON.parse(text).covers || []; } catch (e) { root.gamesCoverCands = []; }
+                root.gamesCoverSearching = false;
+            }
+        }
+        onExited: root.gamesCoverSearching = false
+    }
+    function gamesFindCover(name) {
+        if (gamesCoverOne.running) return;
+        gamesCoverCands = [];
+        gamesCoverSearching = true;
+        gamesCoverOne.q = name;
+        gamesCoverOne.running = true;
+    }
+    // a cover picked from the web is saved on this PC, so it shows even offline
+    function gamesKeepCover(key, url) {
+        const p = gamesCoverSaveComp.createObject(root, { gameKey: key, url: url });
+        p.running = true;
+    }
+    Component {
+        id: gamesCoverSaveComp
+        Process {
+            id: gcs
+            property string gameKey: ""
+            property string url: ""
+            command: ["python3", root.gamesScript, "savecover", gameKey, url]
+            stdout: StdioCollector {
+                onStreamFinished: {
+                    const path = text.trim();
+                    const e = root.gamesEdits[gcs.gameKey];
+                    if (path !== "" && e && e.cover === gcs.url)
+                        root.gamesSaveEdit(gcs.gameKey, { name: e.name || "", cover: path, path: e.path || "" });
+                    gcs.destroy();
+                }
+            }
+        }
+    }
+
     // ---- your edits to a game's details (name, cover, how it starts) ----
     readonly property var gamesEdits: pins.adapter.gameEdits || ({})        // key -> { name, cover, path }
     function gamesSaveEdit(key, e) {
@@ -9507,6 +9579,15 @@ ShellRoot {
                                     onClicked: { root.launcherOpen = false; Quickshell.execDetached(root.gamesEglantine); }
                                 }
                                 SportChip { theme: root; icon: ""; label: "Add a game"; onClicked: root.gamesPickToAdd() }
+                                SportChip { theme: root; icon: root.gamesCoversBusy ? "\uf110" : "\uf03e"; label: "Find covers"; onClicked: root.gamesFindAllCovers() }
+                            }
+                            Text {
+                                visible: root.gamesCoversNote !== ""
+                                Layout.fillWidth: true
+                                text: root.gamesCoversNote
+                                color: root.muted
+                                font.pixelSize: 10
+                                wrapMode: Text.Wrap
                             }
                             Text {
                                 visible: root.gamesNote !== ""
@@ -9826,6 +9907,7 @@ ShellRoot {
                         editName = e.name || g.name;
                         editCover = e.cover || "";
                         editPath = e.path || "";
+                        root.gamesCoverCands = [];
                         editGame = g;
                         editNameIn.forceActiveFocus();
                     }
@@ -9838,6 +9920,7 @@ ShellRoot {
                             cover: editCover,
                             path: editPath
                         });
+                        if (editCover.indexOf("http") === 0) root.gamesKeepCover(g.key, editCover);
                         editGame = null;
                         gamesSearch.forceActiveFocus();
                     }
@@ -9853,8 +9936,8 @@ ShellRoot {
                         visible: gamesView.editGame !== null
                         z: 51
                         anchors.centerIn: parent
-                        width: 620
-                        height: 400
+                        width: 680
+                        height: 560
                         radius: 24
                         color: root.bg
                         border.width: 1
@@ -9934,7 +10017,14 @@ ShellRoot {
                                     spacing: 6
                                     SportChip {
                                         theme: root
-                                        icon: ""
+                                        icon: root.gamesCoverSearching ? "\uf110" : "\uf002"
+                                        label: "Find online"
+                                        active: true
+                                        onClicked: root.gamesFindCover(gamesView.editName)
+                                    }
+                                    SportChip {
+                                        theme: root
+                                        icon: "\uf03e"
                                         label: "Pick a picture"
                                         onClicked: root.gamesPickFile("image", p => gamesView.editCover = p)
                                     }
@@ -9947,6 +10037,63 @@ ShellRoot {
                                     }
                                     Item { Layout.fillWidth: true }
                                 }
+                                // pictures found online: click one to use it
+                                Flickable {
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: root.gamesCoverCands.length > 0 || root.gamesCoverSearching ? 104 : 0
+                                    visible: Layout.preferredHeight > 0
+                                    clip: true
+                                    contentWidth: candRow.width
+                                    flickableDirection: Flickable.HorizontalFlick
+                                    boundsBehavior: Flickable.StopAtBounds
+                                    Row {
+                                        id: candRow
+                                        spacing: 8
+                                        Text {
+                                            visible: root.gamesCoverSearching
+                                            text: "Searching…"
+                                            color: root.muted
+                                            font.pixelSize: 12
+                                        }
+                                        Repeater {
+                                            model: root.gamesCoverCands
+                                            delegate: Rectangle {
+                                                id: cand
+                                                required property var modelData
+                                                readonly property bool picked: gamesView.editCover === cand.modelData.url
+                                                width: 68
+                                                height: 100
+                                                radius: 10
+                                                color: root.overlay
+                                                clip: true
+                                                border.width: cand.picked ? 3 : (candMouse.containsMouse ? 2 : 0)
+                                                border.color: root.accent
+                                                Image {
+                                                    anchors.fill: parent
+                                                    anchors.margins: cand.picked ? 3 : 0
+                                                    source: cand.modelData.thumb
+                                                    fillMode: Image.PreserveAspectCrop
+                                                    asynchronous: true
+                                                    sourceSize.width: 140
+                                                }
+                                                MouseArea {
+                                                    id: candMouse
+                                                    anchors.fill: parent
+                                                    hoverEnabled: true
+                                                    cursorShape: Qt.PointingHandCursor
+                                                    onClicked: gamesView.editCover = cand.modelData.url
+                                                }
+                                            }
+                                        }
+                                        Text {
+                                            visible: !root.gamesCoverSearching && root.gamesCoverCands.length === 0
+                                            text: "Nothing found. Try changing the name above, then search again."
+                                            color: root.muted
+                                            font.pixelSize: 12
+                                        }
+                                    }
+                                }
+
                                 Rectangle {
                                     Layout.fillWidth: true
                                     implicitHeight: 36
@@ -10003,6 +10150,41 @@ ShellRoot {
                                 }
 
                                 Item { Layout.fillHeight: true }
+
+                                // optional: a free SteamGridDB key gives much better covers (especially Switch games)
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 8
+                                    Text { text: "SteamGridDB key"; color: root.muted; font.pixelSize: 11 }
+                                    Rectangle {
+                                        Layout.fillWidth: true
+                                        implicitHeight: 30
+                                        radius: 10
+                                        color: root.surface
+                                        border.width: 1
+                                        border.color: sgdbIn.activeFocus ? root.accent : root.glassEdge
+                                        TextInput {
+                                            id: sgdbIn
+                                            anchors.fill: parent
+                                            anchors.leftMargin: 10
+                                            anchors.rightMargin: 10
+                                            verticalAlignment: TextInput.AlignVCenter
+                                            color: root.fg
+                                            font.pixelSize: 11
+                                            clip: true
+                                            echoMode: activeFocus ? TextInput.Normal : TextInput.Password
+                                            text: pins.adapter.sgdbKey
+                                            onEditingFinished: pins.adapter.sgdbKey = text.trim()
+                                            Text {
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                visible: sgdbIn.text === ""
+                                                text: "optional · free at steamgriddb.com → Preferences → API"
+                                                color: root.muted
+                                                font.pixelSize: 11
+                                            }
+                                        }
+                                    }
+                                }
 
                                 RowLayout {
                                     Layout.fillWidth: true
