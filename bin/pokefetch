@@ -2,8 +2,8 @@
 # fastfetch with a random water-type Pokémon next to it, ANIMATED in kitty,
 # in the classic pixel-art style (Black & White sprites, scaled up with sharp pixels).
 #
-#   pokefetch                    random pick (Squirtle, Wartortle, Blastoise or Mega Blastoise)
-#   POKE=blastoise-mega pokefetch   a specific one
+#   pokefetch                    random pick (Squirtle, Wartortle or Blastoise)
+#   POKE=blastoise pokefetch     a specific one
 #   POKE_STILL=1 pokefetch       the old still picture instead
 #
 # The moving sprites are downloaded once into ~/.cache/joeos/pokemon and then work offline
@@ -13,7 +13,7 @@
 # Outside kitty, or before the sprites are downloaded, it shows the old still picture
 # (needs pokemon-colorscripts), and failing that the normal fastfetch logo.
 
-POKES="squirtle wartortle blastoise blastoise-mega"
+POKES="squirtle wartortle blastoise"   # Mega Blastoise taken out: its only moving sprite was the 3D-looking one
 SHINY_CHANCE=16          # 1 in 16 is shiny
 PIXEL_ZOOM=3             # pixel sprites are enlarged 3x (sharp, no blur)
 SMOOTH_SCALE=1.9         # size for the smoother backup sprites
@@ -97,6 +97,7 @@ why() { [ -n "${POKE_DEBUG:-}" ] && printf '\e[33mpokefetch: %s\e[0m\n' "$1" >&2
 # ---- the animated version (kitty only) ----
 animated() {
     [ -z "${POKE_STILL:-}" ] || { why "POKE_STILL is set"; return 1; }
+    [ "$name" != "blastoise-mega" ] || { why "Mega Blastoise only comes as still pixel art"; return 1; }
     [ -n "${KITTY_WINDOW_ID:-}" ] || [ "${TERM:-}" = "xterm-kitty" ] || { why "not running in kitty"; return 1; }
     command -v kitten >/dev/null 2>&1 || { why "no kitten command"; return 1; }
     [ -s "$gif" ] || { why "sprite missing: $gif"; return 1; }
