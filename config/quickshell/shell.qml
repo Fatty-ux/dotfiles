@@ -821,7 +821,7 @@ ShellRoot {
 
     // quick toggle: step through the styles (everything else is on the Themes tab)
     // the pages that have a tab, in order (Calendar is on Home now; Bluetooth opens from its tile)
-    readonly property var hubTabPages: [0, 1, 2, 4, 5, 6, 7, 8, 9]
+    readonly property var hubTabPages: [0, 1, 4, 5, 7, 8]
     function hubNextTab(step) {
         const l = hubTabPages;
         let i = l.indexOf(hubTab);
@@ -3007,12 +3007,17 @@ ShellRoot {
     // A compact pill at the top centre. Click it and it grows into the hub:
     // Home, Media, Apps, Calendar, Alerts and System.
     property bool hubOpen: false
-    property int hubTab: 0           // 0 home, 1 media, 2 apps, 3 calendar, 4 alerts, 5 system, 6 capture, 7 sports, 8 themes
+    property int hubTab: 0           // 0 home, 1 media, 4 alerts, 5 system (+ capture), 7 sports, 8 themes (+ input), 10 bluetooth
     property int calOffset: 0        // how many months away from this one the calendar shows
     readonly property int hubW: 900
     readonly property int hubH: 640           // taller so the big tab row fits
 
+    // Pages that moved: Capture (6) is a section of System now, Input (9) of Themes, Apps (2) is gone.
+    property string hubSection: ""    // a section to scroll to once the page shows
     function openHub(tab) {
+        if (tab === 6) { tab = 5; hubSection = "capture"; }
+        else if (tab === 9) { tab = 8; hubSection = "input"; }
+        else if (tab === 2) tab = 0;
         hubTab = tab;
         calOffset = 0;
         hubOpen = true;
@@ -3226,7 +3231,7 @@ ShellRoot {
     // live mic level while the Microphone card is showing
     Process {
         id: micMeter
-        running: root.hubOpen && root.hubTab === 6 && root.micPanel && root.micTest !== "rec"
+        running: root.hubOpen && root.hubTab === 5 && root.micPanel && root.micTest !== "rec"
         command: ["sh", "-c",
             'command -v parec >/dev/null && command -v python3 >/dev/null || exit 0; '
             + 'parec --format=s16le --rate=16000 --channels=1 --latency-msec=30 2>/dev/null | python3 -u -c '
@@ -4841,13 +4846,10 @@ ShellRoot {
                                                 model: [
                                                         { page: 0, name: "Home", icon: "" },
                                                         { page: 1, name: "Media", icon: "" },
-                                                        { page: 2, name: "Apps", icon: "" },
                                                         { page: 4, name: "Alerts", icon: "" },
                                                         { page: 5, name: "System", icon: "" },
-                                                        { page: 6, name: "Capture", icon: "" },
                                                         { page: 7, name: "Sports", icon: "\udb82\udc06" },
-                                                        { page: 8, name: "Themes", icon: "\uf53f" },
-                                                        { page: 9, name: "Input", icon: "\uf11c" }
+                                                        { page: 8, name: "Themes", icon: "\uf53f" }
                                                     ]
 
                                                 delegate: Rectangle {
@@ -5331,59 +5333,7 @@ ShellRoot {
                                         }
 
                                         // ===== 2: Apps =====
-                                        ColumnLayout {
-                                            spacing: 10
-
-                                            Text {
-                                                text: "Pinned"
-                                                color: root.fg
-                                                font.pixelSize: 14
-                                                font.bold: true
-                                            }
-                                            Flow {
-                                                Layout.fillWidth: true
-                                                spacing: 6
-                                                Repeater {
-                                                    model: panel.hubHere && root.hubTab === 2 ? root.appsForTab(3, "") : []
-                                                    delegate: AppTile {
-                                                        required property var modelData
-                                                        theme: root
-                                                        entry: modelData
-                                                        onLaunched: { root.hubOpen = false; root.launchApp(modelData); }
-                                                    }
-                                                }
-                                            }
-
-                                            Text {
-                                                text: "Recent"
-                                                color: root.fg
-                                                font.pixelSize: 14
-                                                font.bold: true
-                                            }
-                                            Flow {
-                                                Layout.fillWidth: true
-                                                spacing: 6
-                                                Repeater {
-                                                    model: panel.hubHere && root.hubTab === 2 ? root.appsForTab(1, "").slice(0, 8) : []
-                                                    delegate: AppTile {
-                                                        required property var modelData
-                                                        theme: root
-                                                        entry: modelData
-                                                        onLaunched: { root.hubOpen = false; root.launchApp(modelData); }
-                                                    }
-                                                }
-                                            }
-
-                                            Item { Layout.fillHeight: true }
-
-                                            BarButton {
-                                                theme: root
-                                                Layout.alignment: Qt.AlignHCenter
-                                                icon: ""
-                                                label: "All apps"
-                                                onClicked: mouse => { root.hubOpen = false; root.launcherOpen = true; }
-                                            }
-                                        }
+                                        Item {}   // (apps are in the launcher: Super+Space)
 
                                         // ===== 3: Calendar =====
                                         Item {}   // (the calendar now lives on Home)
@@ -5522,6 +5472,19 @@ ShellRoot {
                                         Flickable {
                                             id: sysFlick
                                             clip: true
+                                            // jump to a section when opened that way (e.g. Super+Shift+R)
+                                            function goSection() {
+                                                if (root.hubSection !== "capture" || root.hubTab !== 5) return;
+                                                contentY = Math.max(0, Math.min(capSection.y - 4, contentHeight - height));
+                                                root.hubSection = "";
+                                            }
+                                            Timer { id: sysFlickGo; interval: 150; onTriggered: sysFlick.goSection() }
+                                            Connections {
+                                                target: root
+                                                function onHubSectionChanged() { if (root.hubSection === "capture") sysFlickGo.restart(); }
+                                                function onHubTabChanged() { if (root.hubSection === "capture") sysFlickGo.restart(); }
+                                            }
+                                            Component.onCompleted: if (root.hubSection === "capture") sysFlickGo.restart()
                                             contentWidth: width
                                             contentHeight: sysCol.implicitHeight + 8
                                             boundsBehavior: Flickable.StopAtBounds
@@ -5802,6 +5765,576 @@ ShellRoot {
                                                     }
                                                 }
 
+                                                // ---- Recording & screenshots ----
+                                                RowLayout {
+                                                    id: capSection
+                                                    Layout.fillWidth: true
+                                                    Layout.topMargin: 6
+                                                    spacing: 8
+                                                    Text { text: "\uf03d"; color: root.accent; font.family: root.iconFont; font.pixelSize: 13 }
+                                                    Text { text: "Recording & screenshots"; color: root.fg; font.pixelSize: 14; font.bold: true }
+                                                    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.glassEdge; opacity: 0.6 }
+                                                }
+
+                                                ColumnLayout {
+                                                    Layout.fillWidth: true
+                                                    spacing: 12
+
+                                                    // ---- Which screen to capture ----
+                                                    RowLayout {
+                                                        Layout.fillWidth: true
+                                                        spacing: 8
+                                                        Text { text: "\uf108"; color: root.accent; font.family: root.iconFont; font.pixelSize: 13 }
+                                                        Text { text: "Screen"; color: root.fg; font.pixelSize: 13; font.bold: true }
+                                                        Item { implicitWidth: 4 }
+                                                        SportChip {
+                                                            theme: root
+                                                            icon: "\uf245"
+                                                            label: "Where my mouse is"
+                                                            active: root.capMon === ""
+                                                            onClicked: pins.adapter.capMonitor = ""
+                                                        }
+                                                        Repeater {
+                                                            model: Hyprland.monitors
+                                                            delegate: SportChip {
+                                                                required property var modelData
+                                                                required property int index
+                                                                theme: root
+                                                                label: (index + 1) + " · " + modelData.name + "  " + modelData.width + "×" + modelData.height
+                                                                active: root.capMon === modelData.name
+                                                                onClicked: pins.adapter.capMonitor = modelData.name
+                                                            }
+                                                        }
+                                                        Item { Layout.fillWidth: true }
+                                                    }
+
+                                                    RowLayout {
+                                                        Layout.fillWidth: true
+                                                        Layout.preferredHeight: 300
+                                                        spacing: 12
+
+                                                        // ---- Screenshot ----
+                                                        HubCard {
+                                                            theme: root
+                                                            Layout.fillWidth: true
+                                                            Layout.fillHeight: true
+                                                            Layout.preferredWidth: 1
+
+                                                            ColumnLayout {
+                                                                anchors.fill: parent
+                                                                anchors.margins: 16
+                                                                spacing: 12
+
+                                                                RowLayout {
+                                                                    spacing: 8
+                                                                    Text { text: "\uf030"; color: root.accent; font.family: root.iconFont; font.pixelSize: 15 }
+                                                                    Text { text: "Screenshot"; color: root.fg; font.pixelSize: 15; font.bold: true }
+                                                                }
+
+                                                                GridLayout {
+                                                                    Layout.fillWidth: true
+                                                                    columns: 2
+                                                                    rowSpacing: 10
+                                                                    columnSpacing: 10
+
+                                                                    Repeater {
+                                                                        model: [
+                                                                            { icon: "\uf125", title: "Area", sub: "Drag a box", mode: "area" },
+                                                                            { icon: "\uf2d0", title: "Window", sub: "Click a window", mode: "window" },
+                                                                            { icon: "\uf108", title: "Screen", sub: root.capMon === "" ? "The one your mouse is on" : root.monLabel(root.capMonUsed), mode: "screen" },
+                                                                            { icon: "\uf26c", title: "All screens", sub: "Every monitor", mode: "all" }
+                                                                        ]
+                                                                        delegate: Rectangle {
+                                                                            id: cap
+                                                                            required property var modelData
+                                                                            Layout.fillWidth: true
+                                                                            Layout.preferredWidth: 1
+                                                                            Layout.preferredHeight: 74
+                                                                            radius: 18
+                                                                            color: capMouse.containsMouse ? root.overlay : root.bg
+                                                                            border.width: 1
+                                                                            border.color: root.glassEdge
+                                                                            scale: capMouse.pressed ? 0.95 : (capMouse.containsMouse ? 1.03 : 1)
+                                                                            Behavior on color { ColorAnimation { duration: root.animMs } }
+                                                                            Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+
+                                                                            RowLayout {
+                                                                                anchors.fill: parent
+                                                                                anchors.margins: 12
+                                                                                spacing: 10
+                                                                                Rectangle {
+                                                                                    Layout.preferredWidth: 40
+                                                                                    Layout.preferredHeight: 40
+                                                                                    radius: 20
+                                                                                    color: root.overlay
+                                                                                    Text { anchors.centerIn: parent; text: cap.modelData.icon; color: root.accent; font.family: root.iconFont; font.pixelSize: 16 }
+                                                                                }
+                                                                                ColumnLayout {
+                                                                                    Layout.fillWidth: true
+                                                                                    spacing: 1
+                                                                                    Text { Layout.fillWidth: true; text: cap.modelData.title; color: root.fg; font.pixelSize: 13; font.bold: true; elide: Text.ElideRight }
+                                                                                    Text { Layout.fillWidth: true; text: cap.modelData.sub; color: root.muted; font.pixelSize: 11; elide: Text.ElideRight }
+                                                                                }
+                                                                            }
+                                                                            MouseArea {
+                                                                                id: capMouse
+                                                                                anchors.fill: parent
+                                                                                hoverEnabled: true
+                                                                                cursorShape: Qt.PointingHandCursor
+                                                                                onClicked: root.shot(cap.modelData.mode)
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+
+                                                                // delay
+                                                                RowLayout {
+                                                                    Layout.fillWidth: true
+                                                                    spacing: 8
+                                                                    Text { text: "Delay"; color: root.muted; font.pixelSize: 12 }
+                                                                    Item { Layout.fillWidth: true }
+                                                                    Repeater {
+                                                                        model: [0, 3, 5, 10]
+                                                                        delegate: Rectangle {
+                                                                            id: dly
+                                                                            required property int modelData
+                                                                            readonly property bool on: root.shotDelay === dly.modelData
+                                                                            width: 52
+                                                                            height: 30
+                                                                            radius: 10
+                                                                            color: dly.on ? root.accent : (dlyMouse.containsMouse ? root.overlay : root.bg)
+                                                                            border.width: 1
+                                                                            border.color: root.glassEdge
+                                                                            Behavior on color { ColorAnimation { duration: root.animMs } }
+                                                                            Text { anchors.centerIn: parent; text: dly.modelData === 0 ? "Now" : dly.modelData + "s"; color: dly.on ? root.bg : root.fg; font.pixelSize: 12; font.bold: dly.on }
+                                                                            MouseArea { id: dlyMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.shotDelay = dly.modelData }
+                                                                        }
+                                                                    }
+                                                                }
+                                                                Item { Layout.fillHeight: true }
+                                                            }
+                                                        }
+
+                                                        // ---- Screen recording ----
+                                                        HubCard {
+                                                            theme: root
+                                                            Layout.fillWidth: true
+                                                            Layout.fillHeight: true
+                                                            Layout.preferredWidth: 1
+
+                                                            ColumnLayout {
+                                                                anchors.fill: parent
+                                                                anchors.margins: 16
+                                                                spacing: 12
+
+                                                                RowLayout {
+                                                                    spacing: 8
+                                                                    Text { text: "\uf03d"; color: root.recording ? root.danger : root.accent; font.family: root.iconFont; font.pixelSize: 15 }
+                                                                    Text { text: "Screen recording"; color: root.fg; font.pixelSize: 15; font.bold: true }
+                                                                }
+
+                                                                // not installed
+                                                                ColumnLayout {
+                                                                    visible: !root.canRecord
+                                                                    Layout.fillWidth: true
+                                                                    Layout.fillHeight: true
+                                                                    spacing: 6
+                                                                    Item { Layout.fillHeight: true }
+                                                                    Text {
+                                                                        Layout.fillWidth: true
+                                                                        horizontalAlignment: Text.AlignHCenter
+                                                                        wrapMode: Text.Wrap
+                                                                        text: "Recording needs wf-recorder.\nInstall it in a terminal with:"
+                                                                        color: root.muted
+                                                                        font.pixelSize: 13
+                                                                    }
+                                                                    Text {
+                                                                        Layout.alignment: Qt.AlignHCenter
+                                                                        text: "sudo pacman -S wf-recorder"
+                                                                        color: root.accent
+                                                                        font.pixelSize: 13
+                                                                        font.family: "monospace"
+                                                                    }
+                                                                    Item { Layout.fillHeight: true }
+                                                                }
+
+                                                                // recording now
+                                                                ColumnLayout {
+                                                                    visible: root.canRecord && root.recording
+                                                                    Layout.fillWidth: true
+                                                                    Layout.fillHeight: true
+                                                                    spacing: 10
+                                                                    Item { Layout.fillHeight: true }
+                                                                    Rectangle {
+                                                                        Layout.alignment: Qt.AlignHCenter
+                                                                        width: 22
+                                                                        height: 22
+                                                                        radius: 11
+                                                                        color: root.danger
+                                                                        SequentialAnimation on opacity {
+                                                                            running: root.recording
+                                                                            loops: Animation.Infinite
+                                                                            NumberAnimation { to: 0.3; duration: 700 }
+                                                                            NumberAnimation { to: 1; duration: 700 }
+                                                                        }
+                                                                    }
+                                                                    Text {
+                                                                        Layout.alignment: Qt.AlignHCenter
+                                                                        text: root.fmt(root.recSeconds)
+                                                                        color: root.fg
+                                                                        font.pixelSize: 34
+                                                                        font.bold: true
+                                                                    }
+                                                                    BarButton {
+                                                                        theme: root
+                                                                        Layout.alignment: Qt.AlignHCenter
+                                                                        icon: "\uf04d"
+                                                                        label: "Stop recording"
+                                                                        onClicked: mouse => root.stopRecording()
+                                                                    }
+                                                                    Item { Layout.fillHeight: true }
+                                                                }
+
+                                                                // ready to record
+                                                                ColumnLayout {
+                                                                    visible: root.canRecord && !root.recording
+                                                                    Layout.fillWidth: true
+                                                                    Layout.fillHeight: true
+                                                                    spacing: 10
+
+                                                                    Repeater {
+                                                                        model: [
+                                                                            { icon: "\uf125", title: "Record an area", sub: "Drag a box, then it starts", mode: "area" },
+                                                                            { icon: "\uf108", title: "Record a screen", sub: root.capMon === "" ? "The one your mouse is on" : root.monLabel(root.capMonUsed), mode: "screen" }
+                                                                        ]
+                                                                        delegate: Rectangle {
+                                                                            id: rcap
+                                                                            required property var modelData
+                                                                            Layout.fillWidth: true
+                                                                            Layout.preferredHeight: 64
+                                                                            radius: 18
+                                                                            color: rcapMouse.containsMouse ? root.overlay : root.bg
+                                                                            border.width: 1
+                                                                            border.color: root.glassEdge
+                                                                            scale: rcapMouse.pressed ? 0.95 : (rcapMouse.containsMouse ? 1.02 : 1)
+                                                                            Behavior on color { ColorAnimation { duration: root.animMs } }
+                                                                            Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+
+                                                                            RowLayout {
+                                                                                anchors.fill: parent
+                                                                                anchors.margins: 12
+                                                                                spacing: 10
+                                                                                Rectangle {
+                                                                                    Layout.preferredWidth: 40
+                                                                                    Layout.preferredHeight: 40
+                                                                                    radius: 20
+                                                                                    color: Qt.rgba(root.danger.r, root.danger.g, root.danger.b, 0.18)
+                                                                                    Text { anchors.centerIn: parent; text: rcap.modelData.icon; color: root.danger; font.family: root.iconFont; font.pixelSize: 16 }
+                                                                                }
+                                                                                ColumnLayout {
+                                                                                    Layout.fillWidth: true
+                                                                                    spacing: 1
+                                                                                    Text { Layout.fillWidth: true; text: rcap.modelData.title; color: root.fg; font.pixelSize: 13; font.bold: true; elide: Text.ElideRight }
+                                                                                    Text { Layout.fillWidth: true; text: rcap.modelData.sub; color: root.muted; font.pixelSize: 11; elide: Text.ElideRight }
+                                                                                }
+                                                                            }
+                                                                            MouseArea {
+                                                                                id: rcapMouse
+                                                                                anchors.fill: parent
+                                                                                hoverEnabled: true
+                                                                                cursorShape: Qt.PointingHandCursor
+                                                                                onClicked: root.record(rcap.modelData.mode)
+                                                                            }
+                                                                        }
+                                                                    }
+
+                                                                    // sound
+                                                                    RowLayout {
+                                                                        Layout.fillWidth: true
+                                                                        spacing: 8
+                                                                        Text { text: "Sound"; color: root.muted; font.pixelSize: 12 }
+                                                                        Item { Layout.fillWidth: true }
+                                                                        Repeater {
+                                                                            model: [
+                                                                                { key: "none", name: "None" },
+                                                                                { key: "system", name: "Computer" },
+                                                                                { key: "mic", name: "Mic" },
+                                                                                { key: "both", name: "Both" }
+                                                                            ]
+                                                                            delegate: Rectangle {
+                                                                                id: aud
+                                                                                required property var modelData
+                                                                                readonly property bool on: root.recAudio === aud.modelData.key
+                                                                                width: audText.implicitWidth + 22
+                                                                                height: 30
+                                                                                radius: 10
+                                                                                color: aud.on ? root.accent : (audMouse.containsMouse ? root.overlay : root.bg)
+                                                                                border.width: 1
+                                                                                border.color: root.glassEdge
+                                                                                Behavior on color { ColorAnimation { duration: root.animMs } }
+                                                                                Text { id: audText; anchors.centerIn: parent; text: aud.modelData.name; color: aud.on ? root.bg : root.fg; font.pixelSize: 12; font.bold: aud.on }
+                                                                                MouseArea { id: audMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.recAudio = aud.modelData.key }
+                                                                            }
+                                                                        }
+                                                                        // opens the Microphone card (level, test, volume) below
+                                                                        Rectangle {
+                                                                            width: 30
+                                                                            height: 30
+                                                                            radius: 15
+                                                                            color: root.micPanel ? root.accent : (micBtnMouse.containsMouse ? root.overlay : root.bg)
+                                                                            border.width: 1
+                                                                            border.color: root.glassEdge
+                                                                            Behavior on color { ColorAnimation { duration: root.animMs } }
+                                                                            Text { anchors.centerIn: parent; text: "\uf130"; font.family: root.iconFont; font.pixelSize: 13; color: root.micPanel ? root.bg : root.fg }
+                                                                            MouseArea { id: micBtnMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.micPanel = !root.micPanel }
+                                                                        }
+                                                                    }
+                                                                    Item { Layout.fillHeight: true }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+
+                                                    // ---- Microphone: level meter, test, volume (opened from the mic button by Sound) ----
+                                                    HubCard {
+                                                        theme: root
+                                                        visible: root.micPanel
+                                                        Layout.fillWidth: true
+                                                        Layout.preferredHeight: 168
+
+                                                        ColumnLayout {
+                                                            anchors.fill: parent
+                                                            anchors.margins: 14
+                                                            spacing: 10
+
+                                                            RowLayout {
+                                                                Layout.fillWidth: true
+                                                                spacing: 10
+                                                                Text { text: ""; color: root.accent; font.family: root.iconFont; font.pixelSize: 14 }
+                                                                Text { text: "Microphone"; color: root.fg; font.pixelSize: 13; font.bold: true }
+                                                                Text {
+                                                                    Layout.maximumWidth: 150
+                                                                    text: root.source ? (root.source.description || root.source.name) : "No microphone found"
+                                                                    color: root.muted
+                                                                    font.pixelSize: 11
+                                                                    elide: Text.ElideRight
+                                                                }
+                                                                // live level: talk and watch it move
+                                                                Rectangle {
+                                                                    Layout.fillWidth: true
+                                                                    implicitHeight: 12
+                                                                    radius: 6
+                                                                    color: root.bg
+                                                                    border.width: 1
+                                                                    border.color: root.glassEdge
+                                                                    Rectangle {
+                                                                        anchors.left: parent.left
+                                                                        anchors.verticalCenter: parent.verticalCenter
+                                                                        anchors.leftMargin: 2
+                                                                        height: parent.height - 4
+                                                                        radius: height / 2
+                                                                        width: Math.max(height, (parent.width - 4) * Math.min(1, root.micLevel))
+                                                                        color: root.micLevel > 0.9 ? root.danger : root.accent
+                                                                        Behavior on width { NumberAnimation { duration: 70 } }
+                                                                    }
+                                                                    // a mark at the level a good, clear voice reaches
+                                                                    Rectangle {
+                                                                        x: (parent.width - 4) * 0.5 + 2
+                                                                        width: 1
+                                                                        height: parent.height
+                                                                        color: root.muted
+                                                                        opacity: 0.6
+                                                                    }
+                                                                }
+                                                                BarButton {
+                                                                    theme: root
+                                                                    icon: root.micTest === "" ? "" : (root.micTest === "rec" ? "" : "")
+                                                                    label: root.micTest === "" ? "Test" : (root.micTest === "rec" ? "Talk now…" : "Playing")
+                                                                    onClicked: mouse => root.runMicTest()
+                                                                }
+                                                            }
+
+                                                            RowLayout {
+                                                                Layout.fillWidth: true
+                                                                spacing: 16
+
+                                                                ColumnLayout {
+                                                                    Layout.fillWidth: true
+                                                                    Layout.preferredWidth: 1
+                                                                    spacing: 6
+                                                                    RowLayout {
+                                                                        Layout.fillWidth: true
+                                                                        Text { Layout.fillWidth: true; text: "Mic volume (everywhere)"; color: root.fg; font.pixelSize: 12 }
+                                                                        Text { text: Math.round(root.micVolShown * 100) + "%"; color: root.muted; font.pixelSize: 12 }
+                                                                    }
+                                                                    ValueBar {
+                                                                        Layout.fillWidth: true
+                                                                        theme: root
+                                                                        value: root.micVolShown / 2
+                                                                        onMoved: v => root.setMicVolume(Math.round(v * 40) / 20)
+                                                                    }
+                                                                }
+                                                                ColumnLayout {
+                                                                    Layout.fillWidth: true
+                                                                    Layout.preferredWidth: 1
+                                                                    spacing: 6
+                                                                    opacity: root.recAudio === "both" ? 1 : 0.5
+                                                                    RowLayout {
+                                                                        Layout.fillWidth: true
+                                                                        Text { Layout.fillWidth: true; text: "Computer sound when using Both"; color: root.fg; font.pixelSize: 12; elide: Text.ElideRight }
+                                                                        Text { text: root.recSysLevel + "%"; color: root.muted; font.pixelSize: 12 }
+                                                                    }
+                                                                    ValueBar {
+                                                                        Layout.fillWidth: true
+                                                                        theme: root
+                                                                        value: root.recSysLevel / 100
+                                                                        onMoved: v => pins.adapter.recSysLevel = Math.max(5, Math.round(v * 20) * 5)
+                                                                    }
+                                                                }
+                                                            }
+
+                                                            // ---- background noise removal ----
+                                                            RowLayout {
+                                                                Layout.fillWidth: true
+                                                                spacing: 8
+                                                                HubToggle {
+                                                                    theme: root
+                                                                    visible: root.denoiseState !== "missing"
+                                                                    Layout.preferredWidth: 250
+                                                                    Layout.preferredHeight: 50
+                                                                    item: ({
+                                                                        icon: "\uf131",
+                                                                        title: "Remove background noise",
+                                                                        sub: root.denoiseState === "busy" ? "Switching…"
+                                                                            : root.denoiseState === "on" ? "Fans, keys and hum filtered out" : "Off",
+                                                                        active: root.denoiseState === "on" || (root.denoiseState === "busy" && pins.adapter.micDenoise),
+                                                                        ok: root.denoiseState !== "busy",
+                                                                        run: () => root.setDenoise(!pins.adapter.micDenoise, "")
+                                                                    })
+                                                                }
+                                                                Repeater {
+                                                                    model: [ { id: "light", name: "Light" }, { id: "normal", name: "Normal" }, { id: "strong", name: "Strong" } ]
+                                                                    delegate: SportChip {
+                                                                        required property var modelData
+                                                                        visible: root.denoiseState !== "missing"
+                                                                        theme: root
+                                                                        label: modelData.name
+                                                                        active: root.denoiseLevel === modelData.id
+                                                                        onClicked: {
+                                                                            if (pins.adapter.micDenoise) root.setDenoise(true, modelData.id);
+                                                                            else pins.adapter.micDenoiseLevel = modelData.id;
+                                                                        }
+                                                                    }
+                                                                }
+                                                                // the filter isn't installed yet
+                                                                Text {
+                                                                    visible: root.denoiseState === "missing"
+                                                                    text: "\uf131  Noise removal needs one small package:"
+                                                                    font.family: root.iconFont
+                                                                    color: root.muted
+                                                                    font.pixelSize: 12
+                                                                }
+                                                                BarButton {
+                                                                    visible: root.denoiseState === "missing"
+                                                                    theme: root
+                                                                    icon: "\uf0c5"
+                                                                    label: "sudo pacman -S noise-suppression-for-voice"
+                                                                    onClicked: mouse => Quickshell.execDetached(["wl-copy", "sudo pacman -S noise-suppression-for-voice"])
+                                                                }
+                                                                Item { Layout.fillWidth: true }
+                                                            }
+                                                        }
+                                                    }
+
+                                                    // ---- Recent screenshots (the Microphone card takes its place while open) ----
+                                                    HubCard {
+                                                        theme: root
+                                                        visible: !root.micPanel
+                                                        Layout.fillWidth: true
+                                                        Layout.preferredHeight: 128
+
+                                                        FolderListModel {
+                                                            id: recentShots
+                                                            folder: "file://" + Quickshell.env("HOME") + "/Pictures/Screenshots"
+                                                            nameFilters: ["*.png", "*.jpg"]
+                                                            showDirs: false
+                                                            sortField: FolderListModel.Time
+                                                        }
+
+                                                        RowLayout {
+                                                            anchors.fill: parent
+                                                            anchors.margins: 12
+                                                            spacing: 10
+
+                                                            ListView {
+                                                                id: shotStrip
+                                                                Layout.fillWidth: true
+                                                                Layout.fillHeight: true
+                                                                orientation: ListView.Horizontal
+                                                                spacing: 8
+                                                                clip: true
+                                                                model: recentShots
+                                                                delegate: Rectangle {
+                                                                    id: rs
+                                                                    required property url fileUrl
+                                                                    required property int index
+                                                                    visible: rs.index < 8
+                                                                    width: visible ? 170 : 0
+                                                                    height: shotStrip.height
+                                                                    radius: 12
+                                                                    color: root.overlay
+                                                                    border.width: rsMouse.containsMouse ? 2 : 0
+                                                                    border.color: root.accent
+                                                                    Image {
+                                                                        anchors.fill: parent
+                                                                        anchors.margins: 3
+                                                                        source: rs.fileUrl
+                                                                        asynchronous: true
+                                                                        fillMode: Image.PreserveAspectCrop
+                                                                        sourceSize.width: 340
+                                                                    }
+                                                                    MouseArea {
+                                                                        id: rsMouse
+                                                                        anchors.fill: parent
+                                                                        hoverEnabled: true
+                                                                        cursorShape: Qt.PointingHandCursor
+                                                                        onClicked: { root.hubOpen = false; Quickshell.execDetached(["xdg-open", rs.fileUrl.toString()]); }
+                                                                    }
+                                                                }
+
+                                                                Text {
+                                                                    anchors.centerIn: parent
+                                                                    visible: recentShots.count === 0
+                                                                    text: "Your screenshots will show up here"
+                                                                    color: root.muted
+                                                                    font.pixelSize: 12
+                                                                }
+                                                            }
+
+                                                            ColumnLayout {
+                                                                Layout.preferredWidth: 150
+                                                                Layout.maximumWidth: 150
+                                                                Layout.fillWidth: false
+                                                                spacing: 8
+                                                                BarButton {
+                                                                    theme: root
+                                                                    Layout.fillWidth: true
+                                                                    icon: "\uf07b"
+                                                                    label: "Screenshots"
+                                                                    onClicked: mouse => { root.hubOpen = false; Quickshell.execDetached(["sh", "-c", "mkdir -p \"$HOME/Pictures/Screenshots\" && xdg-open \"$HOME/Pictures/Screenshots\""]); }
+                                                                }
+                                                                BarButton {
+                                                                    theme: root
+                                                                    Layout.fillWidth: true
+                                                                    icon: "\uf07b"
+                                                                    label: "Recordings"
+                                                                    onClicked: mouse => { root.hubOpen = false; Quickshell.execDetached(["sh", "-c", "mkdir -p \"$HOME/Videos/Recordings\" && xdg-open \"$HOME/Videos/Recordings\""]); }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
                                                 // ---- Power ----
                                                 RowLayout {
                                                     Layout.fillWidth: true
@@ -5852,563 +6385,7 @@ ShellRoot {
                                         }
 
                                         // ===== 6: Capture =====
-                                        ColumnLayout {
-                                            spacing: 12
-
-                                            // ---- Which screen to capture ----
-                                            RowLayout {
-                                                Layout.fillWidth: true
-                                                spacing: 8
-                                                Text { text: "\uf108"; color: root.accent; font.family: root.iconFont; font.pixelSize: 13 }
-                                                Text { text: "Screen"; color: root.fg; font.pixelSize: 13; font.bold: true }
-                                                Item { implicitWidth: 4 }
-                                                SportChip {
-                                                    theme: root
-                                                    icon: "\uf245"
-                                                    label: "Where my mouse is"
-                                                    active: root.capMon === ""
-                                                    onClicked: pins.adapter.capMonitor = ""
-                                                }
-                                                Repeater {
-                                                    model: Hyprland.monitors
-                                                    delegate: SportChip {
-                                                        required property var modelData
-                                                        required property int index
-                                                        theme: root
-                                                        label: (index + 1) + " · " + modelData.name + "  " + modelData.width + "×" + modelData.height
-                                                        active: root.capMon === modelData.name
-                                                        onClicked: pins.adapter.capMonitor = modelData.name
-                                                    }
-                                                }
-                                                Item { Layout.fillWidth: true }
-                                            }
-
-                                            RowLayout {
-                                                Layout.fillWidth: true
-                                                Layout.fillHeight: true
-                                                spacing: 12
-
-                                                // ---- Screenshot ----
-                                                HubCard {
-                                                    theme: root
-                                                    Layout.fillWidth: true
-                                                    Layout.fillHeight: true
-                                                    Layout.preferredWidth: 1
-
-                                                    ColumnLayout {
-                                                        anchors.fill: parent
-                                                        anchors.margins: 16
-                                                        spacing: 12
-
-                                                        RowLayout {
-                                                            spacing: 8
-                                                            Text { text: "\uf030"; color: root.accent; font.family: root.iconFont; font.pixelSize: 15 }
-                                                            Text { text: "Screenshot"; color: root.fg; font.pixelSize: 15; font.bold: true }
-                                                        }
-
-                                                        GridLayout {
-                                                            Layout.fillWidth: true
-                                                            columns: 2
-                                                            rowSpacing: 10
-                                                            columnSpacing: 10
-
-                                                            Repeater {
-                                                                model: [
-                                                                    { icon: "\uf125", title: "Area", sub: "Drag a box", mode: "area" },
-                                                                    { icon: "\uf2d0", title: "Window", sub: "Click a window", mode: "window" },
-                                                                    { icon: "\uf108", title: "Screen", sub: root.capMon === "" ? "The one your mouse is on" : root.monLabel(root.capMonUsed), mode: "screen" },
-                                                                    { icon: "\uf26c", title: "All screens", sub: "Every monitor", mode: "all" }
-                                                                ]
-                                                                delegate: Rectangle {
-                                                                    id: cap
-                                                                    required property var modelData
-                                                                    Layout.fillWidth: true
-                                                                    Layout.preferredWidth: 1
-                                                                    Layout.preferredHeight: 74
-                                                                    radius: 18
-                                                                    color: capMouse.containsMouse ? root.overlay : root.bg
-                                                                    border.width: 1
-                                                                    border.color: root.glassEdge
-                                                                    scale: capMouse.pressed ? 0.95 : (capMouse.containsMouse ? 1.03 : 1)
-                                                                    Behavior on color { ColorAnimation { duration: root.animMs } }
-                                                                    Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
-
-                                                                    RowLayout {
-                                                                        anchors.fill: parent
-                                                                        anchors.margins: 12
-                                                                        spacing: 10
-                                                                        Rectangle {
-                                                                            Layout.preferredWidth: 40
-                                                                            Layout.preferredHeight: 40
-                                                                            radius: 20
-                                                                            color: root.overlay
-                                                                            Text { anchors.centerIn: parent; text: cap.modelData.icon; color: root.accent; font.family: root.iconFont; font.pixelSize: 16 }
-                                                                        }
-                                                                        ColumnLayout {
-                                                                            Layout.fillWidth: true
-                                                                            spacing: 1
-                                                                            Text { Layout.fillWidth: true; text: cap.modelData.title; color: root.fg; font.pixelSize: 13; font.bold: true; elide: Text.ElideRight }
-                                                                            Text { Layout.fillWidth: true; text: cap.modelData.sub; color: root.muted; font.pixelSize: 11; elide: Text.ElideRight }
-                                                                        }
-                                                                    }
-                                                                    MouseArea {
-                                                                        id: capMouse
-                                                                        anchors.fill: parent
-                                                                        hoverEnabled: true
-                                                                        cursorShape: Qt.PointingHandCursor
-                                                                        onClicked: root.shot(cap.modelData.mode)
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-
-                                                        // delay
-                                                        RowLayout {
-                                                            Layout.fillWidth: true
-                                                            spacing: 8
-                                                            Text { text: "Delay"; color: root.muted; font.pixelSize: 12 }
-                                                            Item { Layout.fillWidth: true }
-                                                            Repeater {
-                                                                model: [0, 3, 5, 10]
-                                                                delegate: Rectangle {
-                                                                    id: dly
-                                                                    required property int modelData
-                                                                    readonly property bool on: root.shotDelay === dly.modelData
-                                                                    width: 52
-                                                                    height: 30
-                                                                    radius: 10
-                                                                    color: dly.on ? root.accent : (dlyMouse.containsMouse ? root.overlay : root.bg)
-                                                                    border.width: 1
-                                                                    border.color: root.glassEdge
-                                                                    Behavior on color { ColorAnimation { duration: root.animMs } }
-                                                                    Text { anchors.centerIn: parent; text: dly.modelData === 0 ? "Now" : dly.modelData + "s"; color: dly.on ? root.bg : root.fg; font.pixelSize: 12; font.bold: dly.on }
-                                                                    MouseArea { id: dlyMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.shotDelay = dly.modelData }
-                                                                }
-                                                            }
-                                                        }
-                                                        Item { Layout.fillHeight: true }
-                                                    }
-                                                }
-
-                                                // ---- Screen recording ----
-                                                HubCard {
-                                                    theme: root
-                                                    Layout.fillWidth: true
-                                                    Layout.fillHeight: true
-                                                    Layout.preferredWidth: 1
-
-                                                    ColumnLayout {
-                                                        anchors.fill: parent
-                                                        anchors.margins: 16
-                                                        spacing: 12
-
-                                                        RowLayout {
-                                                            spacing: 8
-                                                            Text { text: "\uf03d"; color: root.recording ? root.danger : root.accent; font.family: root.iconFont; font.pixelSize: 15 }
-                                                            Text { text: "Screen recording"; color: root.fg; font.pixelSize: 15; font.bold: true }
-                                                        }
-
-                                                        // not installed
-                                                        ColumnLayout {
-                                                            visible: !root.canRecord
-                                                            Layout.fillWidth: true
-                                                            Layout.fillHeight: true
-                                                            spacing: 6
-                                                            Item { Layout.fillHeight: true }
-                                                            Text {
-                                                                Layout.fillWidth: true
-                                                                horizontalAlignment: Text.AlignHCenter
-                                                                wrapMode: Text.Wrap
-                                                                text: "Recording needs wf-recorder.\nInstall it in a terminal with:"
-                                                                color: root.muted
-                                                                font.pixelSize: 13
-                                                            }
-                                                            Text {
-                                                                Layout.alignment: Qt.AlignHCenter
-                                                                text: "sudo pacman -S wf-recorder"
-                                                                color: root.accent
-                                                                font.pixelSize: 13
-                                                                font.family: "monospace"
-                                                            }
-                                                            Item { Layout.fillHeight: true }
-                                                        }
-
-                                                        // recording now
-                                                        ColumnLayout {
-                                                            visible: root.canRecord && root.recording
-                                                            Layout.fillWidth: true
-                                                            Layout.fillHeight: true
-                                                            spacing: 10
-                                                            Item { Layout.fillHeight: true }
-                                                            Rectangle {
-                                                                Layout.alignment: Qt.AlignHCenter
-                                                                width: 22
-                                                                height: 22
-                                                                radius: 11
-                                                                color: root.danger
-                                                                SequentialAnimation on opacity {
-                                                                    running: root.recording
-                                                                    loops: Animation.Infinite
-                                                                    NumberAnimation { to: 0.3; duration: 700 }
-                                                                    NumberAnimation { to: 1; duration: 700 }
-                                                                }
-                                                            }
-                                                            Text {
-                                                                Layout.alignment: Qt.AlignHCenter
-                                                                text: root.fmt(root.recSeconds)
-                                                                color: root.fg
-                                                                font.pixelSize: 34
-                                                                font.bold: true
-                                                            }
-                                                            BarButton {
-                                                                theme: root
-                                                                Layout.alignment: Qt.AlignHCenter
-                                                                icon: "\uf04d"
-                                                                label: "Stop recording"
-                                                                onClicked: mouse => root.stopRecording()
-                                                            }
-                                                            Item { Layout.fillHeight: true }
-                                                        }
-
-                                                        // ready to record
-                                                        ColumnLayout {
-                                                            visible: root.canRecord && !root.recording
-                                                            Layout.fillWidth: true
-                                                            Layout.fillHeight: true
-                                                            spacing: 10
-
-                                                            Repeater {
-                                                                model: [
-                                                                    { icon: "\uf125", title: "Record an area", sub: "Drag a box, then it starts", mode: "area" },
-                                                                    { icon: "\uf108", title: "Record a screen", sub: root.capMon === "" ? "The one your mouse is on" : root.monLabel(root.capMonUsed), mode: "screen" }
-                                                                ]
-                                                                delegate: Rectangle {
-                                                                    id: rcap
-                                                                    required property var modelData
-                                                                    Layout.fillWidth: true
-                                                                    Layout.preferredHeight: 64
-                                                                    radius: 18
-                                                                    color: rcapMouse.containsMouse ? root.overlay : root.bg
-                                                                    border.width: 1
-                                                                    border.color: root.glassEdge
-                                                                    scale: rcapMouse.pressed ? 0.95 : (rcapMouse.containsMouse ? 1.02 : 1)
-                                                                    Behavior on color { ColorAnimation { duration: root.animMs } }
-                                                                    Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
-
-                                                                    RowLayout {
-                                                                        anchors.fill: parent
-                                                                        anchors.margins: 12
-                                                                        spacing: 10
-                                                                        Rectangle {
-                                                                            Layout.preferredWidth: 40
-                                                                            Layout.preferredHeight: 40
-                                                                            radius: 20
-                                                                            color: Qt.rgba(root.danger.r, root.danger.g, root.danger.b, 0.18)
-                                                                            Text { anchors.centerIn: parent; text: rcap.modelData.icon; color: root.danger; font.family: root.iconFont; font.pixelSize: 16 }
-                                                                        }
-                                                                        ColumnLayout {
-                                                                            Layout.fillWidth: true
-                                                                            spacing: 1
-                                                                            Text { Layout.fillWidth: true; text: rcap.modelData.title; color: root.fg; font.pixelSize: 13; font.bold: true; elide: Text.ElideRight }
-                                                                            Text { Layout.fillWidth: true; text: rcap.modelData.sub; color: root.muted; font.pixelSize: 11; elide: Text.ElideRight }
-                                                                        }
-                                                                    }
-                                                                    MouseArea {
-                                                                        id: rcapMouse
-                                                                        anchors.fill: parent
-                                                                        hoverEnabled: true
-                                                                        cursorShape: Qt.PointingHandCursor
-                                                                        onClicked: root.record(rcap.modelData.mode)
-                                                                    }
-                                                                }
-                                                            }
-
-                                                            // sound
-                                                            RowLayout {
-                                                                Layout.fillWidth: true
-                                                                spacing: 8
-                                                                Text { text: "Sound"; color: root.muted; font.pixelSize: 12 }
-                                                                Item { Layout.fillWidth: true }
-                                                                Repeater {
-                                                                    model: [
-                                                                        { key: "none", name: "None" },
-                                                                        { key: "system", name: "Computer" },
-                                                                        { key: "mic", name: "Mic" },
-                                                                        { key: "both", name: "Both" }
-                                                                    ]
-                                                                    delegate: Rectangle {
-                                                                        id: aud
-                                                                        required property var modelData
-                                                                        readonly property bool on: root.recAudio === aud.modelData.key
-                                                                        width: audText.implicitWidth + 22
-                                                                        height: 30
-                                                                        radius: 10
-                                                                        color: aud.on ? root.accent : (audMouse.containsMouse ? root.overlay : root.bg)
-                                                                        border.width: 1
-                                                                        border.color: root.glassEdge
-                                                                        Behavior on color { ColorAnimation { duration: root.animMs } }
-                                                                        Text { id: audText; anchors.centerIn: parent; text: aud.modelData.name; color: aud.on ? root.bg : root.fg; font.pixelSize: 12; font.bold: aud.on }
-                                                                        MouseArea { id: audMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.recAudio = aud.modelData.key }
-                                                                    }
-                                                                }
-                                                                // opens the Microphone card (level, test, volume) below
-                                                                Rectangle {
-                                                                    width: 30
-                                                                    height: 30
-                                                                    radius: 15
-                                                                    color: root.micPanel ? root.accent : (micBtnMouse.containsMouse ? root.overlay : root.bg)
-                                                                    border.width: 1
-                                                                    border.color: root.glassEdge
-                                                                    Behavior on color { ColorAnimation { duration: root.animMs } }
-                                                                    Text { anchors.centerIn: parent; text: "\uf130"; font.family: root.iconFont; font.pixelSize: 13; color: root.micPanel ? root.bg : root.fg }
-                                                                    MouseArea { id: micBtnMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.micPanel = !root.micPanel }
-                                                                }
-                                                            }
-                                                            Item { Layout.fillHeight: true }
-                                                        }
-                                                    }
-                                                }
-                                            }
-
-                                            // ---- Microphone: level meter, test, volume (opened from the mic button by Sound) ----
-                                            HubCard {
-                                                theme: root
-                                                visible: root.micPanel
-                                                Layout.fillWidth: true
-                                                Layout.preferredHeight: 168
-
-                                                ColumnLayout {
-                                                    anchors.fill: parent
-                                                    anchors.margins: 14
-                                                    spacing: 10
-
-                                                    RowLayout {
-                                                        Layout.fillWidth: true
-                                                        spacing: 10
-                                                        Text { text: ""; color: root.accent; font.family: root.iconFont; font.pixelSize: 14 }
-                                                        Text { text: "Microphone"; color: root.fg; font.pixelSize: 13; font.bold: true }
-                                                        Text {
-                                                            Layout.maximumWidth: 150
-                                                            text: root.source ? (root.source.description || root.source.name) : "No microphone found"
-                                                            color: root.muted
-                                                            font.pixelSize: 11
-                                                            elide: Text.ElideRight
-                                                        }
-                                                        // live level: talk and watch it move
-                                                        Rectangle {
-                                                            Layout.fillWidth: true
-                                                            implicitHeight: 12
-                                                            radius: 6
-                                                            color: root.bg
-                                                            border.width: 1
-                                                            border.color: root.glassEdge
-                                                            Rectangle {
-                                                                anchors.left: parent.left
-                                                                anchors.verticalCenter: parent.verticalCenter
-                                                                anchors.leftMargin: 2
-                                                                height: parent.height - 4
-                                                                radius: height / 2
-                                                                width: Math.max(height, (parent.width - 4) * Math.min(1, root.micLevel))
-                                                                color: root.micLevel > 0.9 ? root.danger : root.accent
-                                                                Behavior on width { NumberAnimation { duration: 70 } }
-                                                            }
-                                                            // a mark at the level a good, clear voice reaches
-                                                            Rectangle {
-                                                                x: (parent.width - 4) * 0.5 + 2
-                                                                width: 1
-                                                                height: parent.height
-                                                                color: root.muted
-                                                                opacity: 0.6
-                                                            }
-                                                        }
-                                                        BarButton {
-                                                            theme: root
-                                                            icon: root.micTest === "" ? "" : (root.micTest === "rec" ? "" : "")
-                                                            label: root.micTest === "" ? "Test" : (root.micTest === "rec" ? "Talk now…" : "Playing")
-                                                            onClicked: mouse => root.runMicTest()
-                                                        }
-                                                    }
-
-                                                    RowLayout {
-                                                        Layout.fillWidth: true
-                                                        spacing: 16
-
-                                                        ColumnLayout {
-                                                            Layout.fillWidth: true
-                                                            Layout.preferredWidth: 1
-                                                            spacing: 6
-                                                            RowLayout {
-                                                                Layout.fillWidth: true
-                                                                Text { Layout.fillWidth: true; text: "Mic volume (everywhere)"; color: root.fg; font.pixelSize: 12 }
-                                                                Text { text: Math.round(root.micVolShown * 100) + "%"; color: root.muted; font.pixelSize: 12 }
-                                                            }
-                                                            ValueBar {
-                                                                Layout.fillWidth: true
-                                                                theme: root
-                                                                value: root.micVolShown / 2
-                                                                onMoved: v => root.setMicVolume(Math.round(v * 40) / 20)
-                                                            }
-                                                        }
-                                                        ColumnLayout {
-                                                            Layout.fillWidth: true
-                                                            Layout.preferredWidth: 1
-                                                            spacing: 6
-                                                            opacity: root.recAudio === "both" ? 1 : 0.5
-                                                            RowLayout {
-                                                                Layout.fillWidth: true
-                                                                Text { Layout.fillWidth: true; text: "Computer sound when using Both"; color: root.fg; font.pixelSize: 12; elide: Text.ElideRight }
-                                                                Text { text: root.recSysLevel + "%"; color: root.muted; font.pixelSize: 12 }
-                                                            }
-                                                            ValueBar {
-                                                                Layout.fillWidth: true
-                                                                theme: root
-                                                                value: root.recSysLevel / 100
-                                                                onMoved: v => pins.adapter.recSysLevel = Math.max(5, Math.round(v * 20) * 5)
-                                                            }
-                                                        }
-                                                    }
-
-                                                    // ---- background noise removal ----
-                                                    RowLayout {
-                                                        Layout.fillWidth: true
-                                                        spacing: 8
-                                                        HubToggle {
-                                                            theme: root
-                                                            visible: root.denoiseState !== "missing"
-                                                            Layout.preferredWidth: 250
-                                                            Layout.preferredHeight: 50
-                                                            item: ({
-                                                                icon: "\uf131",
-                                                                title: "Remove background noise",
-                                                                sub: root.denoiseState === "busy" ? "Switching…"
-                                                                    : root.denoiseState === "on" ? "Fans, keys and hum filtered out" : "Off",
-                                                                active: root.denoiseState === "on" || (root.denoiseState === "busy" && pins.adapter.micDenoise),
-                                                                ok: root.denoiseState !== "busy",
-                                                                run: () => root.setDenoise(!pins.adapter.micDenoise, "")
-                                                            })
-                                                        }
-                                                        Repeater {
-                                                            model: [ { id: "light", name: "Light" }, { id: "normal", name: "Normal" }, { id: "strong", name: "Strong" } ]
-                                                            delegate: SportChip {
-                                                                required property var modelData
-                                                                visible: root.denoiseState !== "missing"
-                                                                theme: root
-                                                                label: modelData.name
-                                                                active: root.denoiseLevel === modelData.id
-                                                                onClicked: {
-                                                                    if (pins.adapter.micDenoise) root.setDenoise(true, modelData.id);
-                                                                    else pins.adapter.micDenoiseLevel = modelData.id;
-                                                                }
-                                                            }
-                                                        }
-                                                        // the filter isn't installed yet
-                                                        Text {
-                                                            visible: root.denoiseState === "missing"
-                                                            text: "\uf131  Noise removal needs one small package:"
-                                                            font.family: root.iconFont
-                                                            color: root.muted
-                                                            font.pixelSize: 12
-                                                        }
-                                                        BarButton {
-                                                            visible: root.denoiseState === "missing"
-                                                            theme: root
-                                                            icon: "\uf0c5"
-                                                            label: "sudo pacman -S noise-suppression-for-voice"
-                                                            onClicked: mouse => Quickshell.execDetached(["wl-copy", "sudo pacman -S noise-suppression-for-voice"])
-                                                        }
-                                                        Item { Layout.fillWidth: true }
-                                                    }
-                                                }
-                                            }
-
-                                            // ---- Recent screenshots (the Microphone card takes its place while open) ----
-                                            HubCard {
-                                                theme: root
-                                                visible: !root.micPanel
-                                                Layout.fillWidth: true
-                                                Layout.preferredHeight: 128
-
-                                                FolderListModel {
-                                                    id: recentShots
-                                                    folder: "file://" + Quickshell.env("HOME") + "/Pictures/Screenshots"
-                                                    nameFilters: ["*.png", "*.jpg"]
-                                                    showDirs: false
-                                                    sortField: FolderListModel.Time
-                                                }
-
-                                                RowLayout {
-                                                    anchors.fill: parent
-                                                    anchors.margins: 12
-                                                    spacing: 10
-
-                                                    ListView {
-                                                        id: shotStrip
-                                                        Layout.fillWidth: true
-                                                        Layout.fillHeight: true
-                                                        orientation: ListView.Horizontal
-                                                        spacing: 8
-                                                        clip: true
-                                                        model: recentShots
-                                                        delegate: Rectangle {
-                                                            id: rs
-                                                            required property url fileUrl
-                                                            required property int index
-                                                            visible: rs.index < 8
-                                                            width: visible ? 170 : 0
-                                                            height: shotStrip.height
-                                                            radius: 12
-                                                            color: root.overlay
-                                                            border.width: rsMouse.containsMouse ? 2 : 0
-                                                            border.color: root.accent
-                                                            Image {
-                                                                anchors.fill: parent
-                                                                anchors.margins: 3
-                                                                source: rs.fileUrl
-                                                                asynchronous: true
-                                                                fillMode: Image.PreserveAspectCrop
-                                                                sourceSize.width: 340
-                                                            }
-                                                            MouseArea {
-                                                                id: rsMouse
-                                                                anchors.fill: parent
-                                                                hoverEnabled: true
-                                                                cursorShape: Qt.PointingHandCursor
-                                                                onClicked: { root.hubOpen = false; Quickshell.execDetached(["xdg-open", rs.fileUrl.toString()]); }
-                                                            }
-                                                        }
-
-                                                        Text {
-                                                            anchors.centerIn: parent
-                                                            visible: recentShots.count === 0
-                                                            text: "Your screenshots will show up here"
-                                                            color: root.muted
-                                                            font.pixelSize: 12
-                                                        }
-                                                    }
-
-                                                    ColumnLayout {
-                                                        Layout.preferredWidth: 150
-                                                        Layout.maximumWidth: 150
-                                                        Layout.fillWidth: false
-                                                        spacing: 8
-                                                        BarButton {
-                                                            theme: root
-                                                            Layout.fillWidth: true
-                                                            icon: "\uf07b"
-                                                            label: "Screenshots"
-                                                            onClicked: mouse => { root.hubOpen = false; Quickshell.execDetached(["sh", "-c", "mkdir -p \"$HOME/Pictures/Screenshots\" && xdg-open \"$HOME/Pictures/Screenshots\""]); }
-                                                        }
-                                                        BarButton {
-                                                            theme: root
-                                                            Layout.fillWidth: true
-                                                            icon: "\uf07b"
-                                                            label: "Recordings"
-                                                            onClicked: mouse => { root.hubOpen = false; Quickshell.execDetached(["sh", "-c", "mkdir -p \"$HOME/Videos/Recordings\" && xdg-open \"$HOME/Videos/Recordings\""]); }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
+                                        Item {}   // (recording & screenshots are on the System tab now)
 
                                         // ===== 7: Sports =====
                                         ColumnLayout {
@@ -7713,6 +7690,19 @@ ShellRoot {
                                         Flickable {
                                             id: themesPage
                                             clip: true
+                                            // jump to a section when opened that way (e.g. Super+Shift+R)
+                                            function goSection() {
+                                                if (root.hubSection !== "input" || root.hubTab !== 8) return;
+                                                contentY = Math.max(0, Math.min(inputSection.y - 4, contentHeight - height));
+                                                root.hubSection = "";
+                                            }
+                                            Timer { id: themesPageGo; interval: 150; onTriggered: themesPage.goSection() }
+                                            Connections {
+                                                target: root
+                                                function onHubSectionChanged() { if (root.hubSection === "input") themesPageGo.restart(); }
+                                                function onHubTabChanged() { if (root.hubSection === "input") themesPageGo.restart(); }
+                                            }
+                                            Component.onCompleted: if (root.hubSection === "input") themesPageGo.restart()
                                             contentWidth: width
                                             contentHeight: themesCol.implicitHeight + 6
                                             boundsBehavior: Flickable.StopAtBounds
@@ -8063,13 +8053,29 @@ ShellRoot {
                                                         }
                                                     }
                                                 }
+
+                                                // ---- Keyboard & mouse ----
+                                                RowLayout {
+                                                    id: inputSection
+                                                    Layout.fillWidth: true
+                                                    Layout.topMargin: 14
+                                                    spacing: 8
+                                                    Text { text: "\uf11c"; color: root.accent; font.family: root.iconFont; font.pixelSize: 14 }
+                                                    Text { text: "Keyboard & mouse"; color: root.fg; font.pixelSize: 15; font.bold: true }
+                                                    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.glassEdge; opacity: 0.6 }
+                                                }
+                                                Loader {
+                                                    id: themesInput
+                                                    Layout.fillWidth: true
+                                                    Layout.preferredHeight: item ? item.contentHeight : 0
+                                                    active: root.hubTab === 8
+                                                    sourceComponent: inputPage
+                                                    onLoaded: item.interactive = false     // the Themes page does the scrolling
+                                                }
                                             }
                                         }
                                         // ===== 9: Input (keyboard & mouse) =====
-                                        Loader {
-                                            active: root.hubTab === 9
-                                            sourceComponent: inputPage
-                                        }
+                                        Item {}   // (keyboard & mouse are on the Themes tab now)
                                         // ===== 10: Bluetooth (opened from the Bluetooth tile) =====
                                         ColumnLayout {
                                             spacing: 12
