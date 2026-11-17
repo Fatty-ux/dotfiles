@@ -265,36 +265,54 @@ ShellRoot {
     function setDevice(n) {
         if (devPicker === "in") Pipewire.preferredDefaultAudioSource = n;
         else {
-            Pipewire.preferredDefaultAudioSink = n;
-            // also move what's already playing over (and unmute it), so the sound really switches
-            Quickshell.execDetached(["bash", audioScript, "sink", n.name]);
+            // do it the pavucontrol way: switch the card / headset mode, make it the default,
+            // and move everything that's playing over. The script also remembers it for next login.
+            outChoices = outChoices.map(o => ({ id: o.id, name: o.name, active: o.id === n.id }));
+            Quickshell.execDetached(["python3", audioScript, "pick", n.id]);
         }
         devPicker = "";
     }
 
-    // Monitor / TV speakers (HDMI or DisplayPort) that are plugged in but switched off on the graphics card.
-    // They don't show as an output until the card is told to use them, which is what picking one does.
-    readonly property string audioScript: Quickshell.env("HOME") + "/.config/quickshell/scripts/audio.sh"
-    property var hdmiOptions: []           // [{ card, profile, name }]
+    // Every output you can pick, worked out by scripts/audio.py: headphones, and each plugged-in
+    // monitor by its name (switching between monitors needs the graphics card changed, which this does).
+    readonly property string audioScript: Quickshell.env("HOME") + "/.config/quickshell/scripts/audio.py"
+    property var outChoices: []            // [{ id, name, active }]
     Process {
-        id: hdmiList
-        command: ["bash", root.audioScript, "hdmi"]
+        id: outList
+        command: ["python3", root.audioScript, "outputs"]
         stdout: StdioCollector {
             onStreamFinished: {
                 const out = [];
                 for (const line of text.split("\n")) {
                     const f = line.split("\t");
-                    if (f.length >= 2 && f[0]) out.push({ card: f[0], profile: f[1], name: f[2] || f[1] });
+                    if (f.length >= 3 && f[0]) out.push({ id: f[0], name: f[1], active: f[2] === "1" });
                 }
-                root.hdmiOptions = out;
+                root.outChoices = out;
             }
         }
     }
-    onDevPickerChanged: if (devPicker === "out" && !hdmiList.running) hdmiList.running = true
-    function useHdmi(o) {
-        Quickshell.execDetached(["bash", audioScript, "use", o.card, o.profile]);
-        devPicker = "";
+    onDevPickerChanged: if (devPicker === "out" && !outList.running) outList.running = true
+
+    // Keep the sound settings from falling apart: at login and every time the sound system restarts,
+    // put the headset back in "sound + mic" mode (never the AC3 buzz mode) and the monitor you picked
+    // back on. If something flips the headset to output-only later, that gets fixed too.
+    Process { id: audioFix; command: ["python3", root.audioScript, "fix"] }
+    Process { id: headsetFix; command: ["python3", root.audioScript, "fix", "headset"] }
+    Timer { id: audioFixSoon; interval: 2000; onTriggered: if (!audioFix.running) audioFix.running = true }
+    Timer { id: headsetFixSoon; interval: 1500; onTriggered: if (!headsetFix.running && !audioFix.running) headsetFix.running = true }
+    Process {
+        id: audioWatch
+        running: true
+        command: ["pactl", "subscribe"]
+        onRunningChanged: {
+            if (running) audioFixSoon.restart();          // started = login, or the sound system came back
+            else audioWatchRestart.restart();
+        }
+        stdout: SplitParser {
+            onRead: line => { if (line.indexOf("'change' on card") >= 0) headsetFixSoon.restart(); }
+        }
     }
+    Timer { id: audioWatchRestart; interval: 3000; onTriggered: audioWatch.running = true }
 
     onHubOpenChanged: if (!hubOpen) devPicker = ""
 
@@ -4559,7 +4577,7 @@ ShellRoot {
                             width: 420
                             height: Math.min(devCol.implicitHeight + 72, 400)
                             color: root.popupBg
-                            readonly property var list: root.devPicker === "in" ? root.inputDevices : root.outputDevices
+                            readonly property var list: root.devPicker === "in" ? root.inputDevices : root.outChoices
                             readonly property var current: root.devPicker === "in" ? root.source : root.sink
 
                             MouseArea { anchors.fill: parent }   // keep clicks inside from closing it
@@ -4611,7 +4629,8 @@ ShellRoot {
                                             delegate: Rectangle {
                                                 id: devRow
                                                 required property var modelData
-                                                readonly property bool isCurrent: devCard.current && devCard.current.id === devRow.modelData.id
+                                                readonly property bool isCurrent: root.devPicker === "out" ? devRow.modelData.active === true
+                                                    : (devCard.current && devCard.current.id === devRow.modelData.id)
                                                 width: devCol.width
                                                 height: 44
                                                 radius: 12
@@ -4635,7 +4654,7 @@ ShellRoot {
                                                     }
                                                     Text {
                                                         Layout.fillWidth: true
-                                                        text: root.devName(devRow.modelData)
+                                                        text: root.devPicker === "out" ? devRow.modelData.name : root.devName(devRow.modelData)
                                                         color: root.fg
                                                         font.pixelSize: 13
                                                         font.bold: devRow.isCurrent
@@ -4648,47 +4667,6 @@ ShellRoot {
                                                     hoverEnabled: true
                                                     cursorShape: Qt.PointingHandCursor
                                                     onClicked: root.setDevice(devRow.modelData)
-                                                }
-                                            }
-                                        }
-
-                                        // monitor / TV speakers that need switching on first
-                                        Text {
-                                            visible: root.devPicker === "out" && root.hdmiOptions.length > 0
-                                            topPadding: 6
-                                            text: "Monitor & TV speakers"
-                                            color: root.muted
-                                            font.pixelSize: 11
-                                        }
-                                        Repeater {
-                                            model: root.devPicker === "out" ? root.hdmiOptions : []
-                                            delegate: Rectangle {
-                                                id: hdRow
-                                                required property var modelData
-                                                width: devCol.width
-                                                height: 44
-                                                radius: 12
-                                                color: hdMouse.containsMouse ? root.overlay : root.surface
-                                                RowLayout {
-                                                    anchors.fill: parent
-                                                    anchors.leftMargin: 12
-                                                    anchors.rightMargin: 12
-                                                    spacing: 10
-                                                    Text { Layout.preferredWidth: 16; text: "\uf108"; color: root.accent; font.family: root.iconFont; font.pixelSize: 13 }
-                                                    Text {
-                                                        Layout.fillWidth: true
-                                                        text: hdRow.modelData.name
-                                                        color: root.fg
-                                                        font.pixelSize: 13
-                                                        elide: Text.ElideRight
-                                                    }
-                                                }
-                                                MouseArea {
-                                                    id: hdMouse
-                                                    anchors.fill: parent
-                                                    hoverEnabled: true
-                                                    cursorShape: Qt.PointingHandCursor
-                                                    onClicked: root.useHdmi(hdRow.modelData)
                                                 }
                                             }
                                         }
