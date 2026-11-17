@@ -181,10 +181,14 @@ ShellRoot {
         id: pins
         path: Quickshell.env("HOME") + "/.local/state/quickshell-pins.json"
         watchChanges: true
-        onFileChanged: reload()
-        onAdapterUpdated: writeAdapter()
+        // Our own saves also count as "the file changed". Reloading right after one could read the
+        // file from before a second, newer change and undo it, so only reload for outside edits.
+        property double lastWrite: 0
+        onFileChanged: if (Date.now() - lastWrite > 2000) reload()
+        onAdapterUpdated: { lastWrite = Date.now(); writeAdapter(); }
+        onLoaded: { root.pinsReady = true; root.gamesMigrate(); }
         onLoadFailed: error => {
-            if (error === FileViewError.FileNotFound) writeAdapter();
+            if (error === FileViewError.FileNotFound) { root.pinsReady = true; writeAdapter(); }
         }
         adapter: JsonAdapter {
             property list<string> pinned: ["firefox", "kitty"]
@@ -8434,8 +8438,102 @@ ShellRoot {
         }
     }
 
+    // ---- Your games data (collections, hidden games, games you added, your covers and names) ----
+    // Kept in its own file that only the bar writes, so nothing else can overwrite it:
+    // ~/.local/state/joeos-games.json (it used to live in quickshell-pins.json and is moved over once).
+    property bool pinsReady: false
+    FileView {
+        id: gameStore
+        path: Quickshell.env("HOME") + "/.local/state/joeos-games.json"
+        property bool ready: false
+        onLoaded: { ready = true; root.gamesMigrate(); }
+        onLoadFailed: error => {
+            if (error === FileViewError.FileNotFound) { ready = true; root.gamesMigrate(); }
+        }
+        onAdapterUpdated: if (ready) writeAdapter()
+        adapter: JsonAdapter {
+            property var hidden: []
+            property var collections: []
+            property var added: []
+            property var edits: ({})
+            property bool migrated: false
+        }
+    }
+    // Same as game_slug() in scripts/games.py: a game file's name without versions or platform tags,
+    // so an updated file (new version number in its name) is still the same game.
+    function gamesSlug(path) {
+        const parts = path.split("/");
+        const base = /\/exefs\/main$/.test(path) ? parts[parts.length - 3] : parts[parts.length - 1];
+        let b = base.toLowerCase();
+        b = b.replace(/\.(appimage|xci|nsp|xcz|nsz|nro|nca)$/, "");
+        b = b.replace(/\[[^\]]*\]|\([^)]*\)/g, "");
+        b = b.replace(/x86_64|amd64|x64|linux|release|portable/g, "");
+        b = b.replace(/v?\d+(\.\d+)+[a-z0-9]*/g, "");
+        b = b.replace(/[^a-z0-9]/g, "");
+        return b || base.toLowerCase();
+    }
+    // old keys were the game's full file path; turn them into the new lasting ones
+    function gamesCanon(key) {
+        const m = /^(recomp|switch1|switch2|added):(\/.*)$/.exec(key || "");
+        if (!m) return key;
+        return (m[1] === "added" ? "recomp" : m[1]) + ":" + gamesSlug(m[2]);
+    }
+    // Moves everything you saved onto the lasting keys. Info saved under an old file path (from
+    // before a game updated) gets joined back up with the game; newer info wins where both exist.
+    function gamesCanonStore() {
+        const a = gameStore.adapter;
+        let changed = false;
+        const edits = {};
+        const oldEdits = a.edits || {};
+        for (const k in oldEdits) {
+            const c = gamesCanon(k);
+            if (c !== k) changed = true;
+            edits[c] = Object.assign({}, edits[c] || {}, oldEdits[k]);
+        }
+        const hidden = [];
+        for (const k of (a.hidden || [])) {
+            const c = gamesCanon(k);
+            if (c !== k) changed = true;
+            if (hidden.indexOf(c) < 0) hidden.push(c);
+        }
+        const cols = (a.collections || []).map(col => {
+            const keys = [];
+            for (const k of (col.keys || [])) {
+                const c = gamesCanon(k);
+                if (c !== k) changed = true;
+                if (keys.indexOf(c) < 0) keys.push(c);
+            }
+            return { id: col.id, name: col.name, keys: keys };
+        });
+        const addedBy = {};
+        for (const g of (a.added || [])) {
+            const c = "recomp:" + gamesSlug(g.path || "");
+            if (c !== g.key || addedBy[c]) changed = true;
+            addedBy[c] = { key: c, name: g.name, path: g.path };     // the newest one you added wins
+        }
+        if (!changed) return;
+        a.edits = edits;
+        a.hidden = hidden;
+        a.collections = cols;
+        a.added = Object.keys(addedBy).map(k => addedBy[k]);
+        gameStore.writeAdapter();
+    }
+
+    function gamesMigrate() {
+        if (gameStore.ready && gameStore.adapter.migrated) { gamesCanonStore(); return; }
+        if (!gameStore.ready || !pinsReady || gameStore.adapter.migrated) return;
+        const a = gameStore.adapter, p = pins.adapter;
+        if ((a.hidden || []).length === 0 && (p.gameHidden || []).length) a.hidden = p.gameHidden;
+        if ((a.collections || []).length === 0 && (p.gameCollections || []).length) a.collections = p.gameCollections;
+        if ((a.added || []).length === 0 && (p.gameAdded || []).length) a.added = p.gameAdded;
+        if (Object.keys(a.edits || {}).length === 0 && Object.keys(p.gameEdits || {}).length) a.edits = p.gameEdits;
+        a.migrated = true;
+        gameStore.writeAdapter();
+        gamesCanonStore();
+    }
+
     // ---- your edits to a game's details (name, cover, how it starts) ----
-    readonly property var gamesEdits: pins.adapter.gameEdits || ({})        // key -> { name, cover, path }
+    readonly property var gamesEdits: gameStore.adapter.edits || ({})        // key -> { name, cover, path }
     function gamesSaveEdit(key, e) {
         const all = {};
         for (const k in gamesEdits) all[k] = gamesEdits[k];
@@ -8445,7 +8543,7 @@ ShellRoot {
         if (e.path && e.path.trim() !== "") clean.path = e.path.trim();
         if (Object.keys(clean).length) all[key] = clean;
         else delete all[key];
-        pins.adapter.gameEdits = all;
+        gameStore.adapter.edits = all;
     }
     // pick a picture for a cover
     property var gamesArtPicked: null           // function(path) waiting for the picker
@@ -8471,9 +8569,9 @@ ShellRoot {
     }
 
     // ---- your own touches: hidden games, your collections, games you added yourself ----
-    readonly property var gamesHidden: pins.adapter.gameHidden || []
-    readonly property var gamesMyCols: pins.adapter.gameCollections || []     // [{ id, name, keys: [...] }]
-    readonly property var gamesAdded: pins.adapter.gameAdded || []           // [{ key, name, path }]
+    readonly property var gamesHidden: gameStore.adapter.hidden || []
+    readonly property var gamesMyCols: gameStore.adapter.collections || []     // [{ id, name, keys: [...] }]
+    readonly property var gamesAdded: gameStore.adapter.added || []           // [{ key, name, path }]
     property string gamesMyCol: ""          // one of your collections, "" = none picked
     property bool gamesHiddenView: false    // showing the hidden games
 
@@ -8481,13 +8579,13 @@ ShellRoot {
     function gamesHide(key, hide) {
         const list = gamesHidden.filter(k => k !== key);
         if (hide) list.push(key);
-        pins.adapter.gameHidden = list;
+        gameStore.adapter.hidden = list;
     }
     function gamesNewCollection(name, firstKey) {
         name = name.trim();
         if (name === "") return "";
         const id = "my-" + Date.now();
-        pins.adapter.gameCollections = gamesMyCols.concat([{ id: id, name: name, keys: firstKey ? [firstKey] : [] }]);
+        gameStore.adapter.collections = gamesMyCols.concat([{ id: id, name: name, keys: firstKey ? [firstKey] : [] }]);
         return id;
     }
     function gamesInCol(colId, key) {
@@ -8495,27 +8593,30 @@ ShellRoot {
         return !!c && c.keys.indexOf(key) >= 0;
     }
     function gamesToggleCol(colId, key) {
-        pins.adapter.gameCollections = gamesMyCols.map(c => {
+        gameStore.adapter.collections = gamesMyCols.map(c => {
             if (c.id !== colId) return c;
             const has = c.keys.indexOf(key) >= 0;
             return { id: c.id, name: c.name, keys: has ? c.keys.filter(k => k !== key) : c.keys.concat([key]) };
         });
     }
     function gamesDeleteCol(colId) {
-        pins.adapter.gameCollections = gamesMyCols.filter(c => c.id !== colId);
+        gameStore.adapter.collections = gamesMyCols.filter(c => c.id !== colId);
         if (gamesMyCol === colId) gamesMyCol = "";
     }
     // a game you picked yourself (any program or AppImage)
     function gamesAddPath(path) {
         path = path.trim();
-        if (path === "" || gamesAdded.some(g => g.path === path)) return;
+        if (path === "") return;
+        const key = "recomp:" + gamesSlug(path);
         let name = path.split("/").pop().replace(/\.appimage$/i, "");
         name = name.replace(/[._ -]?(x86_64|amd64|x64|linux|release)$/i, "").replace(/recomp(iled)?$/i, " Recompiled")
                    .replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_-]/g, " ").replace(/\s+/g, " ").trim();
-        pins.adapter.gameAdded = gamesAdded.concat([{ key: "added:" + path, name: name, path: path }]);
+        // adding a newer build of a game you already added replaces the old one (same key, so its
+        // collections, cover and name carry over)
+        gameStore.adapter.added = gamesAdded.filter(g => g.key !== key).concat([{ key: key, name: name, path: path }]);
     }
     function gamesRemoveAdded(key) {
-        pins.adapter.gameAdded = gamesAdded.filter(g => g.key !== key);
+        gameStore.adapter.added = gamesAdded.filter(g => g.key !== key);
     }
     Process {
         id: gamesPicker
@@ -8531,6 +8632,8 @@ ShellRoot {
         }
     }
     property string gamesNote: ""
+    Timer { id: gamesNoteClear; interval: 5000; onTriggered: if (root.gamesNote.indexOf("Added to") === 0) root.gamesNote = "" }
+    onGamesNoteChanged: if (gamesNote.indexOf("Added to") === 0) gamesNoteClear.restart()
     function gamesPickToAdd() { if (!gamesPicker.running) gamesPicker.running = true; }
 
     // everything: what the scan found, plus games you added
@@ -8540,9 +8643,10 @@ ShellRoot {
             cover: "", header: "", last: 0, cols: [],
             play: ["sh", "-c", 'chmod +x "$1" 2>/dev/null; cd "$(dirname "$1")" && exec "$1"', "sh", a.path], install: []
         }));
+        // a game you added that the scan also finds is shown once (the scan has its current file)
         const known = {};
-        for (const g of gamesAll) known[g.id] = true;
-        const all = gamesAll.concat(added.filter(a => !known[a.id]));
+        for (const g of gamesAll) known[g.key] = true;
+        const all = gamesAll.concat(added.filter(a => !known[a.key]));
         // your edits on top (the originals are kept so "Original" / "Undo" work)
         return all.map(g => {
             const e = gamesEdits[g.key];
@@ -9697,10 +9801,13 @@ ShellRoot {
                                                     font.pixelSize: 12
                                                     clip: true
                                                     onAccepted: {
-                                                        const id = root.gamesNewCollection(text, gamesView.pendingKey);
+                                                        const fromGame = gamesView.pendingKey;
+                                                        const id = root.gamesNewCollection(text, fromGame);
                                                         text = "";
                                                         gamesView.pendingKey = "";
-                                                        if (id !== "") { root.gamesMyCol = id; root.gamesHiddenView = false; }
+                                                        // started from a game's menu: stay on the list you were looking at
+                                                        if (id !== "" && fromGame !== "") root.gamesNote = "Added to your new collection \u201c" + root.gamesMyCols.find(c => c.id === id).name + "\u201d (in the list on the left)";
+                                                        else if (id !== "") { root.gamesMyCol = id; root.gamesHiddenView = false; }
                                                         gamesSearch.forceActiveFocus();
                                                     }
                                                     Keys.onEscapePressed: { text = ""; gamesView.pendingKey = ""; gamesSearch.forceActiveFocus(); }

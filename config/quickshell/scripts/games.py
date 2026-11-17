@@ -291,11 +291,11 @@ def recomp_games():
                 else:
                     play = ["sh", "-c", 'cd "$(dirname "$1")" && exec "$1"', "sh", p]
                 out.append({
-                    "key": "recomp:" + real, "id": p, "name": name, "src": "recomp", "installed": True,
+                    "key": "recomp:" + game_slug(p), "id": p, "name": name, "src": "recomp", "installed": True,
                     "cover": ("file://" + icon) if icon else "", "header": "", "last": int(os.path.getatime(p)),
                     "play": play, "install": [], "cols": [],
                 })
-    return out
+    return one_per_key(out)
 
 
 # ---------------------------------------------------------------- Switch emulators
@@ -367,6 +367,49 @@ def guess_dirs(looks_like):
                 out.append(d)
     return out
 
+
+# Games found by their file (Recomp, Switch) get a key from the file's NAME with versions and
+# platform tags stripped, not from its full path. So when a game updates to a new file
+# (Zelda64Recompiled-1.2.AppImage -> Zelda64Recompiled-1.3.AppImage, "Game [v2].nsp"), it keeps
+# its key, and your collections, covers and names stay attached to it.
+# (The bar does the same in gamesSlug() in shell.qml; keep the two the same.)
+def game_slug(path):
+    if path.endswith("/exefs/main"):
+        base = os.path.basename(os.path.dirname(os.path.dirname(path)))
+    else:
+        base = os.path.basename(path)
+    b = base.lower()
+    b = re.sub(r"\.(appimage|xci|nsp|xcz|nsz|nro|nca)$", "", b)
+    b = re.sub(r"\[[^\]]*\]|\([^)]*\)", "", b)
+    b = re.sub(r"x86_64|amd64|x64|linux|release|portable", "", b)
+    b = re.sub(r"v?\d+(\.\d+)+[a-z0-9]*", "", b)
+    b = re.sub(r"[^a-z0-9]", "", b)
+    return b or base.lower()
+
+def is_update_file(path):
+    low = os.path.basename(path).lower()
+    return bool(re.search(r"\bupdate\b|\bdlc\b|\[v[1-9]\d*\]|\[[0-9a-f]{13}800\]", low))
+
+def one_per_key(games):
+    """Two files can now share a key (an old and a new build, or a game and its update file).
+    Keep one: the real game over an update/DLC file, then the newest file."""
+    best = {}
+    for g in games:
+        k = g["key"]
+        try:
+            t = os.path.getmtime(g["id"])
+        except OSError:
+            t = 0
+        rank = (0 if g.get("_upd") else 1, t)
+        if k not in best or rank > best[k][0]:
+            best[k] = (rank, g)
+    out = []
+    for g in games:
+        if best[g["key"]][1] is g:
+            g.pop("_upd", None)
+            out.append(g)
+    return out
+
 def clean_title(s):
     s = re.sub(r"\[[^\]]*\]|\([^)]*\)", "", s)            # [0100...] (v1.0) tags
     s = re.sub(r"(?i)\b(switch ?2|nsp|xci|base game|update|dlc)\b", "", s)
@@ -400,12 +443,12 @@ def emu_games():
                     d = os.path.dirname(os.path.dirname(p)) if p.endswith("/exefs/main") else os.path.dirname(p)
                     icon = first(*[os.path.join(d, x) for x in ("cover.png", "cover.jpg", "icon.png", "icon.jpg")])
                     out.append({
-                        "key": "%s:%s" % (src, real), "id": p, "name": n, "src": src, "store": label,
+                        "key": "%s:%s" % (src, game_slug(p)), "_upd": is_update_file(p), "id": p, "name": n, "src": src, "store": label,
                         "installed": bool(exe), "cover": ("file://" + icon) if icon else "",
                         "header": "", "last": int(os.path.getatime(p)),
                         "play": emu_command(exe, p) if exe else [], "install": [], "cols": [],
                     })
-    return out, exes
+    return one_per_key(out), exes
 
 
 # ---------------------------------------------------------------- cover art finder
