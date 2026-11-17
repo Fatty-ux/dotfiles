@@ -130,9 +130,9 @@ hl.bind("XF86MonBrightnessDown", hl.dsp.exec_cmd("brightnessctl set 5%-"), { loc
 
 -- Screen Capture
 hl.bind(mainMod .. " + P",             hl.dsp.exec_cmd("hyprpicker -a -n"))
-hl.bind("Print",                       hl.dsp.exec_cmd(capture .. "shot area 0"))     -- drag a box
-hl.bind(mainMod .. " + Print",         hl.dsp.exec_cmd(capture .. "shot screen 0"))   -- this monitor
-hl.bind(mainMod .. " + SHIFT + Print", hl.dsp.exec_cmd(qs .. "hub open 6"))           -- Capture tab (recording etc.)
+hl.bind(mainMod .. " + SHIFT + A",                       hl.dsp.exec_cmd(capture .. "shot area 0"))     -- drag a box
+hl.bind(mainMod .. " + SHIFT + M",         hl.dsp.exec_cmd(capture .. "shot screen 0"))   -- this monitor
+hl.bind(mainMod .. " + SHIFT + R", hl.dsp.exec_cmd(qs .. "hub open 6"))           -- Capture tab (recording etc.)
 
 -- Wallpaper picker
 hl.bind(mainMod .. " + SHIFT + W", hl.dsp.exec_cmd(qs .. "wallpaper toggle"))

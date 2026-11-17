@@ -264,14 +264,17 @@ ShellRoot {
 
     function setDevice(n) {
         if (devPicker === "in") Pipewire.preferredDefaultAudioSource = n;
-        else {
-            // do it the pavucontrol way: switch the card / headset mode, make it the default,
-            // and move everything that's playing over. The script also remembers it for next login.
-            outChoices = outChoices.map(o => ({ id: o.id, name: o.name, active: o.id === n.id }));
-            Quickshell.execDetached(["python3", audioScript, "pick", n.id]);
-        }
+        else pickOutput(n.id);
         devPicker = "";
     }
+    // do it the pavucontrol way: switch the card / headset mode, make it the default,
+    // and move everything that's playing over. The script also remembers it for next login.
+    function pickOutput(id) {
+        outChoices = outChoices.map(o => ({ id: o.id, name: o.name, active: o.id === id }));
+        Quickshell.execDetached(["python3", audioScript, "pick", id]);
+        outRefresh.restart();
+    }
+    Timer { id: outRefresh; interval: 1800; onTriggered: if (!outList.running) outList.running = true }
 
     // Every output you can pick, worked out by scripts/audio.py: headphones, and each plugged-in
     // monitor by its name (switching between monitors needs the graphics card changed, which this does).
@@ -314,7 +317,10 @@ ShellRoot {
     }
     Timer { id: audioWatchRestart; interval: 3000; onTriggered: audioWatch.running = true }
 
-    onHubOpenChanged: if (!hubOpen) devPicker = ""
+    onHubOpenChanged: {
+        if (!hubOpen) devPicker = "";
+        else if (!outList.running) outList.running = true;
+    }
 
     // Wallpapers: drop images into ~/Pictures/Wallpapers
     FolderListModel {
@@ -341,6 +347,96 @@ ShellRoot {
         function toggle(): void {
             root.wallPickerOpen = !root.wallPickerOpen;
         }
+    }
+
+    // ---------- Keyboard shortcut cheat sheet (Super+K) ----------
+    property bool keysOpen: false
+    property string keysQuery: ""
+    onKeysOpenChanged: if (!keysOpen) keysQuery = ""
+    IpcHandler {
+        target: "keys"
+        function toggle(): void { root.keysOpen = !root.keysOpen; }
+        function open(): void { root.keysOpen = true; }
+        function close(): void { root.keysOpen = false; }
+    }
+    // Shown in three columns. Each shortcut: [keys, what it does]
+    readonly property var keyGroups: [
+        [
+            { title: "Apps & menus", icon: "", keys: [
+                [["Super", "K"], "This cheat sheet"],
+                [["Super", "Space"], "App launcher (search, Games, Store)"],
+                [["Super", "X"], "Hub (clock, music, calendar)"],
+                [["Super", "Z"], "Hub: System (sound, Wi-Fi, power)"],
+                [["Super", "Alt", "C"], "Hub: System (power buttons)"],
+                [["Super", "A"], "Hub: notifications"],
+                [["Super", "Shift", "W"], "Wallpaper picker"],
+                [["Super", "Enter"], "Terminal"],
+                [["Super", "E"], "File manager"],
+                [["Super", "W"], "Web browser"],
+                [["Super", "T"], "Text editor"],
+                [["Super", "C"], "Calculator"],
+                [["Ctrl", "Shift", "Esc"], "Task manager (btop)"]
+            ] },
+            { title: "Sound & music", icon: "", keys: [
+                [["Vol +", "Vol −"], "Volume up / down"],
+                [["Mute"], "Mute sound"],
+                [["Mic mute"], "Mute microphone"],
+                [["Play"], "Play / pause"],
+                [["Next", "Prev"], "Next / previous song"]
+            ] }
+        ],
+        [
+            { title: "Windows", icon: "", keys: [
+                [["Super", "Q"], "Close window"],
+                [["Super", "Esc"], "Force-close (then click a window)"],
+                [["Super", "F"], "Fullscreen"],
+                [["Super", "D"], "Maximise (keep the bars)"],
+                [["Super", "Alt", "Space"], "Float / unfloat window"],
+                [["Super", "J"], "Flip split side-by-side / stacked"],
+                [["Super", "Left drag"], "Move window with the mouse"],
+                [["Super", "Right drag"], "Resize window with the mouse"],
+                [["Alt", "Tab"], "Next window"]
+            ] },
+            { title: "Moving around", icon: "", keys: [
+                [["Super", "Arrows"], "Focus the window that way"],
+                [["Super", "Shift", "Arrows"], "Move window that way"],
+                [["Super", "1 / 2 / 3"], "Go to monitor 1 / 2 / 3"],
+                [["Super", "Shift", "1 / 2 / 3"], "Send window to monitor"],
+                [["Super", "Shift", "Scroll"], "Send window to next monitor"]
+            ] },
+            { title: "Screenshots & recording", icon: "", keys: [
+                [["Super", "Shift", "A"], "Screenshot: drag a box"],
+                [["Super", "Shift", "M"], "Screenshot: this monitor"],
+                [["Super", "Shift", "R"], "Recording & capture options"],
+                [["Super", "P"], "Colour picker (copies the colour)"]
+            ] }
+        ],
+        [
+            { title: "Desktops", icon: "", keys: [
+                [["Super", "Tab"], "Desktop switcher (hold Super, tap Tab)"],
+                [["Super", "Shift", "Tab"], "Desktop switcher, backwards"],
+                [["Super", "Ctrl", "← / →"], "Previous / next desktop"],
+                [["Super", "Scroll"], "Previous / next desktop"],
+                [["Super", "Ctrl", "↓"], "New desktop"],
+                [["Super", "Ctrl", "1–9"], "Go to desktop 1–9"],
+                [["Super", "Ctrl", "Shift", "← / →"], "Take window to prev / next desktop"],
+                [["Super", "Ctrl", "Shift", "1–9"], "Take window to desktop 1–9"],
+                [["Super", "Alt", "Shift", "1–9"], "Send window there, stay here"],
+                [["Super", "S"], "Show / hide the scratchpad"],
+                [["Super", "Shift", "S"], "Put window in the scratchpad"]
+            ] },
+            { title: "System", icon: "", keys: [
+                [["Super", "L"], "Lock screen"],
+                [["Super", "G"], "Game mode on / off"],
+                [["Super", "+ / −"], "Zoom in / out"],
+                [["Bright +", "Bright −"], "Screen brightness"]
+            ] }
+        ]
+    ]
+    function keysMatch(row) {
+        const q = keysQuery.trim().toLowerCase();
+        if (q === "") return true;
+        return row[1].toLowerCase().indexOf(q) >= 0 || row[0].join(" ").toLowerCase().indexOf(q) >= 0;
     }
 
     function setWallpaper(url) {
@@ -4556,1898 +4652,846 @@ ShellRoot {
                     }
 
                     // The contents keep their full size and fade in, so they don't squash while the card grows
-                    Item {
-                        id: hubContent
+                    Loader {
+                        // the hub's pages are only built while it's open, and only on the screen showing it
+                        active: hubWin.showing
+                        asynchronous: true
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        sourceComponent: Component {
+                            Item {
+                                id: hubContent
 
-                        // ---- Sound device picker (opens over the hub) ----
-                        MouseArea {
-                            anchors.fill: parent
-                            z: 9
-                            visible: root.devPicker !== ""
-                            onClicked: root.devPicker = ""
-                            Rectangle { anchors.fill: parent; radius: 30; color: "#2a000000" }
-                        }
-
-                        HubCard {
-                            id: devCard
-                            theme: root
-                            z: 10
-                            visible: root.devPicker !== ""
-                            anchors.centerIn: parent
-                            width: 420
-                            height: Math.min(devCol.implicitHeight + 72, 400)
-                            color: root.popupBg
-                            readonly property var list: root.devPicker === "in" ? root.inputDevices : root.outChoices
-                            readonly property var current: root.devPicker === "in" ? root.source : root.sink
-
-                            MouseArea { anchors.fill: parent }   // keep clicks inside from closing it
-
-                            ColumnLayout {
-                                anchors.fill: parent
-                                anchors.margins: 16
-                                spacing: 10
-
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    spacing: 8
-                                    Text {
-                                        text: root.devPicker === "in" ? "\uf130" : "\uf028"
-                                        color: root.accent
-                                        font.family: root.iconFont
-                                        font.pixelSize: 15
-                                    }
-                                    Text {
-                                        Layout.fillWidth: true
-                                        text: root.devPicker === "in" ? "Choose microphone" : "Choose sound output"
-                                        color: root.fg
-                                        font.pixelSize: 15
-                                        font.bold: true
-                                    }
-                                    Text {
-                                        text: "\uf00d"
-                                        color: root.muted
-                                        font.family: root.iconFont
-                                        font.pixelSize: 13
-                                        MouseArea { anchors.fill: parent; anchors.margins: -6; cursorShape: Qt.PointingHandCursor; onClicked: root.devPicker = "" }
-                                    }
+                                // ---- Sound device picker (opens over the hub) ----
+                                MouseArea {
+                                    anchors.fill: parent
+                                    z: 9
+                                    visible: root.devPicker !== ""
+                                    onClicked: root.devPicker = ""
+                                    Rectangle { anchors.fill: parent; radius: 30; color: "#2a000000" }
                                 }
 
-                                Flickable {
-                                    Layout.fillWidth: true
-                                    Layout.fillHeight: true
-                                    contentHeight: devCol.implicitHeight
-                                    clip: true
-                                    boundsBehavior: Flickable.StopAtBounds
+                                HubCard {
+                                    id: devCard
+                                    theme: root
+                                    z: 10
+                                    visible: root.devPicker !== ""
+                                    anchors.centerIn: parent
+                                    width: 420
+                                    height: Math.min(devCol.implicitHeight + 72, 400)
+                                    color: root.popupBg
+                                    readonly property var list: root.devPicker === "in" ? root.inputDevices : root.outChoices
+                                    readonly property var current: root.devPicker === "in" ? root.source : root.sink
 
-                                    Column {
-                                        id: devCol
-                                        width: parent.width
-                                        spacing: 6
+                                    MouseArea { anchors.fill: parent }   // keep clicks inside from closing it
 
-                                        Repeater {
-                                            model: devCard.list
-                                            delegate: Rectangle {
-                                                id: devRow
-                                                required property var modelData
-                                                readonly property bool isCurrent: root.devPicker === "out" ? devRow.modelData.active === true
-                                                    : (devCard.current && devCard.current.id === devRow.modelData.id)
-                                                width: devCol.width
-                                                height: 44
-                                                radius: 12
-                                                color: devRow.isCurrent ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.22)
-                                                    : (devRowMouse.containsMouse ? root.overlay : root.surface)
-                                                border.width: devRow.isCurrent ? 1 : 0
-                                                border.color: root.accent
-                                                Behavior on color { ColorAnimation { duration: root.animMs } }
+                                    ColumnLayout {
+                                        anchors.fill: parent
+                                        anchors.margins: 16
+                                        spacing: 10
 
-                                                RowLayout {
-                                                    anchors.fill: parent
-                                                    anchors.leftMargin: 12
-                                                    anchors.rightMargin: 12
-                                                    spacing: 10
-                                                    Text {
-                                                        Layout.preferredWidth: 16
-                                                        text: devRow.isCurrent ? "\uf00c" : ""
-                                                        color: root.accent
-                                                        font.family: root.iconFont
-                                                        font.pixelSize: 13
-                                                    }
-                                                    Text {
-                                                        Layout.fillWidth: true
-                                                        text: root.devPicker === "out" ? devRow.modelData.name : root.devName(devRow.modelData)
-                                                        color: root.fg
-                                                        font.pixelSize: 13
-                                                        font.bold: devRow.isCurrent
-                                                        elide: Text.ElideRight
-                                                    }
-                                                }
-                                                MouseArea {
-                                                    id: devRowMouse
-                                                    anchors.fill: parent
-                                                    hoverEnabled: true
-                                                    cursorShape: Qt.PointingHandCursor
-                                                    onClicked: root.setDevice(devRow.modelData)
-                                                }
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 8
+                                            Text {
+                                                text: root.devPicker === "in" ? "\uf130" : "\uf028"
+                                                color: root.accent
+                                                font.family: root.iconFont
+                                                font.pixelSize: 15
+                                            }
+                                            Text {
+                                                Layout.fillWidth: true
+                                                text: root.devPicker === "in" ? "Choose microphone" : "Choose sound output"
+                                                color: root.fg
+                                                font.pixelSize: 15
+                                                font.bold: true
+                                            }
+                                            Text {
+                                                text: "\uf00d"
+                                                color: root.muted
+                                                font.family: root.iconFont
+                                                font.pixelSize: 13
+                                                MouseArea { anchors.fill: parent; anchors.margins: -6; cursorShape: Qt.PointingHandCursor; onClicked: root.devPicker = "" }
                                             }
                                         }
 
-                                        Text {
-                                            visible: devCard.list.length === 0
-                                            width: devCol.width
-                                            horizontalAlignment: Text.AlignHCenter
-                                            text: "No devices found"
-                                            color: root.muted
-                                            font.pixelSize: 13
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        width: root.hubW
-                        height: root.hubH
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        opacity: panel.hubHere ? 1 : 0
-                        Behavior on opacity { NumberAnimation { duration: panel.hubHere ? root.animMs * 3 : root.animMs; easing.type: Easing.OutCubic } }
-
-                        ColumnLayout {
-                            anchors.fill: parent
-                            anchors.margins: 20
-                            spacing: 14
-
-                            // ---- Header: big clock ----
-                            RowLayout {
-                                Layout.fillWidth: true
-                                spacing: 14
-
-                                Buddy { theme: root; slot: 2; size: 46 }
-
-                                Column {
-                                    spacing: 0
-                                    Text {
-                                        text: Qt.formatDateTime(clock.date, root.timePattern)
-                                        color: root.fg
-                                        font.pixelSize: 30
-                                        font.bold: true
-                                    }
-                                    Text {
-                                        text: Qt.formatDateTime(clock.date, "dddd, MMMM d")
-                                        color: root.muted
-                                        font.pixelSize: 12
-                                    }
-                                }
-
-                                Item { Layout.fillWidth: true }
-
-                            }
-
-                            // ---- Tabs: big buttons with their names, one row across the hub ----
-                            Rectangle {
-                                Layout.fillWidth: true
-                                implicitHeight: 66
-                                radius: 20
-                                color: root.surface
-                                border.width: 1
-                                border.color: root.glassEdge
-
-                                RowLayout {
-                                    anchors.fill: parent
-                                    anchors.margins: 5
-                                    spacing: 4
-
-                                    Repeater {
-                                        model: [
-                                                { page: 0, name: "Home", icon: "" },
-                                                { page: 1, name: "Media", icon: "" },
-                                                { page: 2, name: "Apps", icon: "" },
-                                                { page: 4, name: "Alerts", icon: "" },
-                                                { page: 5, name: "System", icon: "" },
-                                                { page: 6, name: "Capture", icon: "" },
-                                                { page: 7, name: "Sports", icon: "\udb82\udc06" },
-                                                { page: 8, name: "Themes", icon: "\uf53f" },
-                                                { page: 9, name: "Input", icon: "\uf11c" }
-                                            ]
-
-                                        delegate: Rectangle {
-                                            id: htab
-                                            required property var modelData
-                                            required property int index
-                                            readonly property bool current: root.hubTab === htab.modelData.page
+                                        Flickable {
                                             Layout.fillWidth: true
                                             Layout.fillHeight: true
-                                            radius: 16
-                                            color: htab.current ? root.accent : (htabMouse.containsMouse ? root.overlay : "transparent")
-                                            scale: htabMouse.pressed ? 0.94 : (htabMouse.containsMouse && !htab.current ? 1.04 : 1)
-                                            Behavior on color { ColorAnimation { duration: root.animMs } }
-                                            Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+                                            contentHeight: devCol.implicitHeight
+                                            clip: true
+                                            boundsBehavior: Flickable.StopAtBounds
 
                                             Column {
-                                                anchors.centerIn: parent
-                                                spacing: 4
-                                                Text {
-                                                    anchors.horizontalCenter: parent.horizontalCenter
-                                                    text: htab.modelData.icon
-                                                    color: htab.current ? root.bg : root.accent
-                                                    font.family: root.iconFont
-                                                    font.pixelSize: 20
-                                                }
-                                                Text {
-                                                    anchors.horizontalCenter: parent.horizontalCenter
-                                                    text: htab.modelData.name
-                                                    color: htab.current ? root.bg : root.fg
-                                                    font.pixelSize: 13
-                                                    font.bold: htab.current
-                                                }
-                                            }
+                                                id: devCol
+                                                width: parent.width
+                                                spacing: 6
 
-                                            MouseArea {
-                                                id: htabMouse
-                                                anchors.fill: parent
-                                                hoverEnabled: true
-                                                cursorShape: Qt.PointingHandCursor
-                                                onClicked: root.hubTab = htab.modelData.page
+                                                Repeater {
+                                                    model: devCard.list
+                                                    delegate: Rectangle {
+                                                        id: devRow
+                                                        required property var modelData
+                                                        readonly property bool isCurrent: root.devPicker === "out" ? devRow.modelData.active === true
+                                                            : (devCard.current && devCard.current.id === devRow.modelData.id)
+                                                        width: devCol.width
+                                                        height: 44
+                                                        radius: 12
+                                                        color: devRow.isCurrent ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.22)
+                                                            : (devRowMouse.containsMouse ? root.overlay : root.surface)
+                                                        border.width: devRow.isCurrent ? 1 : 0
+                                                        border.color: root.accent
+                                                        Behavior on color { ColorAnimation { duration: root.animMs } }
+
+                                                        RowLayout {
+                                                            anchors.fill: parent
+                                                            anchors.leftMargin: 12
+                                                            anchors.rightMargin: 12
+                                                            spacing: 10
+                                                            Text {
+                                                                Layout.preferredWidth: 16
+                                                                text: devRow.isCurrent ? "\uf00c" : ""
+                                                                color: root.accent
+                                                                font.family: root.iconFont
+                                                                font.pixelSize: 13
+                                                            }
+                                                            Text {
+                                                                Layout.fillWidth: true
+                                                                text: root.devPicker === "out" ? devRow.modelData.name : root.devName(devRow.modelData)
+                                                                color: root.fg
+                                                                font.pixelSize: 13
+                                                                font.bold: devRow.isCurrent
+                                                                elide: Text.ElideRight
+                                                            }
+                                                        }
+                                                        MouseArea {
+                                                            id: devRowMouse
+                                                            anchors.fill: parent
+                                                            hoverEnabled: true
+                                                            cursorShape: Qt.PointingHandCursor
+                                                            onClicked: root.setDevice(devRow.modelData)
+                                                        }
+                                                    }
+                                                }
+
+                                                Text {
+                                                    visible: devCard.list.length === 0
+                                                    width: devCol.width
+                                                    horizontalAlignment: Text.AlignHCenter
+                                                    text: "No devices found"
+                                                    color: root.muted
+                                                    font.pixelSize: 13
+                                                }
                                             }
                                         }
                                     }
                                 }
-                            }
+                                width: root.hubW
+                                height: root.hubH
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                opacity: panel.hubHere ? 1 : 0
+                                Behavior on opacity { NumberAnimation { duration: panel.hubHere ? root.animMs * 3 : root.animMs; easing.type: Easing.OutCubic } }
 
-                            // ---- Pages ----
-                            StackLayout {
-                                Layout.fillWidth: true
-                                Layout.fillHeight: true
-                                currentIndex: root.hubTab
-
-                                // ===== 0: Home =====
                                 ColumnLayout {
-                                    spacing: 12
+                                    anchors.fill: parent
+                                    anchors.margins: 20
+                                    spacing: 14
 
+                                    // ---- Header: big clock ----
                                     RowLayout {
                                         Layout.fillWidth: true
-                                        Layout.preferredHeight: 128
-                                        Layout.maximumHeight: 128
-                                        spacing: 12
+                                        spacing: 14
 
-                                        // the time, nice and big
-                                        HubCard {
-                                            theme: root
-                                            Layout.preferredWidth: 250
-                                            Layout.fillHeight: true
-                                            ColumnLayout {
-                                                anchors.centerIn: parent
-                                                spacing: 2
-                                                Text {
-                                                    Layout.alignment: Qt.AlignHCenter
-                                                    text: Qt.formatDateTime(clock.date, root.timePattern)
-                                                    color: root.fg
-                                                    font.pixelSize: 44
-                                                    font.bold: true
-                                                }
-                                                Text {
-                                                    Layout.alignment: Qt.AlignHCenter
-                                                    text: Qt.formatDateTime(clock.date, "dddd, MMMM d")
-                                                    color: root.accent
-                                                    font.pixelSize: 13
-                                                }
+                                        Buddy { theme: root; slot: 2; size: 46 }
+
+                                        Column {
+                                            spacing: 0
+                                            Text {
+                                                text: Qt.formatDateTime(clock.date, root.timePattern)
+                                                color: root.fg
+                                                font.pixelSize: 30
+                                                font.bold: true
+                                            }
+                                            Text {
+                                                text: Qt.formatDateTime(clock.date, "dddd, MMMM d")
+                                                color: root.muted
+                                                font.pixelSize: 12
                                             }
                                         }
 
-                                        HubCard {
-                                            theme: root
-                                            Layout.fillWidth: true
-                                            Layout.fillHeight: true
+                                        Item { Layout.fillWidth: true }
 
-                                            MouseArea {
-                                                anchors.fill: parent
-                                                cursorShape: Qt.PointingHandCursor
-                                                onClicked: root.hubTab = 1
-                                            }
+                                    }
 
-                                            RowLayout {
-                                                anchors.fill: parent
-                                                anchors.margins: 14
-                                                spacing: 14
-                                                visible: root.player !== null
+                                    // ---- Tabs: icon buttons, one row across the hub (hover one to see its name) ----
+                                    Rectangle {
+                                        Layout.fillWidth: true
+                                        implicitHeight: 54
+                                        z: 2
+                                        radius: 20
+                                        color: root.surface
+                                        border.width: 1
+                                        border.color: root.glassEdge
 
-                                                Rectangle {
-                                                    Layout.preferredWidth: 110
-                                                    Layout.preferredHeight: 110
+                                        RowLayout {
+                                            anchors.fill: parent
+                                            anchors.margins: 5
+                                            spacing: 4
+
+                                            Repeater {
+                                                model: [
+                                                        { page: 0, name: "Home", icon: "" },
+                                                        { page: 1, name: "Media", icon: "" },
+                                                        { page: 2, name: "Apps", icon: "" },
+                                                        { page: 4, name: "Alerts", icon: "" },
+                                                        { page: 5, name: "System", icon: "" },
+                                                        { page: 6, name: "Capture", icon: "" },
+                                                        { page: 7, name: "Sports", icon: "\udb82\udc06" },
+                                                        { page: 8, name: "Themes", icon: "\uf53f" },
+                                                        { page: 9, name: "Input", icon: "\uf11c" }
+                                                    ]
+
+                                                delegate: Rectangle {
+                                                    id: htab
+                                                    required property var modelData
+                                                    required property int index
+                                                    readonly property bool current: root.hubTab === htab.modelData.page
+                                                    Layout.fillWidth: true
+                                                    Layout.fillHeight: true
                                                     radius: 16
-                                                    color: root.overlay
-                                                    clip: true
-                                                    Image {
-                                                        anchors.fill: parent
-                                                        source: root.player ? root.player.trackArtUrl : ""
-                                                        fillMode: Image.PreserveAspectCrop
-                                                        visible: status === Image.Ready
-                                                    }
+                                                    color: htab.current ? root.accent : (htabMouse.containsMouse ? root.overlay : "transparent")
+                                                    scale: htabMouse.pressed ? 0.94 : (htabMouse.containsMouse && !htab.current ? 1.04 : 1)
+                                                    Behavior on color { ColorAnimation { duration: root.animMs } }
+                                                    Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+
                                                     Text {
                                                         anchors.centerIn: parent
-                                                        visible: !root.player || root.player.trackArtUrl === ""
-                                                        text: ""
-                                                        color: root.muted
+                                                        text: htab.modelData.icon
+                                                        color: htab.current ? root.bg : root.accent
                                                         font.family: root.iconFont
-                                                        font.pixelSize: 30
+                                                        font.pixelSize: 22
+                                                    }
+
+                                                    // its name, only while the mouse rests on it
+                                                    Rectangle {
+                                                        visible: htabMouse.containsMouse
+                                                        anchors.horizontalCenter: parent.horizontalCenter
+                                                        anchors.top: parent.bottom
+                                                        anchors.topMargin: 8
+                                                        z: 10
+                                                        width: htabName.implicitWidth + 18
+                                                        height: 26
+                                                        radius: 9
+                                                        color: root.popupBg
+                                                        border.width: 1
+                                                        border.color: root.glassEdge
+                                                        Text {
+                                                            id: htabName
+                                                            anchors.centerIn: parent
+                                                            text: htab.modelData.name
+                                                            color: root.fg
+                                                            font.pixelSize: 12
+                                                        }
+                                                    }
+
+                                                    MouseArea {
+                                                        id: htabMouse
+                                                        anchors.fill: parent
+                                                        hoverEnabled: true
+                                                        cursorShape: Qt.PointingHandCursor
+                                                        onClicked: root.hubTab = htab.modelData.page
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // ---- Pages ----
+                                    StackLayout {
+                                        Layout.fillWidth: true
+                                        Layout.fillHeight: true
+                                        currentIndex: root.hubTab
+
+                                        // ===== 0: Home =====
+                                        ColumnLayout {
+                                            spacing: 12
+
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                Layout.preferredHeight: 128
+                                                Layout.maximumHeight: 128
+                                                spacing: 12
+
+                                                // the time, nice and big
+                                                HubCard {
+                                                    theme: root
+                                                    Layout.preferredWidth: 250
+                                                    Layout.fillHeight: true
+                                                    ColumnLayout {
+                                                        anchors.centerIn: parent
+                                                        spacing: 2
+                                                        Text {
+                                                            Layout.alignment: Qt.AlignHCenter
+                                                            text: Qt.formatDateTime(clock.date, root.timePattern)
+                                                            color: root.fg
+                                                            font.pixelSize: 44
+                                                            font.bold: true
+                                                        }
+                                                        Text {
+                                                            Layout.alignment: Qt.AlignHCenter
+                                                            text: Qt.formatDateTime(clock.date, "dddd, MMMM d")
+                                                            color: root.accent
+                                                            font.pixelSize: 13
+                                                        }
                                                     }
                                                 }
 
-                                                ColumnLayout {
+                                                HubCard {
+                                                    theme: root
                                                     Layout.fillWidth: true
-                                                    spacing: 3
-                                                    Text {
-                                                        Layout.fillWidth: true
-                                                        text: root.player ? (root.player.trackTitle || root.player.identity) : ""
-                                                        color: root.fg
-                                                        font.pixelSize: 15
-                                                        font.bold: true
-                                                        elide: Text.ElideRight
+                                                    Layout.fillHeight: true
+
+                                                    MouseArea {
+                                                        anchors.fill: parent
+                                                        cursorShape: Qt.PointingHandCursor
+                                                        onClicked: root.hubTab = 1
                                                     }
-                                                    Text {
-                                                        Layout.fillWidth: true
-                                                        text: root.player ? root.player.trackArtist : ""
-                                                        color: root.muted
-                                                        font.pixelSize: 12
-                                                        elide: Text.ElideRight
-                                                    }
-                                                    Item { Layout.fillHeight: true }
+
                                                     RowLayout {
+                                                        anchors.fill: parent
+                                                        anchors.margins: 14
+                                                        spacing: 14
+                                                        visible: root.player !== null
+
+                                                        Rectangle {
+                                                            Layout.preferredWidth: 110
+                                                            Layout.preferredHeight: 110
+                                                            radius: 16
+                                                            color: root.overlay
+                                                            clip: true
+                                                            Image {
+                                                                anchors.fill: parent
+                                                                source: root.player ? root.player.trackArtUrl : ""
+                                                                fillMode: Image.PreserveAspectCrop
+                                                                visible: status === Image.Ready
+                                                            }
+                                                            Text {
+                                                                anchors.centerIn: parent
+                                                                visible: !root.player || root.player.trackArtUrl === ""
+                                                                text: ""
+                                                                color: root.muted
+                                                                font.family: root.iconFont
+                                                                font.pixelSize: 30
+                                                            }
+                                                        }
+
+                                                        ColumnLayout {
+                                                            Layout.fillWidth: true
+                                                            spacing: 3
+                                                            Text {
+                                                                Layout.fillWidth: true
+                                                                text: root.player ? (root.player.trackTitle || root.player.identity) : ""
+                                                                color: root.fg
+                                                                font.pixelSize: 15
+                                                                font.bold: true
+                                                                elide: Text.ElideRight
+                                                            }
+                                                            Text {
+                                                                Layout.fillWidth: true
+                                                                text: root.player ? root.player.trackArtist : ""
+                                                                color: root.muted
+                                                                font.pixelSize: 12
+                                                                elide: Text.ElideRight
+                                                            }
+                                                            Item { Layout.fillHeight: true }
+                                                            RowLayout {
+                                                                spacing: 6
+                                                                IconButton {
+                                                                    theme: root
+                                                                    label: "|◀"
+                                                                    dim: !(root.player && root.player.canGoPrevious)
+                                                                    onClicked: if (root.player && root.player.canGoPrevious) root.player.previous()
+                                                                }
+                                                                IconButton {
+                                                                    theme: root
+                                                                    implicitWidth: 54
+                                                                    label: root.playing(root.player) ? "❚❚" : "▶"
+                                                                    dim: !(root.player && root.player.canTogglePlaying)
+                                                                    onClicked: if (root.player && root.player.canTogglePlaying) root.player.togglePlaying()
+                                                                }
+                                                                IconButton {
+                                                                    theme: root
+                                                                    label: "▶|"
+                                                                    dim: !(root.player && root.player.canGoNext)
+                                                                    onClicked: if (root.player && root.player.canGoNext) root.player.next()
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+
+                                                    Column {
+                                                        anchors.centerIn: parent
+                                                        visible: root.player === null
                                                         spacing: 6
-                                                        IconButton {
-                                                            theme: root
-                                                            label: "|◀"
-                                                            dim: !(root.player && root.player.canGoPrevious)
-                                                            onClicked: if (root.player && root.player.canGoPrevious) root.player.previous()
+                                                        Text {
+                                                            anchors.horizontalCenter: parent.horizontalCenter
+                                                            text: ""
+                                                            color: root.muted
+                                                            font.family: root.iconFont
+                                                            font.pixelSize: 26
                                                         }
-                                                        IconButton {
-                                                            theme: root
-                                                            implicitWidth: 54
-                                                            label: root.playing(root.player) ? "❚❚" : "▶"
-                                                            dim: !(root.player && root.player.canTogglePlaying)
-                                                            onClicked: if (root.player && root.player.canTogglePlaying) root.player.togglePlaying()
-                                                        }
-                                                        IconButton {
-                                                            theme: root
-                                                            label: "▶|"
-                                                            dim: !(root.player && root.player.canGoNext)
-                                                            onClicked: if (root.player && root.player.canGoNext) root.player.next()
+                                                        Text {
+                                                            anchors.horizontalCenter: parent.horizontalCenter
+                                                            text: "Nothing playing"
+                                                            color: root.muted
+                                                            font.pixelSize: 13
                                                         }
                                                     }
                                                 }
+
+                                                HubCard {
+                                                    theme: root
+                                                    Layout.preferredWidth: 300
+                                                    Layout.fillHeight: true
+
+                                                    ColumnLayout {
+                                                        anchors.fill: parent
+                                                        anchors.margins: 14
+                                                        spacing: 8
+
+                                                        Repeater {
+                                                            model: [
+                                                                { name: "CPU", icon: "", value: root.cpuUsage, extra: root.cpuTemp >= 0 ? root.cpuTemp + "°C" : "", show: true },
+                                                                { name: "RAM", icon: "", value: root.memUsage, extra: "", show: true },
+                                                                { name: "GPU", icon: "", value: root.gpuUse >= 0 ? root.gpuUse / 100 : 0, extra: root.gpuTemp >= 0 ? root.gpuTemp + "°C" : "", show: root.gpuUse >= 0 }
+                                                            ]
+
+                                                            delegate: ColumnLayout {
+                                                                id: st
+                                                                required property var modelData
+                                                                visible: st.modelData.show
+                                                                Layout.fillWidth: true
+                                                                spacing: 4
+
+                                                                RowLayout {
+                                                                    Layout.fillWidth: true
+                                                                    spacing: 7
+                                                                    Text {
+                                                                        text: st.modelData.icon
+                                                                        color: root.accent
+                                                                        font.family: root.iconFont
+                                                                        font.pixelSize: 12
+                                                                    }
+                                                                    Text {
+                                                                        Layout.fillWidth: true
+                                                                        text: st.modelData.name
+                                                                        color: root.fg
+                                                                        font.pixelSize: 12
+                                                                    }
+                                                                    Text {
+                                                                        visible: st.modelData.extra !== ""
+                                                                        text: st.modelData.extra
+                                                                        color: root.muted
+                                                                        font.pixelSize: 11
+                                                                    }
+                                                                    Text {
+                                                                        text: Math.round(st.modelData.value * 100) + "%"
+                                                                        color: root.fg
+                                                                        font.pixelSize: 12
+                                                                        font.bold: true
+                                                                    }
+                                                                }
+                                                                Rectangle {
+                                                                    Layout.fillWidth: true
+                                                                    implicitHeight: 6
+                                                                    radius: 3
+                                                                    color: root.overlay
+                                                                    Rectangle {
+                                                                        width: parent.width * Math.max(0, Math.min(1, st.modelData.value))
+                                                                        height: parent.height
+                                                                        radius: 3
+                                                                        color: root.accent
+                                                                        Behavior on width { NumberAnimation { duration: 400; easing.type: Easing.OutCubic } }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                        Item { Layout.fillHeight: true }
+                                                    }
+                                                }
+                                            }
+
+                                            // calendar (moved here from its own tab)
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                Layout.fillHeight: true
+                                            spacing: 12
+
+                                            HubCard {
+                                                theme: root
+                                                Layout.fillWidth: true
+                                                Layout.fillHeight: true
+
+                                                ColumnLayout {
+                                                    anchors.fill: parent
+                                                    anchors.margins: 16
+                                                    spacing: 8
+
+                                                    RowLayout {
+                                                        Layout.fillWidth: true
+                                                        Text {
+                                                            Layout.fillWidth: true
+                                                            text: panel.calInfo.title
+                                                            color: root.fg
+                                                            font.pixelSize: 17
+                                                            font.bold: true
+                                                        }
+                                                        IconButton { theme: root; implicitWidth: 36; implicitHeight: 30; label: "‹"; onClicked: root.calOffset -= 1 }
+                                                        IconButton { theme: root; implicitWidth: 60; implicitHeight: 30; label: "Today"; onClicked: root.calOffset = 0 }
+                                                        IconButton { theme: root; implicitWidth: 36; implicitHeight: 30; label: "›"; onClicked: root.calOffset += 1 }
+                                                    }
+
+                                                    GridLayout {
+                                                        Layout.fillWidth: true
+                                                        Layout.fillHeight: true
+                                                        columns: 7
+                                                        rowSpacing: 4
+                                                        columnSpacing: 4
+
+                                                        Repeater {
+                                                            model: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+                                                            delegate: Text {
+                                                                required property string modelData
+                                                                Layout.fillWidth: true
+                                                                Layout.preferredWidth: 1      // equal columns
+                                                                horizontalAlignment: Text.AlignHCenter
+                                                                text: modelData
+                                                                color: root.muted
+                                                                font.pixelSize: 11
+                                                                font.bold: true
+                                                            }
+                                                        }
+
+                                                        Repeater {
+                                                            model: panel.calInfo.days
+                                                            delegate: Item {
+                                                                id: cday
+                                                                required property var modelData
+                                                                Layout.fillWidth: true
+                                                                Layout.fillHeight: true
+                                                                Layout.preferredWidth: 1      // equal columns
+                                                                Layout.preferredHeight: 1     // equal rows
+
+                                                                HoverHandler { id: cdayHover }
+
+                                                                // round highlight for today (and a soft one on hover)
+                                                                Rectangle {
+                                                                    anchors.centerIn: parent
+                                                                    width: Math.min(parent.width, parent.height, 38)
+                                                                    height: width
+                                                                    radius: width / 2
+                                                                    color: cday.modelData.today ? root.accent : (cdayHover.hovered ? root.overlay : "transparent")
+                                                                    Behavior on color { ColorAnimation { duration: root.animMs } }
+                                                                }
+
+                                                                Text {
+                                                                    anchors.centerIn: parent
+                                                                    text: cday.modelData.n
+                                                                    color: cday.modelData.today ? root.bg : (cday.modelData.inMonth ? root.fg : root.muted)
+                                                                    opacity: cday.modelData.inMonth ? 1 : 0.45
+                                                                    font.pixelSize: 13
+                                                                    font.bold: cday.modelData.today
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            ColumnLayout {
+                                                Layout.preferredWidth: 230
+                                                Layout.maximumWidth: 230
+                                                Layout.fillWidth: false
+                                                Layout.fillHeight: true
+                                                spacing: 12
+
+                                                HubCard {
+                                                    theme: root
+                                                    Layout.fillWidth: true
+                                                    Layout.preferredHeight: 170
+
+                                                    Column {
+                                                        anchors.centerIn: parent
+                                                        spacing: 2
+                                                        Text {
+                                                            anchors.horizontalCenter: parent.horizontalCenter
+                                                            text: Qt.formatDateTime(clock.date, "dddd")
+                                                            color: root.accent
+                                                            font.pixelSize: 14
+                                                            font.bold: true
+                                                        }
+                                                        Text {
+                                                            anchors.horizontalCenter: parent.horizontalCenter
+                                                            text: Qt.formatDateTime(clock.date, "d")
+                                                            color: root.fg
+                                                            font.pixelSize: 64
+                                                            font.bold: true
+                                                        }
+                                                        Text {
+                                                            anchors.horizontalCenter: parent.horizontalCenter
+                                                            text: Qt.formatDateTime(clock.date, "MMMM yyyy")
+                                                            color: root.muted
+                                                            font.pixelSize: 12
+                                                        }
+                                                    }
+                                                }
+
+                                                HubCard {
+                                                    theme: root
+                                                    Layout.fillWidth: true
+                                                    Layout.fillHeight: true
+
+                                                    ColumnLayout {
+                                                        anchors.fill: parent
+                                                        anchors.margins: 16
+                                                        spacing: 4
+
+                                                        Text {
+                                                            text: root.weatherName
+                                                            color: root.muted
+                                                            font.pixelSize: 11
+                                                        }
+                                                        RowLayout {
+                                                            spacing: 10
+                                                            Text {
+                                                                text: root.wxNow ? root.wxNow.icon : "☁"
+                                                                color: root.accent
+                                                                font.pixelSize: 34
+                                                            }
+                                                            Text {
+                                                                text: root.wxNow ? root.wxNow.temp + "°" : "--"
+                                                                color: root.fg
+                                                                font.pixelSize: 32
+                                                                font.bold: true
+                                                            }
+                                                        }
+                                                        Text {
+                                                            Layout.fillWidth: true
+                                                            text: root.wxNow ? root.wxNow.desc + "  ·  H " + root.wxNow.hi + "°  L " + root.wxNow.lo + "°" : root.wxStatus
+                                                            color: root.muted
+                                                            font.pixelSize: 12
+                                                            elide: Text.ElideRight
+                                                        }
+                                                        Item { Layout.fillHeight: true }
+                                                        BarButton {
+                                                            theme: root
+                                                            Layout.fillWidth: true
+                                                            icon: ""
+                                                            label: "Full forecast"
+                                                            onClicked: mouse => { root.hubOpen = false; root.weatherOpen = true; }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        }
+
+                                        // ===== 1: Media =====
+                                        HubCard {
+                                            theme: root
+                                            clip: true
+
+                                            NowPlaying {
+                                                theme: root
+                                                player: root.player
+                                                visible: root.player !== null
+                                                artSize: 360
+                                                wide: true
+                                                backdropMargin: 40
+                                                anchors.centerIn: parent
                                             }
 
                                             Column {
                                                 anchors.centerIn: parent
                                                 visible: root.player === null
-                                                spacing: 6
+                                                spacing: 8
                                                 Text {
                                                     anchors.horizontalCenter: parent.horizontalCenter
-                                                    text: ""
+                                                    text: "\uf001"
                                                     color: root.muted
                                                     font.family: root.iconFont
-                                                    font.pixelSize: 26
+                                                    font.pixelSize: 44
                                                 }
                                                 Text {
                                                     anchors.horizontalCenter: parent.horizontalCenter
-                                                    text: "Nothing playing"
+                                                    text: "Nothing playing right now"
                                                     color: root.muted
-                                                    font.pixelSize: 13
-                                                }
-                                            }
-                                        }
-
-                                        HubCard {
-                                            theme: root
-                                            Layout.preferredWidth: 300
-                                            Layout.fillHeight: true
-
-                                            ColumnLayout {
-                                                anchors.fill: parent
-                                                anchors.margins: 14
-                                                spacing: 8
-
-                                                Repeater {
-                                                    model: [
-                                                        { name: "CPU", icon: "", value: root.cpuUsage, extra: root.cpuTemp >= 0 ? root.cpuTemp + "°C" : "", show: true },
-                                                        { name: "RAM", icon: "", value: root.memUsage, extra: "", show: true },
-                                                        { name: "GPU", icon: "", value: root.gpuUse >= 0 ? root.gpuUse / 100 : 0, extra: root.gpuTemp >= 0 ? root.gpuTemp + "°C" : "", show: root.gpuUse >= 0 }
-                                                    ]
-
-                                                    delegate: ColumnLayout {
-                                                        id: st
-                                                        required property var modelData
-                                                        visible: st.modelData.show
-                                                        Layout.fillWidth: true
-                                                        spacing: 4
-
-                                                        RowLayout {
-                                                            Layout.fillWidth: true
-                                                            spacing: 7
-                                                            Text {
-                                                                text: st.modelData.icon
-                                                                color: root.accent
-                                                                font.family: root.iconFont
-                                                                font.pixelSize: 12
-                                                            }
-                                                            Text {
-                                                                Layout.fillWidth: true
-                                                                text: st.modelData.name
-                                                                color: root.fg
-                                                                font.pixelSize: 12
-                                                            }
-                                                            Text {
-                                                                visible: st.modelData.extra !== ""
-                                                                text: st.modelData.extra
-                                                                color: root.muted
-                                                                font.pixelSize: 11
-                                                            }
-                                                            Text {
-                                                                text: Math.round(st.modelData.value * 100) + "%"
-                                                                color: root.fg
-                                                                font.pixelSize: 12
-                                                                font.bold: true
-                                                            }
-                                                        }
-                                                        Rectangle {
-                                                            Layout.fillWidth: true
-                                                            implicitHeight: 6
-                                                            radius: 3
-                                                            color: root.overlay
-                                                            Rectangle {
-                                                                width: parent.width * Math.max(0, Math.min(1, st.modelData.value))
-                                                                height: parent.height
-                                                                radius: 3
-                                                                color: root.accent
-                                                                Behavior on width { NumberAnimation { duration: 400; easing.type: Easing.OutCubic } }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                                Item { Layout.fillHeight: true }
-                                            }
-                                        }
-                                    }
-
-                                    // calendar (moved here from its own tab)
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        Layout.fillHeight: true
-                                    spacing: 12
-
-                                    HubCard {
-                                        theme: root
-                                        Layout.fillWidth: true
-                                        Layout.fillHeight: true
-
-                                        ColumnLayout {
-                                            anchors.fill: parent
-                                            anchors.margins: 16
-                                            spacing: 8
-
-                                            RowLayout {
-                                                Layout.fillWidth: true
-                                                Text {
-                                                    Layout.fillWidth: true
-                                                    text: panel.calInfo.title
-                                                    color: root.fg
-                                                    font.pixelSize: 17
-                                                    font.bold: true
-                                                }
-                                                IconButton { theme: root; implicitWidth: 36; implicitHeight: 30; label: "‹"; onClicked: root.calOffset -= 1 }
-                                                IconButton { theme: root; implicitWidth: 60; implicitHeight: 30; label: "Today"; onClicked: root.calOffset = 0 }
-                                                IconButton { theme: root; implicitWidth: 36; implicitHeight: 30; label: "›"; onClicked: root.calOffset += 1 }
-                                            }
-
-                                            GridLayout {
-                                                Layout.fillWidth: true
-                                                Layout.fillHeight: true
-                                                columns: 7
-                                                rowSpacing: 4
-                                                columnSpacing: 4
-
-                                                Repeater {
-                                                    model: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
-                                                    delegate: Text {
-                                                        required property string modelData
-                                                        Layout.fillWidth: true
-                                                        Layout.preferredWidth: 1      // equal columns
-                                                        horizontalAlignment: Text.AlignHCenter
-                                                        text: modelData
-                                                        color: root.muted
-                                                        font.pixelSize: 11
-                                                        font.bold: true
-                                                    }
-                                                }
-
-                                                Repeater {
-                                                    model: panel.calInfo.days
-                                                    delegate: Item {
-                                                        id: cday
-                                                        required property var modelData
-                                                        Layout.fillWidth: true
-                                                        Layout.fillHeight: true
-                                                        Layout.preferredWidth: 1      // equal columns
-                                                        Layout.preferredHeight: 1     // equal rows
-
-                                                        HoverHandler { id: cdayHover }
-
-                                                        // round highlight for today (and a soft one on hover)
-                                                        Rectangle {
-                                                            anchors.centerIn: parent
-                                                            width: Math.min(parent.width, parent.height, 38)
-                                                            height: width
-                                                            radius: width / 2
-                                                            color: cday.modelData.today ? root.accent : (cdayHover.hovered ? root.overlay : "transparent")
-                                                            Behavior on color { ColorAnimation { duration: root.animMs } }
-                                                        }
-
-                                                        Text {
-                                                            anchors.centerIn: parent
-                                                            text: cday.modelData.n
-                                                            color: cday.modelData.today ? root.bg : (cday.modelData.inMonth ? root.fg : root.muted)
-                                                            opacity: cday.modelData.inMonth ? 1 : 0.45
-                                                            font.pixelSize: 13
-                                                            font.bold: cday.modelData.today
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    ColumnLayout {
-                                        Layout.preferredWidth: 230
-                                        Layout.maximumWidth: 230
-                                        Layout.fillWidth: false
-                                        Layout.fillHeight: true
-                                        spacing: 12
-
-                                        HubCard {
-                                            theme: root
-                                            Layout.fillWidth: true
-                                            Layout.preferredHeight: 170
-
-                                            Column {
-                                                anchors.centerIn: parent
-                                                spacing: 2
-                                                Text {
-                                                    anchors.horizontalCenter: parent.horizontalCenter
-                                                    text: Qt.formatDateTime(clock.date, "dddd")
-                                                    color: root.accent
                                                     font.pixelSize: 14
-                                                    font.bold: true
-                                                }
-                                                Text {
-                                                    anchors.horizontalCenter: parent.horizontalCenter
-                                                    text: Qt.formatDateTime(clock.date, "d")
-                                                    color: root.fg
-                                                    font.pixelSize: 64
-                                                    font.bold: true
-                                                }
-                                                Text {
-                                                    anchors.horizontalCenter: parent.horizontalCenter
-                                                    text: Qt.formatDateTime(clock.date, "MMMM yyyy")
-                                                    color: root.muted
-                                                    font.pixelSize: 12
                                                 }
                                             }
                                         }
 
-                                        HubCard {
-                                            theme: root
-                                            Layout.fillWidth: true
-                                            Layout.fillHeight: true
+                                        // ===== 2: Apps =====
+                                        ColumnLayout {
+                                            spacing: 10
 
-                                            ColumnLayout {
-                                                anchors.fill: parent
-                                                anchors.margins: 16
-                                                spacing: 4
-
-                                                Text {
-                                                    text: root.weatherName
-                                                    color: root.muted
-                                                    font.pixelSize: 11
-                                                }
-                                                RowLayout {
-                                                    spacing: 10
-                                                    Text {
-                                                        text: root.wxNow ? root.wxNow.icon : "☁"
-                                                        color: root.accent
-                                                        font.pixelSize: 34
-                                                    }
-                                                    Text {
-                                                        text: root.wxNow ? root.wxNow.temp + "°" : "--"
-                                                        color: root.fg
-                                                        font.pixelSize: 32
-                                                        font.bold: true
-                                                    }
-                                                }
-                                                Text {
-                                                    Layout.fillWidth: true
-                                                    text: root.wxNow ? root.wxNow.desc + "  ·  H " + root.wxNow.hi + "°  L " + root.wxNow.lo + "°" : root.wxStatus
-                                                    color: root.muted
-                                                    font.pixelSize: 12
-                                                    elide: Text.ElideRight
-                                                }
-                                                Item { Layout.fillHeight: true }
-                                                BarButton {
-                                                    theme: root
-                                                    Layout.fillWidth: true
-                                                    icon: ""
-                                                    label: "Full forecast"
-                                                    onClicked: mouse => { root.hubOpen = false; root.weatherOpen = true; }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                }
-
-                                // ===== 1: Media =====
-                                HubCard {
-                                    theme: root
-                                    clip: true
-
-                                    NowPlaying {
-                                        theme: root
-                                        player: root.player
-                                        visible: root.player !== null
-                                        artSize: 360
-                                        wide: true
-                                        backdropMargin: 40
-                                        anchors.centerIn: parent
-                                    }
-
-                                    Column {
-                                        anchors.centerIn: parent
-                                        visible: root.player === null
-                                        spacing: 8
-                                        Text {
-                                            anchors.horizontalCenter: parent.horizontalCenter
-                                            text: "\uf001"
-                                            color: root.muted
-                                            font.family: root.iconFont
-                                            font.pixelSize: 44
-                                        }
-                                        Text {
-                                            anchors.horizontalCenter: parent.horizontalCenter
-                                            text: "Nothing playing right now"
-                                            color: root.muted
-                                            font.pixelSize: 14
-                                        }
-                                    }
-                                }
-
-                                // ===== 2: Apps =====
-                                ColumnLayout {
-                                    spacing: 10
-
-                                    Text {
-                                        text: "Pinned"
-                                        color: root.fg
-                                        font.pixelSize: 14
-                                        font.bold: true
-                                    }
-                                    Flow {
-                                        Layout.fillWidth: true
-                                        spacing: 6
-                                        Repeater {
-                                            model: panel.hubHere && root.hubTab === 2 ? root.appsForTab(3, "") : []
-                                            delegate: AppTile {
-                                                required property var modelData
-                                                theme: root
-                                                entry: modelData
-                                                onLaunched: { root.hubOpen = false; root.launchApp(modelData); }
-                                            }
-                                        }
-                                    }
-
-                                    Text {
-                                        text: "Recent"
-                                        color: root.fg
-                                        font.pixelSize: 14
-                                        font.bold: true
-                                    }
-                                    Flow {
-                                        Layout.fillWidth: true
-                                        spacing: 6
-                                        Repeater {
-                                            model: panel.hubHere && root.hubTab === 2 ? root.appsForTab(1, "").slice(0, 8) : []
-                                            delegate: AppTile {
-                                                required property var modelData
-                                                theme: root
-                                                entry: modelData
-                                                onLaunched: { root.hubOpen = false; root.launchApp(modelData); }
-                                            }
-                                        }
-                                    }
-
-                                    Item { Layout.fillHeight: true }
-
-                                    BarButton {
-                                        theme: root
-                                        Layout.alignment: Qt.AlignHCenter
-                                        icon: ""
-                                        label: "All apps"
-                                        onClicked: mouse => { root.hubOpen = false; root.launcherOpen = true; }
-                                    }
-                                }
-
-                                // ===== 3: Calendar =====
-                                Item {}   // (the calendar now lives on Home)
-
-                                // ===== 4: Alerts =====
-                                ColumnLayout {
-                                    spacing: 10
-
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        Text {
-                                            Layout.fillWidth: true
-                                            text: notifServer.trackedNotifications.values.length > 0
-                                                ? notifServer.trackedNotifications.values.length + " notifications" : "Notifications"
-                                            color: root.fg
-                                            font.pixelSize: 15
-                                            font.bold: true
-                                        }
-                                        BarButton {
-                                            theme: root
-                                            icon: ""
-                                            label: root.dnd ? "Do not disturb: on" : "Do not disturb: off"
-                                            active: root.dnd
-                                            onClicked: mouse => { root.dnd = !root.dnd; }
-                                        }
-                                        BarButton {
-                                            theme: root
-                                            icon: ""
-                                            label: "Clear all"
-                                            onClicked: mouse => root.clearNotifications()
-                                        }
-                                    }
-
-                                    Item {
-                                        Layout.fillWidth: true
-                                        Layout.fillHeight: true
-
-                                        ListView {
-                                            id: hubNotifs
-                                            anchors.fill: parent
-                                            clip: true
-                                            spacing: 8
-                                            model: notifServer.trackedNotifications
-
-                                            delegate: HubCard {
-                                                id: hn
-                                                required property var modelData
-                                                theme: root
-                                                width: hubNotifs.width
-                                                height: hnCol.implicitHeight + 24
-                                                border.color: hn.modelData.urgency === NotificationUrgency.Critical ? root.danger : root.glassEdge
-                                                color: hnOpen.containsMouse ? root.overlay : root.surface
-
-                                                // click anywhere on it: open the app it came from
-                                                MouseArea {
-                                                    id: hnOpen
-                                                    anchors.fill: parent
-                                                    hoverEnabled: true
-                                                    cursorShape: Qt.PointingHandCursor
-                                                    onClicked: root.openNotification(hn.modelData)
-                                                }
-
-                                                ColumnLayout {
-                                                    id: hnCol
-                                                    anchors.fill: parent
-                                                    anchors.margins: 12
-                                                    spacing: 3
-
-                                                    RowLayout {
-                                                        Layout.fillWidth: true
-                                                        Text {
-                                                            Layout.fillWidth: true
-                                                            text: hn.modelData.appName
-                                                            color: root.accent
-                                                            font.pixelSize: 11
-                                                            font.bold: true
-                                                            elide: Text.ElideRight
-                                                        }
-                                                        Text {
-                                                            text: ""
-                                                            color: root.muted
-                                                            font.family: root.iconFont
-                                                            font.pixelSize: 12
-                                                            MouseArea {
-                                                                anchors.fill: parent
-                                                                anchors.margins: -6
-                                                                cursorShape: Qt.PointingHandCursor
-                                                                onClicked: hn.modelData.dismiss()
-                                                            }
-                                                        }
-                                                    }
-                                                    Text {
-                                                        Layout.fillWidth: true
-                                                        text: hn.modelData.summary
-                                                        color: root.fg
-                                                        font.pixelSize: 13
-                                                        font.bold: true
-                                                        wrapMode: Text.Wrap
-                                                    }
-                                                    Text {
-                                                        Layout.fillWidth: true
-                                                        visible: text !== ""
-                                                        text: hn.modelData.body
-                                                        color: root.muted
-                                                        font.pixelSize: 12
-                                                        wrapMode: Text.Wrap
-                                                        maximumLineCount: 3
-                                                        elide: Text.ElideRight
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        Column {
-                                            anchors.centerIn: parent
-                                            visible: hubNotifs.count === 0
-                                            spacing: 8
                                             Text {
-                                                anchors.horizontalCenter: parent.horizontalCenter
-                                                text: ""
-                                                color: root.muted
-                                                font.family: root.iconFont
-                                                font.pixelSize: 40
-                                            }
-                                            Text {
-                                                anchors.horizontalCenter: parent.horizontalCenter
-                                                text: "You're all caught up"
-                                                color: root.muted
+                                                text: "Pinned"
+                                                color: root.fg
                                                 font.pixelSize: 14
+                                                font.bold: true
                                             }
-                                        }
-                                    }
-                                }
-
-                                // ===== 5: System =====
-                                Flickable {
-                                    id: sysFlick
-                                    clip: true
-                                    contentWidth: width
-                                    contentHeight: sysCol.implicitHeight + 8
-                                    boundsBehavior: Flickable.StopAtBounds
-
-                                    ColumnLayout {
-                                        id: sysCol
-                                        width: sysFlick.width - 6
-                                        spacing: 14
-
-                                        // ---- Quick settings ----
-                                        RowLayout {
-                                            Layout.fillWidth: true
-                                            Layout.topMargin: 6
-                                            spacing: 8
-                                            Text { text: "\uf0ad"; color: root.accent; font.family: root.iconFont; font.pixelSize: 13 }
-                                            Text { text: "Quick settings"; color: root.fg; font.pixelSize: 14; font.bold: true }
-                                            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.glassEdge; opacity: 0.6 }
-                                        }
-
-                                        GridLayout {
-                                            Layout.fillWidth: true
-                                            columns: 4
-                                            rowSpacing: 14
-                                            columnSpacing: 14
-
-                                            Repeater {
-                                                model: [
-                                                    {
-                                                        icon: "", title: "Wi-Fi",
-                                                        sub: !root.wifiOn ? "Off" : (root.netKind === "wifi" ? root.netName : "On"),
-                                                        active: root.wifiOn, ok: true,
-                                                        run: () => root.run("nmcli radio wifi " + (root.wifiOn ? "off" : "on"))
-                                                    },
-                                                    {
-                                                        icon: "", title: "Bluetooth",
-                                                        sub: root.btState === "none" ? "Not available" : (root.btState === "yes" ? (root.btDevices.some(d => d.connected) ? root.btDevices.filter(d => d.connected)[0].name : "On · tap for devices") : "Off · tap for devices"),
-                                                        active: root.btState === "yes", ok: root.btState !== "none",
-                                                        run: () => { root.hubTab = 10; root.btRefresh(); }
-                                                    },
-                                                    {
-                                                        icon: "", title: "Do not disturb",
-                                                        sub: root.dnd ? "On" : "Off",
-                                                        active: root.dnd, ok: true,
-                                                        run: () => { root.dnd = !root.dnd; }
-                                                    },
-                                                    {
-                                                        icon: "", title: "Night light",
-                                                        sub: root.nightState === "none" ? "Needs hyprsunset" : (root.nightState === "on" ? "On" : "Off"),
-                                                        active: root.nightState === "on", ok: root.nightState !== "none",
-                                                        run: () => root.run(root.nightState === "on" ? "pkill -x hyprsunset" : "hyprsunset -t 4000 >/dev/null 2>&1")
-                                                    },
-                                                    {
-                                                        icon: "", title: "Screenshot", sub: "Area · more in Capture",
-                                                        active: false, ok: true,
-                                                        run: () => root.takeScreenshot()
-                                                    },
-                                                    {
-                                                        icon: "", title: "Wallpaper", sub: "Choose one",
-                                                        active: false, ok: true,
-                                                        run: () => { root.hubOpen = false; root.wallPickerOpen = true; }
-                                                    },
-                                                    {
-                                                        icon: "\uf11b", title: "Game mode",
-                                                        sub: root.gameMode ? "On · max FPS" : "Off",
-                                                        active: root.gameMode, ok: true,
-                                                        run: () => root.setGameMode(!root.gameMode)
-                                                    },
-                                                    {
-                                                        icon: "\uf019", title: "Updates",
-                                                        sub: root.updRunning ? "Updating…" : root.updChecking ? "Checking…"
-                                                            : !root.updAuto ? (root.updTotal > 0 ? root.updTotal + " waiting · tap to set up auto" : "Tap to set up auto updates")
-                                                            : root.updState === "restart" ? "Restart to finish"
-                                                            : root.updState === "failed" ? "Needs you · tap to fix"
-                                                            : (root.updSystem + root.updFlatpak) > 0 ? (root.updSystem + root.updFlatpak) + " waiting · tap to install"
-                                                            : root.updAur > 0 ? root.updAur + " AUR · tap to install"
-                                                            : "Auto · " + (root.updStateAt ? "updated " + root.updAgo(root.updStateAt) : "daily"),
-                                                        active: root.updRunning || root.updTotal > 0, ok: true,
-                                                        run: () => {
-                                                            if (!root.updAuto || root.updTotal > 0 || root.updState === "failed") { root.hubOpen = false; root.runUpdates(); }
-                                                            else root.checkUpdates();
-                                                        }
-                                                    }
-
-                                                ]
-
-                                                delegate: HubToggle {
-                                                    required property var modelData
-                                                    theme: root
-                                                    item: modelData
-                                                    Layout.fillWidth: true
-                                                    Layout.preferredHeight: 72
-                                                }
-                                            }
-                                        }
-
-                                        // ---- Sound ----
-                                        RowLayout {
-                                            Layout.fillWidth: true
-                                            Layout.topMargin: 6
-                                            spacing: 8
-                                            Text { text: "\uf028"; color: root.accent; font.family: root.iconFont; font.pixelSize: 13 }
-                                            Text { text: "Sound"; color: root.fg; font.pixelSize: 14; font.bold: true }
-                                            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.glassEdge; opacity: 0.6 }
-                                        }
-
-                                        HubCard {
-                                            theme: root
-                                            Layout.fillWidth: true
-                                            Layout.preferredHeight: 150 + Math.max(1, root.audioStreams.length) * 36
-
-                                            ColumnLayout {
-                                                anchors.fill: parent
-                                                anchors.margins: 16
-                                                spacing: 10
-
-                                                AudioRow { theme: root; Layout.fillWidth: true; input: false }
-                                                AudioRow { theme: root; Layout.fillWidth: true; input: true }
-
-                                                Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.overlay }
-
-                                                Text {
-                                                    text: root.audioStreams.length > 0 ? "Apps" : "No apps are playing audio"
-                                                    color: root.muted
-                                                    font.pixelSize: 11
-                                                }
-
-                                                ListView {
-                                                    id: hubStreams
-                                                    Layout.fillWidth: true
-                                                    Layout.preferredHeight: contentHeight
-                                                    interactive: false
-                                                    clip: true
-                                                    spacing: 8
-                                                    model: root.audioStreams
-
-                                                    delegate: RowLayout {
-                                                        id: hs
-                                                        required property var modelData
-                                                        width: hubStreams.width
-                                                        spacing: 10
-                                                        Text {
-                                                            Layout.preferredWidth: 110
-                                                            text: (hs.modelData.properties && hs.modelData.properties["application.name"])
-                                                                || hs.modelData.description || hs.modelData.name
-                                                            color: root.fg
-                                                            font.pixelSize: 12
-                                                            elide: Text.ElideRight
-                                                        }
-                                                        ValueBar {
-                                                            theme: root
-                                                            Layout.fillWidth: true
-                                                            value: hs.modelData.audio ? hs.modelData.audio.volume : 0
-                                                            onMoved: v => {
-                                                                if (hs.modelData.audio) hs.modelData.audio.volume = v;
-                                                            }
-                                                        }
-                                                        Item { Layout.preferredWidth: 70 }
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        // ---- Preferences ----
-                                        RowLayout {
-                                            Layout.fillWidth: true
-                                            Layout.topMargin: 6
-                                            spacing: 8
-                                            Text { text: "\uf013"; color: root.accent; font.family: root.iconFont; font.pixelSize: 13 }
-                                            Text { text: "Preferences"; color: root.fg; font.pixelSize: 14; font.bold: true }
-                                            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.glassEdge; opacity: 0.6 }
-                                        }
-
-                                        GridLayout {
-                                            Layout.fillWidth: true
-                                            columns: 4
-                                            rowSpacing: 14
-                                            columnSpacing: 14
-                                            Repeater {
-                                                model: [
-                                                        {
-                                                        icon: "", title: "Theme",
-                                                        sub: root.themeLabel(),
-                                                        active: false, ok: true,
-                                                        run: () => { root.hubTab = 8; }
-                                                        },
-                                                        {
-                                                        icon: "", title: "Auto-hide bars",
-                                                        sub: root.autoHideOn ? "On" : "Off",
-                                                        active: root.autoHideOn, ok: true,
-                                                        run: () => root.cycleAutoHide()
-                                                        },
-                                                        {
-                                                        icon: "\uf0e2", title: "Reopen apps",
-                                                        sub: pins.adapter.restoreSession ? "On · after restart" : "Off",
-                                                        active: pins.adapter.restoreSession, ok: true,
-                                                        run: () => { pins.adapter.restoreSession = !pins.adapter.restoreSession; }
-                                                        },
-                                                        {
-                                                        icon: "\uf0d0", title: "Moving effects",
-                                                        sub: pins.adapter.ambientFx ? "On · uses more GPU" : "Off · saves GPU",
-                                                        active: pins.adapter.ambientFx, ok: true,
-                                                        run: () => { pins.adapter.ambientFx = !pins.adapter.ambientFx; }
-                                                        }
-                                                ]
-                                                delegate: HubToggle {
-                                                    required property var modelData
-                                                    theme: root
-                                                    item: modelData
-                                                    Layout.fillWidth: true
-                                                    Layout.preferredHeight: 72
-                                                }
-                                            }
-                                        }
-
-                                        // ---- Power ----
-                                        RowLayout {
-                                            Layout.fillWidth: true
-                                            Layout.topMargin: 6
-                                            spacing: 8
-                                            Text { text: "\uf011"; color: root.accent; font.family: root.iconFont; font.pixelSize: 13 }
-                                            Text { text: "Power"; color: root.fg; font.pixelSize: 14; font.bold: true }
-                                            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.glassEdge; opacity: 0.6 }
-                                        }
-
-                                        RowLayout {
-                                            Layout.fillWidth: true
-                                            spacing: 8
-                                            BarButton { theme: root; Layout.fillWidth: true; icon: ""; label: "Lock"
-                                                onClicked: mouse => { root.hubOpen = false; Quickshell.execDetached(["sh", "-c", "hyprlock || loginctl lock-session"]); } }
-                                            BarButton { theme: root; Layout.fillWidth: true; icon: ""; label: "Sleep"
-                                                onClicked: mouse => { root.hubOpen = false; Quickshell.execDetached(["systemctl", "suspend"]); } }
-                                            BarButton { theme: root; Layout.fillWidth: true; icon: ""; label: "Reload Hyprland"
-                                                onClicked: mouse => { root.hubOpen = false; Quickshell.execDetached(["hyprctl", "reload"]); } }
-                                            BarButton { theme: root; Layout.fillWidth: true; icon: ""; label: "Restart bar"
-                                                onClicked: mouse => Quickshell.reload(true) }
-                                            BarButton { theme: root; Layout.fillWidth: true; icon: ""; label: "Config"
-                                                onClicked: mouse => { root.hubOpen = false; Quickshell.execDetached(["xdg-open", Quickshell.env("HOME") + "/.config"]); } }
-                                        }
-                                        RowLayout {
-                                            Layout.fillWidth: true
-                                            spacing: 8
-                                            ConfirmButton {
-                                                theme: root
-                                                Layout.fillWidth: true
-                                                label: "Log out"
-                                                onConfirmed: root.powerAction("logout")
-                                            }
-                                            ConfirmButton {
-                                                theme: root
-                                                Layout.fillWidth: true
-                                                label: "Reboot"
-                                                onConfirmed: root.powerAction("reboot")
-                                            }
-                                            ConfirmButton {
-                                                theme: root
-                                                Layout.fillWidth: true
-                                                label: "Shut down"
-                                                onConfirmed: root.powerAction("poweroff")
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // ===== 6: Capture =====
-                                ColumnLayout {
-                                    spacing: 12
-
-                                    // ---- Which screen to capture ----
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        spacing: 8
-                                        Text { text: "\uf108"; color: root.accent; font.family: root.iconFont; font.pixelSize: 13 }
-                                        Text { text: "Screen"; color: root.fg; font.pixelSize: 13; font.bold: true }
-                                        Item { implicitWidth: 4 }
-                                        SportChip {
-                                            theme: root
-                                            icon: "\uf245"
-                                            label: "Where my mouse is"
-                                            active: root.capMon === ""
-                                            onClicked: pins.adapter.capMonitor = ""
-                                        }
-                                        Repeater {
-                                            model: Hyprland.monitors
-                                            delegate: SportChip {
-                                                required property var modelData
-                                                required property int index
-                                                theme: root
-                                                label: (index + 1) + " · " + modelData.name + "  " + modelData.width + "×" + modelData.height
-                                                active: root.capMon === modelData.name
-                                                onClicked: pins.adapter.capMonitor = modelData.name
-                                            }
-                                        }
-                                        Item { Layout.fillWidth: true }
-                                    }
-
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        Layout.fillHeight: true
-                                        spacing: 12
-
-                                        // ---- Screenshot ----
-                                        HubCard {
-                                            theme: root
-                                            Layout.fillWidth: true
-                                            Layout.fillHeight: true
-                                            Layout.preferredWidth: 1
-
-                                            ColumnLayout {
-                                                anchors.fill: parent
-                                                anchors.margins: 16
-                                                spacing: 12
-
-                                                RowLayout {
-                                                    spacing: 8
-                                                    Text { text: "\uf030"; color: root.accent; font.family: root.iconFont; font.pixelSize: 15 }
-                                                    Text { text: "Screenshot"; color: root.fg; font.pixelSize: 15; font.bold: true }
-                                                }
-
-                                                GridLayout {
-                                                    Layout.fillWidth: true
-                                                    columns: 2
-                                                    rowSpacing: 10
-                                                    columnSpacing: 10
-
-                                                    Repeater {
-                                                        model: [
-                                                            { icon: "\uf125", title: "Area", sub: "Drag a box", mode: "area" },
-                                                            { icon: "\uf2d0", title: "Window", sub: "Click a window", mode: "window" },
-                                                            { icon: "\uf108", title: "Screen", sub: root.capMon === "" ? "The one your mouse is on" : root.monLabel(root.capMonUsed), mode: "screen" },
-                                                            { icon: "\uf26c", title: "All screens", sub: "Every monitor", mode: "all" }
-                                                        ]
-                                                        delegate: Rectangle {
-                                                            id: cap
-                                                            required property var modelData
-                                                            Layout.fillWidth: true
-                                                            Layout.preferredWidth: 1
-                                                            Layout.preferredHeight: 74
-                                                            radius: 18
-                                                            color: capMouse.containsMouse ? root.overlay : root.bg
-                                                            border.width: 1
-                                                            border.color: root.glassEdge
-                                                            scale: capMouse.pressed ? 0.95 : (capMouse.containsMouse ? 1.03 : 1)
-                                                            Behavior on color { ColorAnimation { duration: root.animMs } }
-                                                            Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
-
-                                                            RowLayout {
-                                                                anchors.fill: parent
-                                                                anchors.margins: 12
-                                                                spacing: 10
-                                                                Rectangle {
-                                                                    Layout.preferredWidth: 40
-                                                                    Layout.preferredHeight: 40
-                                                                    radius: 20
-                                                                    color: root.overlay
-                                                                    Text { anchors.centerIn: parent; text: cap.modelData.icon; color: root.accent; font.family: root.iconFont; font.pixelSize: 16 }
-                                                                }
-                                                                ColumnLayout {
-                                                                    Layout.fillWidth: true
-                                                                    spacing: 1
-                                                                    Text { Layout.fillWidth: true; text: cap.modelData.title; color: root.fg; font.pixelSize: 13; font.bold: true; elide: Text.ElideRight }
-                                                                    Text { Layout.fillWidth: true; text: cap.modelData.sub; color: root.muted; font.pixelSize: 11; elide: Text.ElideRight }
-                                                                }
-                                                            }
-                                                            MouseArea {
-                                                                id: capMouse
-                                                                anchors.fill: parent
-                                                                hoverEnabled: true
-                                                                cursorShape: Qt.PointingHandCursor
-                                                                onClicked: root.shot(cap.modelData.mode)
-                                                            }
-                                                        }
-                                                    }
-                                                }
-
-                                                // delay
-                                                RowLayout {
-                                                    Layout.fillWidth: true
-                                                    spacing: 8
-                                                    Text { text: "Delay"; color: root.muted; font.pixelSize: 12 }
-                                                    Item { Layout.fillWidth: true }
-                                                    Repeater {
-                                                        model: [0, 3, 5, 10]
-                                                        delegate: Rectangle {
-                                                            id: dly
-                                                            required property int modelData
-                                                            readonly property bool on: root.shotDelay === dly.modelData
-                                                            width: 52
-                                                            height: 30
-                                                            radius: 10
-                                                            color: dly.on ? root.accent : (dlyMouse.containsMouse ? root.overlay : root.bg)
-                                                            border.width: 1
-                                                            border.color: root.glassEdge
-                                                            Behavior on color { ColorAnimation { duration: root.animMs } }
-                                                            Text { anchors.centerIn: parent; text: dly.modelData === 0 ? "Now" : dly.modelData + "s"; color: dly.on ? root.bg : root.fg; font.pixelSize: 12; font.bold: dly.on }
-                                                            MouseArea { id: dlyMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.shotDelay = dly.modelData }
-                                                        }
-                                                    }
-                                                }
-                                                Item { Layout.fillHeight: true }
-                                            }
-                                        }
-
-                                        // ---- Screen recording ----
-                                        HubCard {
-                                            theme: root
-                                            Layout.fillWidth: true
-                                            Layout.fillHeight: true
-                                            Layout.preferredWidth: 1
-
-                                            ColumnLayout {
-                                                anchors.fill: parent
-                                                anchors.margins: 16
-                                                spacing: 12
-
-                                                RowLayout {
-                                                    spacing: 8
-                                                    Text { text: "\uf03d"; color: root.recording ? root.danger : root.accent; font.family: root.iconFont; font.pixelSize: 15 }
-                                                    Text { text: "Screen recording"; color: root.fg; font.pixelSize: 15; font.bold: true }
-                                                }
-
-                                                // not installed
-                                                ColumnLayout {
-                                                    visible: !root.canRecord
-                                                    Layout.fillWidth: true
-                                                    Layout.fillHeight: true
-                                                    spacing: 6
-                                                    Item { Layout.fillHeight: true }
-                                                    Text {
-                                                        Layout.fillWidth: true
-                                                        horizontalAlignment: Text.AlignHCenter
-                                                        wrapMode: Text.Wrap
-                                                        text: "Recording needs wf-recorder.\nInstall it in a terminal with:"
-                                                        color: root.muted
-                                                        font.pixelSize: 13
-                                                    }
-                                                    Text {
-                                                        Layout.alignment: Qt.AlignHCenter
-                                                        text: "sudo pacman -S wf-recorder"
-                                                        color: root.accent
-                                                        font.pixelSize: 13
-                                                        font.family: "monospace"
-                                                    }
-                                                    Item { Layout.fillHeight: true }
-                                                }
-
-                                                // recording now
-                                                ColumnLayout {
-                                                    visible: root.canRecord && root.recording
-                                                    Layout.fillWidth: true
-                                                    Layout.fillHeight: true
-                                                    spacing: 10
-                                                    Item { Layout.fillHeight: true }
-                                                    Rectangle {
-                                                        Layout.alignment: Qt.AlignHCenter
-                                                        width: 22
-                                                        height: 22
-                                                        radius: 11
-                                                        color: root.danger
-                                                        SequentialAnimation on opacity {
-                                                            running: root.recording
-                                                            loops: Animation.Infinite
-                                                            NumberAnimation { to: 0.3; duration: 700 }
-                                                            NumberAnimation { to: 1; duration: 700 }
-                                                        }
-                                                    }
-                                                    Text {
-                                                        Layout.alignment: Qt.AlignHCenter
-                                                        text: root.fmt(root.recSeconds)
-                                                        color: root.fg
-                                                        font.pixelSize: 34
-                                                        font.bold: true
-                                                    }
-                                                    BarButton {
-                                                        theme: root
-                                                        Layout.alignment: Qt.AlignHCenter
-                                                        icon: "\uf04d"
-                                                        label: "Stop recording"
-                                                        onClicked: mouse => root.stopRecording()
-                                                    }
-                                                    Item { Layout.fillHeight: true }
-                                                }
-
-                                                // ready to record
-                                                ColumnLayout {
-                                                    visible: root.canRecord && !root.recording
-                                                    Layout.fillWidth: true
-                                                    Layout.fillHeight: true
-                                                    spacing: 10
-
-                                                    Repeater {
-                                                        model: [
-                                                            { icon: "\uf125", title: "Record an area", sub: "Drag a box, then it starts", mode: "area" },
-                                                            { icon: "\uf108", title: "Record a screen", sub: root.capMon === "" ? "The one your mouse is on" : root.monLabel(root.capMonUsed), mode: "screen" }
-                                                        ]
-                                                        delegate: Rectangle {
-                                                            id: rcap
-                                                            required property var modelData
-                                                            Layout.fillWidth: true
-                                                            Layout.preferredHeight: 64
-                                                            radius: 18
-                                                            color: rcapMouse.containsMouse ? root.overlay : root.bg
-                                                            border.width: 1
-                                                            border.color: root.glassEdge
-                                                            scale: rcapMouse.pressed ? 0.95 : (rcapMouse.containsMouse ? 1.02 : 1)
-                                                            Behavior on color { ColorAnimation { duration: root.animMs } }
-                                                            Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
-
-                                                            RowLayout {
-                                                                anchors.fill: parent
-                                                                anchors.margins: 12
-                                                                spacing: 10
-                                                                Rectangle {
-                                                                    Layout.preferredWidth: 40
-                                                                    Layout.preferredHeight: 40
-                                                                    radius: 20
-                                                                    color: Qt.rgba(root.danger.r, root.danger.g, root.danger.b, 0.18)
-                                                                    Text { anchors.centerIn: parent; text: rcap.modelData.icon; color: root.danger; font.family: root.iconFont; font.pixelSize: 16 }
-                                                                }
-                                                                ColumnLayout {
-                                                                    Layout.fillWidth: true
-                                                                    spacing: 1
-                                                                    Text { Layout.fillWidth: true; text: rcap.modelData.title; color: root.fg; font.pixelSize: 13; font.bold: true; elide: Text.ElideRight }
-                                                                    Text { Layout.fillWidth: true; text: rcap.modelData.sub; color: root.muted; font.pixelSize: 11; elide: Text.ElideRight }
-                                                                }
-                                                            }
-                                                            MouseArea {
-                                                                id: rcapMouse
-                                                                anchors.fill: parent
-                                                                hoverEnabled: true
-                                                                cursorShape: Qt.PointingHandCursor
-                                                                onClicked: root.record(rcap.modelData.mode)
-                                                            }
-                                                        }
-                                                    }
-
-                                                    // sound
-                                                    RowLayout {
-                                                        Layout.fillWidth: true
-                                                        spacing: 8
-                                                        Text { text: "Sound"; color: root.muted; font.pixelSize: 12 }
-                                                        Item { Layout.fillWidth: true }
-                                                        Repeater {
-                                                            model: [
-                                                                { key: "none", name: "None" },
-                                                                { key: "system", name: "Computer" },
-                                                                { key: "mic", name: "Mic" },
-                                                                { key: "both", name: "Both" }
-                                                            ]
-                                                            delegate: Rectangle {
-                                                                id: aud
-                                                                required property var modelData
-                                                                readonly property bool on: root.recAudio === aud.modelData.key
-                                                                width: audText.implicitWidth + 22
-                                                                height: 30
-                                                                radius: 10
-                                                                color: aud.on ? root.accent : (audMouse.containsMouse ? root.overlay : root.bg)
-                                                                border.width: 1
-                                                                border.color: root.glassEdge
-                                                                Behavior on color { ColorAnimation { duration: root.animMs } }
-                                                                Text { id: audText; anchors.centerIn: parent; text: aud.modelData.name; color: aud.on ? root.bg : root.fg; font.pixelSize: 12; font.bold: aud.on }
-                                                                MouseArea { id: audMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.recAudio = aud.modelData.key }
-                                                            }
-                                                        }
-                                                        // opens the Microphone card (level, test, volume) below
-                                                        Rectangle {
-                                                            width: 30
-                                                            height: 30
-                                                            radius: 15
-                                                            color: root.micPanel ? root.accent : (micBtnMouse.containsMouse ? root.overlay : root.bg)
-                                                            border.width: 1
-                                                            border.color: root.glassEdge
-                                                            Behavior on color { ColorAnimation { duration: root.animMs } }
-                                                            Text { anchors.centerIn: parent; text: "\uf130"; font.family: root.iconFont; font.pixelSize: 13; color: root.micPanel ? root.bg : root.fg }
-                                                            MouseArea { id: micBtnMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.micPanel = !root.micPanel }
-                                                        }
-                                                    }
-                                                    Item { Layout.fillHeight: true }
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    // ---- Microphone: level meter, test, volume (opened from the mic button by Sound) ----
-                                    HubCard {
-                                        theme: root
-                                        visible: root.micPanel
-                                        Layout.fillWidth: true
-                                        Layout.preferredHeight: 168
-
-                                        ColumnLayout {
-                                            anchors.fill: parent
-                                            anchors.margins: 14
-                                            spacing: 10
-
-                                            RowLayout {
-                                                Layout.fillWidth: true
-                                                spacing: 10
-                                                Text { text: ""; color: root.accent; font.family: root.iconFont; font.pixelSize: 14 }
-                                                Text { text: "Microphone"; color: root.fg; font.pixelSize: 13; font.bold: true }
-                                                Text {
-                                                    Layout.maximumWidth: 150
-                                                    text: root.source ? (root.source.description || root.source.name) : "No microphone found"
-                                                    color: root.muted
-                                                    font.pixelSize: 11
-                                                    elide: Text.ElideRight
-                                                }
-                                                // live level: talk and watch it move
-                                                Rectangle {
-                                                    Layout.fillWidth: true
-                                                    implicitHeight: 12
-                                                    radius: 6
-                                                    color: root.bg
-                                                    border.width: 1
-                                                    border.color: root.glassEdge
-                                                    Rectangle {
-                                                        anchors.left: parent.left
-                                                        anchors.verticalCenter: parent.verticalCenter
-                                                        anchors.leftMargin: 2
-                                                        height: parent.height - 4
-                                                        radius: height / 2
-                                                        width: Math.max(height, (parent.width - 4) * Math.min(1, root.micLevel))
-                                                        color: root.micLevel > 0.9 ? root.danger : root.accent
-                                                        Behavior on width { NumberAnimation { duration: 70 } }
-                                                    }
-                                                    // a mark at the level a good, clear voice reaches
-                                                    Rectangle {
-                                                        x: (parent.width - 4) * 0.5 + 2
-                                                        width: 1
-                                                        height: parent.height
-                                                        color: root.muted
-                                                        opacity: 0.6
-                                                    }
-                                                }
-                                                BarButton {
-                                                    theme: root
-                                                    icon: root.micTest === "" ? "" : (root.micTest === "rec" ? "" : "")
-                                                    label: root.micTest === "" ? "Test" : (root.micTest === "rec" ? "Talk now…" : "Playing")
-                                                    onClicked: mouse => root.runMicTest()
-                                                }
-                                            }
-
-                                            RowLayout {
-                                                Layout.fillWidth: true
-                                                spacing: 16
-
-                                                ColumnLayout {
-                                                    Layout.fillWidth: true
-                                                    Layout.preferredWidth: 1
-                                                    spacing: 6
-                                                    RowLayout {
-                                                        Layout.fillWidth: true
-                                                        Text { Layout.fillWidth: true; text: "Mic volume (everywhere)"; color: root.fg; font.pixelSize: 12 }
-                                                        Text { text: Math.round(root.micVolShown * 100) + "%"; color: root.muted; font.pixelSize: 12 }
-                                                    }
-                                                    ValueBar {
-                                                        Layout.fillWidth: true
-                                                        theme: root
-                                                        value: root.micVolShown / 2
-                                                        onMoved: v => root.setMicVolume(Math.round(v * 40) / 20)
-                                                    }
-                                                }
-                                                ColumnLayout {
-                                                    Layout.fillWidth: true
-                                                    Layout.preferredWidth: 1
-                                                    spacing: 6
-                                                    opacity: root.recAudio === "both" ? 1 : 0.5
-                                                    RowLayout {
-                                                        Layout.fillWidth: true
-                                                        Text { Layout.fillWidth: true; text: "Computer sound when using Both"; color: root.fg; font.pixelSize: 12; elide: Text.ElideRight }
-                                                        Text { text: root.recSysLevel + "%"; color: root.muted; font.pixelSize: 12 }
-                                                    }
-                                                    ValueBar {
-                                                        Layout.fillWidth: true
-                                                        theme: root
-                                                        value: root.recSysLevel / 100
-                                                        onMoved: v => pins.adapter.recSysLevel = Math.max(5, Math.round(v * 20) * 5)
-                                                    }
-                                                }
-                                            }
-
-                                            // ---- background noise removal ----
-                                            RowLayout {
-                                                Layout.fillWidth: true
-                                                spacing: 8
-                                                HubToggle {
-                                                    theme: root
-                                                    visible: root.denoiseState !== "missing"
-                                                    Layout.preferredWidth: 250
-                                                    Layout.preferredHeight: 50
-                                                    item: ({
-                                                        icon: "\uf131",
-                                                        title: "Remove background noise",
-                                                        sub: root.denoiseState === "busy" ? "Switching…"
-                                                            : root.denoiseState === "on" ? "Fans, keys and hum filtered out" : "Off",
-                                                        active: root.denoiseState === "on" || (root.denoiseState === "busy" && pins.adapter.micDenoise),
-                                                        ok: root.denoiseState !== "busy",
-                                                        run: () => root.setDenoise(!pins.adapter.micDenoise, "")
-                                                    })
-                                                }
-                                                Repeater {
-                                                    model: [ { id: "light", name: "Light" }, { id: "normal", name: "Normal" }, { id: "strong", name: "Strong" } ]
-                                                    delegate: SportChip {
-                                                        required property var modelData
-                                                        visible: root.denoiseState !== "missing"
-                                                        theme: root
-                                                        label: modelData.name
-                                                        active: root.denoiseLevel === modelData.id
-                                                        onClicked: {
-                                                            if (pins.adapter.micDenoise) root.setDenoise(true, modelData.id);
-                                                            else pins.adapter.micDenoiseLevel = modelData.id;
-                                                        }
-                                                    }
-                                                }
-                                                // the filter isn't installed yet
-                                                Text {
-                                                    visible: root.denoiseState === "missing"
-                                                    text: "\uf131  Noise removal needs one small package:"
-                                                    font.family: root.iconFont
-                                                    color: root.muted
-                                                    font.pixelSize: 12
-                                                }
-                                                BarButton {
-                                                    visible: root.denoiseState === "missing"
-                                                    theme: root
-                                                    icon: "\uf0c5"
-                                                    label: "sudo pacman -S noise-suppression-for-voice"
-                                                    onClicked: mouse => Quickshell.execDetached(["wl-copy", "sudo pacman -S noise-suppression-for-voice"])
-                                                }
-                                                Item { Layout.fillWidth: true }
-                                            }
-                                        }
-                                    }
-
-                                    // ---- Recent screenshots (the Microphone card takes its place while open) ----
-                                    HubCard {
-                                        theme: root
-                                        visible: !root.micPanel
-                                        Layout.fillWidth: true
-                                        Layout.preferredHeight: 128
-
-                                        FolderListModel {
-                                            id: recentShots
-                                            folder: "file://" + Quickshell.env("HOME") + "/Pictures/Screenshots"
-                                            nameFilters: ["*.png", "*.jpg"]
-                                            showDirs: false
-                                            sortField: FolderListModel.Time
-                                        }
-
-                                        RowLayout {
-                                            anchors.fill: parent
-                                            anchors.margins: 12
-                                            spacing: 10
-
-                                            ListView {
-                                                id: shotStrip
-                                                Layout.fillWidth: true
-                                                Layout.fillHeight: true
-                                                orientation: ListView.Horizontal
-                                                spacing: 8
-                                                clip: true
-                                                model: recentShots
-                                                delegate: Rectangle {
-                                                    id: rs
-                                                    required property url fileUrl
-                                                    required property int index
-                                                    visible: rs.index < 8
-                                                    width: visible ? 170 : 0
-                                                    height: shotStrip.height
-                                                    radius: 12
-                                                    color: root.overlay
-                                                    border.width: rsMouse.containsMouse ? 2 : 0
-                                                    border.color: root.accent
-                                                    Image {
-                                                        anchors.fill: parent
-                                                        anchors.margins: 3
-                                                        source: rs.fileUrl
-                                                        asynchronous: true
-                                                        fillMode: Image.PreserveAspectCrop
-                                                        sourceSize.width: 340
-                                                    }
-                                                    MouseArea {
-                                                        id: rsMouse
-                                                        anchors.fill: parent
-                                                        hoverEnabled: true
-                                                        cursorShape: Qt.PointingHandCursor
-                                                        onClicked: { root.hubOpen = false; Quickshell.execDetached(["xdg-open", rs.fileUrl.toString()]); }
-                                                    }
-                                                }
-
-                                                Text {
-                                                    anchors.centerIn: parent
-                                                    visible: recentShots.count === 0
-                                                    text: "Your screenshots will show up here"
-                                                    color: root.muted
-                                                    font.pixelSize: 12
-                                                }
-                                            }
-
-                                            ColumnLayout {
-                                                Layout.preferredWidth: 150
-                                                Layout.maximumWidth: 150
-                                                Layout.fillWidth: false
-                                                spacing: 8
-                                                BarButton {
-                                                    theme: root
-                                                    Layout.fillWidth: true
-                                                    icon: "\uf07b"
-                                                    label: "Screenshots"
-                                                    onClicked: mouse => { root.hubOpen = false; Quickshell.execDetached(["sh", "-c", "mkdir -p \"$HOME/Pictures/Screenshots\" && xdg-open \"$HOME/Pictures/Screenshots\""]); }
-                                                }
-                                                BarButton {
-                                                    theme: root
-                                                    Layout.fillWidth: true
-                                                    icon: "\uf07b"
-                                                    label: "Recordings"
-                                                    onClicked: mouse => { root.hubOpen = false; Quickshell.execDetached(["sh", "-c", "mkdir -p \"$HOME/Videos/Recordings\" && xdg-open \"$HOME/Videos/Recordings\""]); }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // ===== 7: Sports =====
-                                ColumnLayout {
-                                    spacing: 10
-
-                                    // ---- top row: pages, favourite team, leagues, refresh ----
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        spacing: 6
-
-                                        Repeater {
-                                            model: [
-                                                { id: "games", name: "Games", icon: "" },
-                                                { id: "standings", name: "Standings", icon: "" },
-                                                { id: "teams", name: "Teams", icon: "" }
-                                            ]
-                                            delegate: SportChip {
-                                                required property var modelData
-                                                theme: root
-                                                icon: modelData.icon
-                                                label: modelData.name
-                                                active: root.sportsView === modelData.id
-                                                onClicked: root.sportsShow(modelData.id)
-                                            }
-                                        }
-
-                                        SportChip {
-                                            visible: root.sportsFavId !== ""
-                                            theme: root
-                                            icon: ""
-                                            label: root.sportsFavAbbr
-                                            active: root.sportsView === "team" && root.sportsTeam !== null && root.sportsTeam.id === root.sportsFavId
-                                            onClicked: root.sportsOpenTeam(root.sportsFavId)
-                                        }
-
-                                        Item { Layout.fillWidth: true }
-
-                                        Repeater {
-                                            model: root.sportsLeagues
-                                            delegate: SportChip {
-                                                required property var modelData
-                                                theme: root
-                                                label: modelData.name
-                                                active: root.sportsLeague === modelData.id
-                                                onClicked: root.sportsSetLeague(modelData.id)
-                                            }
-                                        }
-
-                                        SportChip {
-                                            id: sportsRefreshBtn
-                                            theme: root
-                                            icon: ""
-                                            onClicked: root.sportsRefresh()
-                                            RotationAnimation {
-                                                target: sportsRefreshBtn
-                                                running: root.sportsLoading
-                                                from: 0
-                                                to: 360
-                                                duration: 900
-                                                loops: Animation.Infinite
-                                                onStopped: sportsRefreshBtn.rotation = 0
-                                            }
-                                        }
-                                    }
-
-                                    // ---- the page for the chosen view ----
-                                    StackLayout {
-                                        Layout.fillWidth: true
-                                        Layout.fillHeight: true
-                                        currentIndex: ["games", "standings", "teams", "team", "player", "game"].indexOf(root.sportsView)
-
-                                        // =========== Games ===========
-                                        ColumnLayout {
-                                            spacing: 8
-
-                                            RowLayout {
+                                            Flow {
                                                 Layout.fillWidth: true
                                                 spacing: 6
-                                                SportChip { theme: root; icon: ""; onClicked: root.sportsDay -= 1 }
+                                                Repeater {
+                                                    model: panel.hubHere && root.hubTab === 2 ? root.appsForTab(3, "") : []
+                                                    delegate: AppTile {
+                                                        required property var modelData
+                                                        theme: root
+                                                        entry: modelData
+                                                        onLaunched: { root.hubOpen = false; root.launchApp(modelData); }
+                                                    }
+                                                }
+                                            }
+
+                                            Text {
+                                                text: "Recent"
+                                                color: root.fg
+                                                font.pixelSize: 14
+                                                font.bold: true
+                                            }
+                                            Flow {
+                                                Layout.fillWidth: true
+                                                spacing: 6
+                                                Repeater {
+                                                    model: panel.hubHere && root.hubTab === 2 ? root.appsForTab(1, "").slice(0, 8) : []
+                                                    delegate: AppTile {
+                                                        required property var modelData
+                                                        theme: root
+                                                        entry: modelData
+                                                        onLaunched: { root.hubOpen = false; root.launchApp(modelData); }
+                                                    }
+                                                }
+                                            }
+
+                                            Item { Layout.fillHeight: true }
+
+                                            BarButton {
+                                                theme: root
+                                                Layout.alignment: Qt.AlignHCenter
+                                                icon: ""
+                                                label: "All apps"
+                                                onClicked: mouse => { root.hubOpen = false; root.launcherOpen = true; }
+                                            }
+                                        }
+
+                                        // ===== 3: Calendar =====
+                                        Item {}   // (the calendar now lives on Home)
+
+                                        // ===== 4: Alerts =====
+                                        ColumnLayout {
+                                            spacing: 10
+
+                                            RowLayout {
+                                                Layout.fillWidth: true
                                                 Text {
                                                     Layout.fillWidth: true
-                                                    horizontalAlignment: Text.AlignHCenter
-                                                    text: root.sportsDayLabel
+                                                    text: notifServer.trackedNotifications.values.length > 0
+                                                        ? notifServer.trackedNotifications.values.length + " notifications" : "Notifications"
                                                     color: root.fg
                                                     font.pixelSize: 15
                                                     font.bold: true
                                                 }
-                                                SportChip { theme: root; label: "Today"; visible: root.sportsDay !== 0; onClicked: root.sportsDay = 0 }
-                                                SportChip { theme: root; icon: ""; onClicked: root.sportsDay += 1 }
+                                                BarButton {
+                                                    theme: root
+                                                    icon: ""
+                                                    label: root.dnd ? "Do not disturb: on" : "Do not disturb: off"
+                                                    active: root.dnd
+                                                    onClicked: mouse => { root.dnd = !root.dnd; }
+                                                }
+                                                BarButton {
+                                                    theme: root
+                                                    icon: ""
+                                                    label: "Clear all"
+                                                    onClicked: mouse => root.clearNotifications()
+                                                }
                                             }
 
                                             Item {
                                                 Layout.fillWidth: true
                                                 Layout.fillHeight: true
 
-                                                GridView {
-                                                    id: gamesGrid
+                                                ListView {
+                                                    id: hubNotifs
                                                     anchors.fill: parent
                                                     clip: true
-                                                    cellWidth: Math.floor(width / 2)
-                                                    cellHeight: 122
-                                                    boundsBehavior: Flickable.StopAtBounds
-                                                    model: root.sportsGames
+                                                    spacing: 8
+                                                    model: notifServer.trackedNotifications
 
-                                                    delegate: Item {
-                                                        id: gameCard
+                                                    delegate: HubCard {
+                                                        id: hn
                                                         required property var modelData
-                                                        readonly property var g: modelData
-                                                        readonly property bool live: g.state === "in"
-                                                        readonly property bool fav: root.sportsFavId !== "" && (g.home.id === root.sportsFavId || g.away.id === root.sportsFavId)
-                                                        width: gamesGrid.cellWidth
-                                                        height: gamesGrid.cellHeight
+                                                        theme: root
+                                                        width: hubNotifs.width
+                                                        height: hnCol.implicitHeight + 24
+                                                        border.color: hn.modelData.urgency === NotificationUrgency.Critical ? root.danger : root.glassEdge
+                                                        color: hnOpen.containsMouse ? root.overlay : root.surface
 
-                                                        HubCard {
-                                                            theme: root
+                                                        // click anywhere on it: open the app it came from
+                                                        MouseArea {
+                                                            id: hnOpen
                                                             anchors.fill: parent
-                                                            anchors.margins: 5
-                                                            radius: 16
-                                                            border.color: gameCard.fav ? root.accent : root.glassEdge
-                                                            color: gameOpen.containsMouse ? root.overlay : root.surface
+                                                            hoverEnabled: true
+                                                            cursorShape: Qt.PointingHandCursor
+                                                            onClicked: root.openNotification(hn.modelData)
+                                                        }
 
-                                                            // click the card: live box score (team names still open the team)
-                                                            MouseArea {
-                                                                id: gameOpen
-                                                                anchors.fill: parent
-                                                                hoverEnabled: true
-                                                                cursorShape: Qt.PointingHandCursor
-                                                                onClicked: root.sportsOpenGame(gameCard.g)
-                                                            }
+                                                        ColumnLayout {
+                                                            id: hnCol
+                                                            anchors.fill: parent
+                                                            anchors.margins: 12
+                                                            spacing: 3
 
-                                                            ColumnLayout {
-                                                                anchors.fill: parent
-                                                                anchors.leftMargin: 14
-                                                                anchors.rightMargin: 14
-                                                                anchors.topMargin: 10
-                                                                anchors.bottomMargin: 10
-                                                                spacing: 2
-
-                                                                Repeater {
-                                                                    model: [gameCard.g.away, gameCard.g.home]
-                                                                    delegate: Item {
-                                                                        id: gt
-                                                                        required property var modelData
-                                                                        readonly property bool lost: gameCard.g.state === "post" && !modelData.winner
-                                                                        Layout.fillWidth: true
-                                                                        Layout.preferredHeight: 32
-
-                                                                        RowLayout {
-                                                                            anchors.fill: parent
-                                                                            spacing: 10
-                                                                            TeamLogo {
-                                                                                theme: root
-                                                                                Layout.preferredWidth: 28
-                                                                                Layout.preferredHeight: 28
-                                                                                source: gt.modelData.logo
-                                                                                abbr: gt.modelData.abbr
-                                                                            }
-                                                                            Text {
-                                                                                text: gt.modelData.name
-                                                                                color: gt.lost ? root.muted : root.fg
-                                                                                font.pixelSize: 14
-                                                                                font.bold: !gt.lost
-                                                                                elide: Text.ElideRight
-                                                                                Layout.maximumWidth: 170
-                                                                            }
-                                                                            Text {
-                                                                                text: gt.modelData.record
-                                                                                color: root.muted
-                                                                                font.pixelSize: 11
-                                                                            }
-                                                                            Item { Layout.fillWidth: true }
-                                                                            Text {
-                                                                                text: gt.modelData.score
-                                                                                color: gt.lost ? root.muted : root.fg
-                                                                                font.pixelSize: 20
-                                                                                font.bold: true
-                                                                            }
-                                                                        }
-                                                                        MouseArea {
-                                                                            anchors.fill: parent
-                                                                            cursorShape: Qt.PointingHandCursor
-                                                                            onClicked: root.sportsOpenTeam(gt.modelData.id)
-                                                                        }
-                                                                    }
-                                                                }
-
-                                                                // status line
-                                                                RowLayout {
+                                                            RowLayout {
+                                                                Layout.fillWidth: true
+                                                                Text {
                                                                     Layout.fillWidth: true
-                                                                    Layout.topMargin: 4
-                                                                    spacing: 6
-                                                                    Rectangle {
-                                                                        visible: gameCard.live
-                                                                        Layout.preferredWidth: 8
-                                                                        Layout.preferredHeight: 8
-                                                                        radius: 4
-                                                                        color: root.danger
-                                                                        SequentialAnimation on opacity {
-                                                                            running: gameCard.live && root.sportsVisible
-                                                                            loops: Animation.Infinite
-                                                                            NumberAnimation { to: 0.25; duration: 700 }
-                                                                            NumberAnimation { to: 1; duration: 700 }
-                                                                        }
-                                                                    }
-                                                                    Text {
-                                                                        text: gameCard.g.state === "pre" ? root.sportsTime(gameCard.g.date) : gameCard.g.detail
-                                                                        color: gameCard.live ? root.danger : root.muted
-                                                                        font.pixelSize: 12
-                                                                        font.bold: gameCard.live
-                                                                    }
-                                                                    Item { Layout.fillWidth: true }
-                                                                    Text {
-                                                                        text: gameCard.g.tv
-                                                                        color: root.muted
-                                                                        font.pixelSize: 11
-                                                                        elide: Text.ElideRight
-                                                                        Layout.maximumWidth: 180
+                                                                    text: hn.modelData.appName
+                                                                    color: root.accent
+                                                                    font.pixelSize: 11
+                                                                    font.bold: true
+                                                                    elide: Text.ElideRight
+                                                                }
+                                                                Text {
+                                                                    text: ""
+                                                                    color: root.muted
+                                                                    font.family: root.iconFont
+                                                                    font.pixelSize: 12
+                                                                    MouseArea {
+                                                                        anchors.fill: parent
+                                                                        anchors.margins: -6
+                                                                        cursorShape: Qt.PointingHandCursor
+                                                                        onClicked: hn.modelData.dismiss()
                                                                     }
                                                                 }
+                                                            }
+                                                            Text {
+                                                                Layout.fillWidth: true
+                                                                text: hn.modelData.summary
+                                                                color: root.fg
+                                                                font.pixelSize: 13
+                                                                font.bold: true
+                                                                wrapMode: Text.Wrap
+                                                            }
+                                                            Text {
+                                                                Layout.fillWidth: true
+                                                                visible: text !== ""
+                                                                text: hn.modelData.body
+                                                                color: root.muted
+                                                                font.pixelSize: 12
+                                                                wrapMode: Text.Wrap
+                                                                maximumLineCount: 3
+                                                                elide: Text.ElideRight
                                                             }
                                                         }
                                                     }
@@ -6455,18 +5499,18 @@ ShellRoot {
 
                                                 Column {
                                                     anchors.centerIn: parent
+                                                    visible: hubNotifs.count === 0
                                                     spacing: 8
-                                                    visible: root.sportsGames.length === 0
                                                     Text {
                                                         anchors.horizontalCenter: parent.horizontalCenter
-                                                        text: "󰠆"
+                                                        text: ""
                                                         color: root.muted
                                                         font.family: root.iconFont
                                                         font.pixelSize: 40
                                                     }
                                                     Text {
                                                         anchors.horizontalCenter: parent.horizontalCenter
-                                                        text: root.sportsLoading ? "Loading games…" : (root.sportsStatus || "No games on this day")
+                                                        text: "You're all caught up"
                                                         color: root.muted
                                                         font.pixelSize: 14
                                                     }
@@ -6474,1556 +5518,2694 @@ ShellRoot {
                                             }
                                         }
 
-                                        // =========== Standings ===========
-                                        ColumnLayout {
-                                            spacing: 8
+                                        // ===== 5: System =====
+                                        Flickable {
+                                            id: sysFlick
+                                            clip: true
+                                            contentWidth: width
+                                            contentHeight: sysCol.implicitHeight + 8
+                                            boundsBehavior: Flickable.StopAtBounds
 
-                                            ListView {
-                                                Layout.fillWidth: true
-                                                Layout.preferredHeight: 32
-                                                orientation: ListView.Horizontal
-                                                spacing: 6
-                                                clip: true
-                                                boundsBehavior: Flickable.StopAtBounds
-                                                model: root.sportsConfs
-                                                delegate: SportChip {
-                                                    required property var modelData
-                                                    required property int index
-                                                    theme: root
-                                                    label: modelData.name
-                                                    active: root.sportsConf === index
-                                                    onClicked: root.sportsConf = index
-                                                }
-                                            }
+                                            ColumnLayout {
+                                                id: sysCol
+                                                width: sysFlick.width - 6
+                                                spacing: 14
 
-                                            HubCard {
-                                                theme: root
-                                                Layout.fillWidth: true
-                                                Layout.fillHeight: true
-                                                clip: true
-
-                                                ColumnLayout {
-                                                    anchors.fill: parent
-                                                    anchors.margins: 12
-                                                    spacing: 4
-
-                                                    // column headings (same widths as the rows below)
-                                                    RowLayout {
-                                                        Layout.fillWidth: true
-                                                        Layout.leftMargin: 8
-                                                        Layout.rightMargin: 8
-                                                        spacing: 0
-                                                        Repeater {
-                                                            model: [
-                                                                { t: "#", w: 34, a: Text.AlignLeft },
-                                                                { t: "Team", w: -1, a: Text.AlignLeft },
-                                                                { t: "W", w: 52, a: Text.AlignRight },
-                                                                { t: "L", w: 52, a: Text.AlignRight },
-                                                                { t: "PCT", w: 64, a: Text.AlignRight },
-                                                                { t: "GB", w: 56, a: Text.AlignRight },
-                                                                { t: "STRK", w: 64, a: Text.AlignRight },
-                                                                { t: "L10", w: 64, a: Text.AlignRight }
-                                                            ]
-                                                            delegate: Text {
-                                                                required property var modelData
-                                                                Layout.preferredWidth: modelData.w > 0 ? modelData.w : -1
-                                                                Layout.fillWidth: modelData.w < 0
-                                                                horizontalAlignment: modelData.a
-                                                                text: modelData.t
-                                                                color: root.muted
-                                                                font.pixelSize: 11
-                                                                font.bold: true
-                                                            }
-                                                        }
-                                                    }
-
-                                                    ListView {
-                                                        id: standList
-                                                        Layout.fillWidth: true
-                                                        Layout.fillHeight: true
-                                                        clip: true
-                                                        boundsBehavior: Flickable.StopAtBounds
-                                                        model: root.sportsConfs.length > root.sportsConf ? root.sportsConfs[root.sportsConf].rows : []
-
-                                                        delegate: Rectangle {
-                                                            id: sr
-                                                            required property var modelData
-                                                            required property int index
-                                                            readonly property bool fav: modelData.id === root.sportsFavId
-                                                            width: standList.width
-                                                            height: 38
-                                                            radius: 10
-                                                            color: srMouse.containsMouse ? root.overlay : (sr.index % 2 === 0 ? Qt.rgba(1, 1, 1, 0.04) : "transparent")
-                                                            border.width: sr.fav ? 1 : 0
-                                                            border.color: root.accent
-
-                                                            // NBA: line under 6th (playoffs) and 10th (play-in)
-                                                            Rectangle {
-                                                                visible: root.sportsLeague === "nba" && (sr.index === 5 || sr.index === 9)
-                                                                anchors.bottom: parent.bottom
-                                                                anchors.left: parent.left
-                                                                anchors.right: parent.right
-                                                                anchors.leftMargin: 8
-                                                                anchors.rightMargin: 8
-                                                                height: 1
-                                                                color: root.glassEdge
-                                                            }
-
-                                                            RowLayout {
-                                                                anchors.fill: parent
-                                                                anchors.leftMargin: 8
-                                                                anchors.rightMargin: 8
-                                                                spacing: 0
-                                                                Text { Layout.preferredWidth: 34; text: sr.index + 1; color: root.muted; font.pixelSize: 13 }
-                                                                RowLayout {
-                                                                    Layout.fillWidth: true
-                                                                    spacing: 10
-                                                                    TeamLogo {
-                                                                        theme: root
-                                                                        Layout.preferredWidth: 24
-                                                                        Layout.preferredHeight: 24
-                                                                        source: sr.modelData.logo
-                                                                        abbr: sr.modelData.abbr
-                                                                    }
-                                                                    Text {
-                                                                        Layout.fillWidth: true
-                                                                        text: sr.modelData.name
-                                                                        color: root.fg
-                                                                        font.pixelSize: 13
-                                                                        font.bold: sr.fav
-                                                                        elide: Text.ElideRight
-                                                                    }
-                                                                }
-                                                                Text { Layout.preferredWidth: 52; horizontalAlignment: Text.AlignRight; text: sr.modelData.w; color: root.fg; font.pixelSize: 13; font.bold: true }
-                                                                Text { Layout.preferredWidth: 52; horizontalAlignment: Text.AlignRight; text: sr.modelData.l; color: root.fg; font.pixelSize: 13 }
-                                                                Text { Layout.preferredWidth: 64; horizontalAlignment: Text.AlignRight; text: sr.modelData.pct; color: root.muted; font.pixelSize: 13 }
-                                                                Text { Layout.preferredWidth: 56; horizontalAlignment: Text.AlignRight; text: sr.modelData.gb; color: root.muted; font.pixelSize: 13 }
-                                                                Text {
-                                                                    Layout.preferredWidth: 64
-                                                                    horizontalAlignment: Text.AlignRight
-                                                                    text: sr.modelData.strk
-                                                                    color: sr.modelData.strk.charAt(0) === "W" ? root.fg : root.muted
-                                                                    font.pixelSize: 13
-                                                                }
-                                                                Text { Layout.preferredWidth: 64; horizontalAlignment: Text.AlignRight; text: sr.modelData.l10; color: root.muted; font.pixelSize: 13 }
-                                                            }
-                                                            MouseArea {
-                                                                id: srMouse
-                                                                anchors.fill: parent
-                                                                hoverEnabled: true
-                                                                cursorShape: Qt.PointingHandCursor
-                                                                onClicked: root.sportsOpenTeam(sr.modelData.id)
-                                                            }
-                                                        }
-                                                    }
-                                                }
-
-                                                Text {
-                                                    anchors.centerIn: parent
-                                                    visible: root.sportsConfs.length === 0
-                                                    text: root.sportsLoading ? "Loading standings…" : (root.sportsStatus || "No standings yet")
-                                                    color: root.muted
-                                                    font.pixelSize: 14
-                                                }
-                                            }
-                                        }
-
-                                        // =========== Teams ===========
-                                        ColumnLayout {
-                                            spacing: 8
-
-                                            // search
-                                            Rectangle {
-                                                Layout.fillWidth: true
-                                                Layout.preferredHeight: 36
-                                                radius: 12
-                                                color: root.surface
-                                                border.width: 1
-                                                border.color: teamSearch.activeFocus ? root.accent : root.glassEdge
-                                                Text {
-                                                    id: teamSearchIcon
-                                                    anchors.left: parent.left
-                                                    anchors.leftMargin: 12
-                                                    anchors.verticalCenter: parent.verticalCenter
-                                                    text: ""
-                                                    font.family: root.iconFont
-                                                    font.pixelSize: 13
-                                                    color: root.muted
-                                                }
-                                                TextInput {
-                                                    id: teamSearch
-                                                    anchors.left: teamSearchIcon.right
-                                                    anchors.leftMargin: 10
-                                                    anchors.right: parent.right
-                                                    anchors.rightMargin: 12
-                                                    anchors.verticalCenter: parent.verticalCenter
-                                                    color: root.fg
-                                                    font.pixelSize: 13
-                                                    clip: true
-                                                    text: root.sportsTeamFilter
-                                                    onTextEdited: root.sportsTeamFilter = text
-                                                    Keys.onEscapePressed: { text = ""; root.sportsTeamFilter = ""; hubKeys.forceActiveFocus(); }
-                                                    Text {
-                                                        anchors.verticalCenter: parent.verticalCenter
-                                                        visible: teamSearch.text === ""
-                                                        text: "Find a team"
-                                                        color: root.muted
-                                                        font.pixelSize: 13
-                                                    }
-                                                }
-                                            }
-
-                                            Item {
-                                                Layout.fillWidth: true
-                                                Layout.fillHeight: true
-
-                                                GridView {
-                                                    id: teamGrid
-                                                    anchors.fill: parent
-                                                    clip: true
-                                                    cellWidth: Math.floor(width / 6)
-                                                    cellHeight: 112
-                                                    boundsBehavior: Flickable.StopAtBounds
-                                                    model: root.sportsAllTeams
-
-                                                    delegate: Item {
-                                                        id: tc
-                                                        required property var modelData
-                                                        width: teamGrid.cellWidth
-                                                        height: teamGrid.cellHeight
-
-                                                        Rectangle {
-                                                            anchors.fill: parent
-                                                            anchors.margins: 4
-                                                            radius: 16
-                                                            color: tcMouse.containsMouse ? root.overlay : root.surface
-                                                            border.width: 1
-                                                            border.color: tc.modelData.id === root.sportsFavId ? root.accent : root.glassEdge
-                                                            scale: tcMouse.pressed ? 0.95 : 1
-                                                            Behavior on color { ColorAnimation { duration: 120 } }
-                                                            Behavior on scale { NumberAnimation { duration: 120 } }
-
-                                                            Column {
-                                                                anchors.centerIn: parent
-                                                                width: parent.width - 16
-                                                                spacing: 8
-                                                                TeamLogo {
-                                                                    theme: root
-                                                                    anchors.horizontalCenter: parent.horizontalCenter
-                                                                    width: 46
-                                                                    height: 46
-                                                                    source: tc.modelData.logo
-                                                                    abbr: tc.modelData.abbr
-                                                                }
-                                                                Text {
-                                                                    width: parent.width
-                                                                    horizontalAlignment: Text.AlignHCenter
-                                                                    text: tc.modelData.short
-                                                                    color: root.fg
-                                                                    font.pixelSize: 12
-                                                                    font.bold: true
-                                                                    elide: Text.ElideRight
-                                                                }
-                                                            }
-                                                            MouseArea {
-                                                                id: tcMouse
-                                                                anchors.fill: parent
-                                                                hoverEnabled: true
-                                                                cursorShape: Qt.PointingHandCursor
-                                                                onClicked: root.sportsOpenTeam(tc.modelData.id)
-                                                            }
-                                                        }
-                                                    }
-                                                }
-
-                                                Text {
-                                                    anchors.centerIn: parent
-                                                    visible: root.sportsAllTeams.length === 0
-                                                    text: root.sportsLoading ? "Loading teams…" : (root.sportsStatus || "No teams match")
-                                                    color: root.muted
-                                                    font.pixelSize: 14
-                                                }
-                                            }
-                                        }
-
-                                        // =========== One team ===========
-                                        ColumnLayout {
-                                            spacing: 10
-
-                                            RowLayout {
-                                                Layout.fillWidth: true
-                                                spacing: 12
-                                                SportChip { theme: root; icon: ""; label: "Back"; onClicked: root.sportsShow(root.sportsBackTo) }
-                                                TeamLogo {
-                                                    theme: root
-                                                    Layout.preferredWidth: 48
-                                                    Layout.preferredHeight: 48
-                                                    source: root.sportsTeam ? (root.sportsTeam.logo || "") : ""
-                                                    abbr: root.sportsTeam ? (root.sportsTeam.abbr || "") : ""
-                                                }
-                                                Column {
+                                                // ---- Quick settings ----
+                                                RowLayout {
                                                     Layout.fillWidth: true
-                                                    spacing: 2
-                                                    Text {
-                                                        text: root.sportsTeam ? (root.sportsTeam.name || "Loading…") : ""
-                                                        color: root.fg
-                                                        font.pixelSize: 20
-                                                        font.bold: true
-                                                    }
-                                                    Text {
-                                                        text: root.sportsTeam ? [root.sportsTeam.record, root.sportsTeam.standing].filter(x => x).join("  ·  ") : ""
-                                                        color: root.muted
-                                                        font.pixelSize: 12
+                                                    Layout.topMargin: 6
+                                                    spacing: 8
+                                                    Text { text: "\uf0ad"; color: root.accent; font.family: root.iconFont; font.pixelSize: 13 }
+                                                    Text { text: "Quick settings"; color: root.fg; font.pixelSize: 14; font.bold: true }
+                                                    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.glassEdge; opacity: 0.6 }
+                                                }
+
+                                                GridLayout {
+                                                    Layout.fillWidth: true
+                                                    columns: 4
+                                                    rowSpacing: 14
+                                                    columnSpacing: 14
+
+                                                    Repeater {
+                                                        model: [
+                                                            {
+                                                                icon: "", title: "Wi-Fi",
+                                                                sub: !root.wifiOn ? "Off" : (root.netKind === "wifi" ? root.netName : "On"),
+                                                                active: root.wifiOn, ok: true,
+                                                                run: () => root.run("nmcli radio wifi " + (root.wifiOn ? "off" : "on"))
+                                                            },
+                                                            {
+                                                                icon: "", title: "Bluetooth",
+                                                                sub: root.btState === "none" ? "Not available" : (root.btState === "yes" ? (root.btDevices.some(d => d.connected) ? root.btDevices.filter(d => d.connected)[0].name : "On · tap for devices") : "Off · tap for devices"),
+                                                                active: root.btState === "yes", ok: root.btState !== "none",
+                                                                run: () => { root.hubTab = 10; root.btRefresh(); }
+                                                            },
+                                                            {
+                                                                icon: "", title: "Do not disturb",
+                                                                sub: root.dnd ? "On" : "Off",
+                                                                active: root.dnd, ok: true,
+                                                                run: () => { root.dnd = !root.dnd; }
+                                                            },
+                                                            {
+                                                                icon: "", title: "Night light",
+                                                                sub: root.nightState === "none" ? "Needs hyprsunset" : (root.nightState === "on" ? "On" : "Off"),
+                                                                active: root.nightState === "on", ok: root.nightState !== "none",
+                                                                run: () => root.run(root.nightState === "on" ? "pkill -x hyprsunset" : "hyprsunset -t 4000 >/dev/null 2>&1")
+                                                            },
+                                                            {
+                                                                icon: "", title: "Screenshot", sub: "Area · more in Capture",
+                                                                active: false, ok: true,
+                                                                run: () => root.takeScreenshot()
+                                                            },
+                                                            {
+                                                                icon: "", title: "Wallpaper", sub: "Choose one",
+                                                                active: false, ok: true,
+                                                                run: () => { root.hubOpen = false; root.wallPickerOpen = true; }
+                                                            },
+                                                            {
+                                                                icon: "\uf11b", title: "Game mode",
+                                                                sub: root.gameMode ? "On · max FPS" : "Off",
+                                                                active: root.gameMode, ok: true,
+                                                                run: () => root.setGameMode(!root.gameMode)
+                                                            },
+                                                            {
+                                                                icon: "\uf019", title: "Updates",
+                                                                sub: root.updRunning ? "Updating…" : root.updChecking ? "Checking…"
+                                                                    : !root.updAuto ? (root.updTotal > 0 ? root.updTotal + " waiting · tap to set up auto" : "Tap to set up auto updates")
+                                                                    : root.updState === "restart" ? "Restart to finish"
+                                                                    : root.updState === "failed" ? "Needs you · tap to fix"
+                                                                    : (root.updSystem + root.updFlatpak) > 0 ? (root.updSystem + root.updFlatpak) + " waiting · tap to install"
+                                                                    : root.updAur > 0 ? root.updAur + " AUR · tap to install"
+                                                                    : "Auto · " + (root.updStateAt ? "updated " + root.updAgo(root.updStateAt) : "daily"),
+                                                                active: root.updRunning || root.updTotal > 0, ok: true,
+                                                                run: () => {
+                                                                    if (!root.updAuto || root.updTotal > 0 || root.updState === "failed") { root.hubOpen = false; root.runUpdates(); }
+                                                                    else root.checkUpdates();
+                                                                }
+                                                            }
+
+                                                        ]
+
+                                                        delegate: HubToggle {
+                                                            required property var modelData
+                                                            theme: root
+                                                            item: modelData
+                                                            Layout.fillWidth: true
+                                                            Layout.preferredHeight: 72
+                                                        }
                                                     }
                                                 }
-                                                SportChip {
-                                                    theme: root
-                                                    icon: ""
-                                                    label: root.sportsTeam && root.sportsTeam.id === root.sportsFavId ? "My team" : "Set as my team"
-                                                    active: root.sportsTeam !== null && root.sportsTeam.id === root.sportsFavId
-                                                    onClicked: root.sportsToggleFav()
+
+                                                // ---- Sound ----
+                                                RowLayout {
+                                                    Layout.fillWidth: true
+                                                    Layout.topMargin: 6
+                                                    spacing: 8
+                                                    Text { text: "\uf028"; color: root.accent; font.family: root.iconFont; font.pixelSize: 13 }
+                                                    Text { text: "Sound"; color: root.fg; font.pixelSize: 14; font.bold: true }
+                                                    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.glassEdge; opacity: 0.6 }
                                                 }
-                                            }
 
-                                            RowLayout {
-                                                Layout.fillWidth: true
-                                                Layout.fillHeight: true
-                                                spacing: 12
-
-                                                // ---- roster ----
                                                 HubCard {
                                                     theme: root
                                                     Layout.fillWidth: true
-                                                    Layout.fillHeight: true
-                                                    Layout.preferredWidth: 3
-                                                    clip: true
+                                                    Layout.preferredHeight: 150 + (root.outChoices.length > 0 ? 76 : 0) + Math.max(1, root.audioStreams.length) * 36
 
                                                     ColumnLayout {
                                                         anchors.fill: parent
-                                                        anchors.margins: 12
-                                                        spacing: 6
-                                                        Text { text: "Roster"; color: root.fg; font.pixelSize: 14; font.bold: true }
+                                                        anchors.margins: 16
+                                                        spacing: 10
 
-                                                        ListView {
-                                                            id: rosterList
+                                                        // ---- where the sound comes out: one button each ----
+                                                        Text {
+                                                            visible: root.outChoices.length > 0
+                                                            text: "Play sound through"
+                                                            color: root.muted
+                                                            font.pixelSize: 11
+                                                        }
+                                                        RowLayout {
+                                                            visible: root.outChoices.length > 0
                                                             Layout.fillWidth: true
-                                                            Layout.fillHeight: true
-                                                            clip: true
-                                                            spacing: 2
-                                                            boundsBehavior: Flickable.StopAtBounds
-                                                            model: root.sportsRoster
-
-                                                            delegate: Rectangle {
-                                                                id: rp
-                                                                required property var modelData
-                                                                width: rosterList.width
-                                                                height: 40
-                                                                radius: 10
-                                                                color: rpMouse.containsMouse ? root.overlay : "transparent"
-
-                                                                RowLayout {
-                                                                    anchors.fill: parent
-                                                                    anchors.leftMargin: 6
-                                                                    anchors.rightMargin: 10
-                                                                    spacing: 10
-                                                                    Rectangle {
-                                                                        Layout.preferredWidth: 30
-                                                                        Layout.preferredHeight: 30
-                                                                        radius: 15
-                                                                        color: root.overlay
+                                                            spacing: 8
+                                                            Repeater {
+                                                                model: root.outChoices
+                                                                delegate: Rectangle {
+                                                                    id: outBtn
+                                                                    required property var modelData
+                                                                    readonly property string kind: modelData.name.indexOf("Monitor") === 0 ? "mon"
+                                                                        : (modelData.name.indexOf("Bluetooth") === 0 ? "bt" : "head")
+                                                                    Layout.fillWidth: true
+                                                                    Layout.preferredHeight: 44
+                                                                    radius: 14
+                                                                    color: outBtn.modelData.active ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.22)
+                                                                        : (outBtnMouse.containsMouse ? root.overlay : root.bg)
+                                                                    border.width: 1
+                                                                    border.color: outBtn.modelData.active ? root.accent : root.glassEdge
+                                                                    scale: outBtnMouse.pressed ? 0.96 : 1
+                                                                    Behavior on scale { NumberAnimation { duration: 120; easing.type: Easing.OutBack } }
+                                                                    Behavior on color { ColorAnimation { duration: root.animMs } }
+                                                                    RowLayout {
+                                                                        anchors.fill: parent
+                                                                        anchors.leftMargin: 12
+                                                                        anchors.rightMargin: 12
+                                                                        spacing: 8
                                                                         Text {
-                                                                            anchors.centerIn: parent
-                                                                            text: rp.modelData.jersey || "–"
+                                                                            text: outBtn.kind === "mon" ? "\uf108" : (outBtn.kind === "bt" ? "\uf294" : "\uf025")
+                                                                            color: outBtn.modelData.active ? root.accent : root.muted
+                                                                            font.family: root.iconFont
+                                                                            font.pixelSize: 14
+                                                                        }
+                                                                        Text {
+                                                                            Layout.fillWidth: true
+                                                                            text: outBtn.modelData.name.replace(/^(Monitor speakers|Headphones|Bluetooth) · /, "")
                                                                             color: root.fg
-                                                                            font.pixelSize: 12
-                                                                            font.bold: true
+                                                                            font.pixelSize: 13
+                                                                            font.bold: outBtn.modelData.active
+                                                                            elide: Text.ElideRight
+                                                                        }
+                                                                        Text {
+                                                                            visible: outBtn.modelData.active
+                                                                            text: "\uf00c"
+                                                                            color: root.accent
+                                                                            font.family: root.iconFont
+                                                                            font.pixelSize: 11
                                                                         }
                                                                     }
-                                                                    Text {
-                                                                        Layout.fillWidth: true
-                                                                        text: rp.modelData.name
-                                                                        color: root.fg
-                                                                        font.pixelSize: 13
-                                                                        elide: Text.ElideRight
+                                                                    MouseArea {
+                                                                        id: outBtnMouse
+                                                                        anchors.fill: parent
+                                                                        hoverEnabled: true
+                                                                        cursorShape: Qt.PointingHandCursor
+                                                                        onClicked: root.pickOutput(outBtn.modelData.id)
                                                                     }
-                                                                    Text {
-                                                                        visible: rp.modelData.injury !== ""
-                                                                        text: rp.modelData.injury
-                                                                        color: root.danger
-                                                                        font.pixelSize: 11
-                                                                        font.bold: true
-                                                                    }
-                                                                    Text { text: rp.modelData.pos; color: root.muted; font.pixelSize: 12; Layout.preferredWidth: 28 }
-                                                                    Text { text: rp.modelData.height; color: root.muted; font.pixelSize: 12; Layout.preferredWidth: 48; horizontalAlignment: Text.AlignRight }
-                                                                }
-                                                                MouseArea {
-                                                                    id: rpMouse
-                                                                    anchors.fill: parent
-                                                                    hoverEnabled: true
-                                                                    cursorShape: Qt.PointingHandCursor
-                                                                    onClicked: root.sportsOpenPlayerFrom(rp.modelData, "team")
                                                                 }
                                                             }
                                                         }
-                                                    }
-                                                    Text {
-                                                        anchors.centerIn: parent
-                                                        visible: root.sportsRoster.length === 0
-                                                        text: root.sportsLoading ? "Loading roster…" : "No roster"
-                                                        color: root.muted
-                                                        font.pixelSize: 13
+
+                                                        AudioRow { theme: root; Layout.fillWidth: true; input: false }
+                                                        AudioRow { theme: root; Layout.fillWidth: true; input: true }
+
+                                                        Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.overlay }
+
+                                                        Text {
+                                                            text: root.audioStreams.length > 0 ? "Apps" : "No apps are playing audio"
+                                                            color: root.muted
+                                                            font.pixelSize: 11
+                                                        }
+
+                                                        ListView {
+                                                            id: hubStreams
+                                                            Layout.fillWidth: true
+                                                            Layout.preferredHeight: contentHeight
+                                                            interactive: false
+                                                            clip: true
+                                                            spacing: 8
+                                                            model: root.audioStreams
+
+                                                            delegate: RowLayout {
+                                                                id: hs
+                                                                required property var modelData
+                                                                width: hubStreams.width
+                                                                spacing: 10
+                                                                Text {
+                                                                    Layout.preferredWidth: 110
+                                                                    text: (hs.modelData.properties && hs.modelData.properties["application.name"])
+                                                                        || hs.modelData.description || hs.modelData.name
+                                                                    color: root.fg
+                                                                    font.pixelSize: 12
+                                                                    elide: Text.ElideRight
+                                                                }
+                                                                ValueBar {
+                                                                    theme: root
+                                                                    Layout.fillWidth: true
+                                                                    value: hs.modelData.audio ? hs.modelData.audio.volume : 0
+                                                                    onMoved: v => {
+                                                                        if (hs.modelData.audio) hs.modelData.audio.volume = v;
+                                                                    }
+                                                                }
+                                                                Item { Layout.preferredWidth: 70 }
+                                                            }
+                                                        }
                                                     }
                                                 }
 
-                                                // ---- schedule ----
-                                                HubCard {
-                                                    theme: root
+                                                // ---- Preferences ----
+                                                RowLayout {
                                                     Layout.fillWidth: true
-                                                    Layout.fillHeight: true
-                                                    Layout.preferredWidth: 2
-                                                    clip: true
+                                                    Layout.topMargin: 6
+                                                    spacing: 8
+                                                    Text { text: "\uf013"; color: root.accent; font.family: root.iconFont; font.pixelSize: 13 }
+                                                    Text { text: "Preferences"; color: root.fg; font.pixelSize: 14; font.bold: true }
+                                                    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.glassEdge; opacity: 0.6 }
+                                                }
 
-                                                    Flickable {
-                                                        anchors.fill: parent
-                                                        anchors.margins: 12
-                                                        contentHeight: schedCol.implicitHeight
-                                                        clip: true
-                                                        boundsBehavior: Flickable.StopAtBounds
-
-                                                        Column {
-                                                            id: schedCol
-                                                            width: parent.width
-                                                            spacing: 6
-
-                                                            Repeater {
-                                                                model: [
-                                                                    { title: "Coming up", list: root.sportsUpcoming },
-                                                                    { title: "Recent", list: root.sportsRecent }
-                                                                ]
-                                                                delegate: Column {
-                                                                    id: sec
-                                                                    required property var modelData
-                                                                    width: schedCol.width
-                                                                    spacing: 4
-                                                                    visible: modelData.list.length > 0
-                                                                    topPadding: 4
-                                                                    Text { text: sec.modelData.title; color: root.fg; font.pixelSize: 14; font.bold: true; bottomPadding: 2 }
-
-                                                                    Repeater {
-                                                                        model: sec.modelData.list
-                                                                        delegate: Rectangle {
-                                                                            id: sg
-                                                                            required property var modelData
-                                                                            readonly property bool live: modelData.state === "in"
-                                                                            width: sec.width
-                                                                            height: 38
-                                                                            radius: 10
-                                                                            color: sgMouse.containsMouse ? root.overlay : Qt.rgba(1, 1, 1, 0.04)
-
-                                                                            RowLayout {
-                                                                                anchors.fill: parent
-                                                                                anchors.leftMargin: 8
-                                                                                anchors.rightMargin: 10
-                                                                                spacing: 8
-                                                                                // W / L badge, or the date
-                                                                                Rectangle {
-                                                                                    visible: sg.modelData.state === "post"
-                                                                                    Layout.preferredWidth: 22
-                                                                                    Layout.preferredHeight: 22
-                                                                                    radius: 7
-                                                                                    color: sg.modelData.won ? root.accent : root.overlay
-                                                                                    Text {
-                                                                                        anchors.centerIn: parent
-                                                                                        text: sg.modelData.won ? "W" : "L"
-                                                                                        color: sg.modelData.won ? root.bg : root.fg
-                                                                                        font.pixelSize: 11
-                                                                                        font.bold: true
-                                                                                    }
-                                                                                }
-                                                                                Text {
-                                                                                    visible: sg.modelData.state !== "post"
-                                                                                    Layout.preferredWidth: 54
-                                                                                    text: sg.live ? "LIVE" : Qt.formatDate(new Date(sg.modelData.date), "ddd d")
-                                                                                    color: sg.live ? root.danger : root.muted
-                                                                                    font.pixelSize: 12
-                                                                                    font.bold: sg.live
-                                                                                }
-                                                                                Text {
-                                                                                    text: sg.modelData.home ? "vs" : "@"
-                                                                                    color: root.muted
-                                                                                    font.pixelSize: 11
-                                                                                }
-                                                                                TeamLogo {
-                                                                                    theme: root
-                                                                                    Layout.preferredWidth: 22
-                                                                                    Layout.preferredHeight: 22
-                                                                                    source: sg.modelData.oppLogo
-                                                                                    abbr: sg.modelData.opp
-                                                                                }
-                                                                                Text {
-                                                                                    Layout.fillWidth: true
-                                                                                    text: sg.modelData.oppName
-                                                                                    color: root.fg
-                                                                                    font.pixelSize: 13
-                                                                                    elide: Text.ElideRight
-                                                                                }
-                                                                                Text {
-                                                                                    text: sg.modelData.state === "pre" ? root.sportsTime(sg.modelData.date)
-                                                                                        : sg.modelData.us + "–" + sg.modelData.them
-                                                                                    color: sg.live ? root.danger : root.muted
-                                                                                    font.pixelSize: 12
-                                                                                    font.bold: sg.modelData.state !== "pre"
-                                                                                }
-                                                                            }
-                                                                            MouseArea {
-                                                                                id: sgMouse
-                                                                                anchors.fill: parent
-                                                                                hoverEnabled: true
-                                                                                cursorShape: Qt.PointingHandCursor
-                                                                                onClicked: {
-                                                                                    const me = { id: root.sportsTeam.id, abbr: root.sportsTeam.abbr, name: root.sportsTeam.name, logo: root.sportsTeam.logo, score: sg.modelData.us, record: "" };
-                                                                                    const them = { id: sg.modelData.oppId, abbr: sg.modelData.opp, name: sg.modelData.oppName, logo: sg.modelData.oppLogo, score: sg.modelData.them, record: "" };
-                                                                                    root.sportsOpenGame({ id: sg.modelData.id, date: sg.modelData.date, state: sg.modelData.state, detail: sg.modelData.detail,
-                                                                                                          away: sg.modelData.home ? them : me, home: sg.modelData.home ? me : them });
-                                                                                }
-                                                                            }
-                                                                        }
-                                                                    }
+                                                GridLayout {
+                                                    Layout.fillWidth: true
+                                                    columns: 4
+                                                    rowSpacing: 14
+                                                    columnSpacing: 14
+                                                    Repeater {
+                                                        model: [
+                                                                {
+                                                                icon: "", title: "Theme",
+                                                                sub: root.themeLabel(),
+                                                                active: false, ok: true,
+                                                                run: () => { root.hubTab = 8; }
+                                                                },
+                                                                {
+                                                                icon: "", title: "Auto-hide bars",
+                                                                sub: root.autoHideOn ? "On" : "Off",
+                                                                active: root.autoHideOn, ok: true,
+                                                                run: () => root.cycleAutoHide()
+                                                                },
+                                                                {
+                                                                icon: "\uf0e2", title: "Reopen apps",
+                                                                sub: pins.adapter.restoreSession ? "On · after restart" : "Off",
+                                                                active: pins.adapter.restoreSession, ok: true,
+                                                                run: () => { pins.adapter.restoreSession = !pins.adapter.restoreSession; }
+                                                                },
+                                                                {
+                                                                icon: "\uf0d0", title: "Moving effects",
+                                                                sub: pins.adapter.ambientFx ? "On · uses more GPU" : "Off · saves GPU",
+                                                                active: pins.adapter.ambientFx, ok: true,
+                                                                run: () => { pins.adapter.ambientFx = !pins.adapter.ambientFx; }
                                                                 }
-                                                            }
+                                                        ]
+                                                        delegate: HubToggle {
+                                                            required property var modelData
+                                                            theme: root
+                                                            item: modelData
+                                                            Layout.fillWidth: true
+                                                            Layout.preferredHeight: 72
                                                         }
                                                     }
-                                                    Text {
-                                                        anchors.centerIn: parent
-                                                        visible: root.sportsUpcoming.length === 0 && root.sportsRecent.length === 0
-                                                        text: root.sportsLoading ? "Loading schedule…" : "No games scheduled"
-                                                        color: root.muted
-                                                        font.pixelSize: 13
+                                                }
+
+                                                // ---- Power ----
+                                                RowLayout {
+                                                    Layout.fillWidth: true
+                                                    Layout.topMargin: 6
+                                                    spacing: 8
+                                                    Text { text: "\uf011"; color: root.accent; font.family: root.iconFont; font.pixelSize: 13 }
+                                                    Text { text: "Power"; color: root.fg; font.pixelSize: 14; font.bold: true }
+                                                    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.glassEdge; opacity: 0.6 }
+                                                }
+
+                                                RowLayout {
+                                                    Layout.fillWidth: true
+                                                    spacing: 8
+                                                    BarButton { theme: root; Layout.fillWidth: true; icon: ""; label: "Lock"
+                                                        onClicked: mouse => { root.hubOpen = false; Quickshell.execDetached(["sh", "-c", "hyprlock || loginctl lock-session"]); } }
+                                                    BarButton { theme: root; Layout.fillWidth: true; icon: ""; label: "Sleep"
+                                                        onClicked: mouse => { root.hubOpen = false; Quickshell.execDetached(["systemctl", "suspend"]); } }
+                                                    BarButton { theme: root; Layout.fillWidth: true; icon: ""; label: "Reload Hyprland"
+                                                        onClicked: mouse => { root.hubOpen = false; Quickshell.execDetached(["hyprctl", "reload"]); } }
+                                                    BarButton { theme: root; Layout.fillWidth: true; icon: ""; label: "Restart bar"
+                                                        onClicked: mouse => Quickshell.reload(true) }
+                                                    BarButton { theme: root; Layout.fillWidth: true; icon: ""; label: "Config"
+                                                        onClicked: mouse => { root.hubOpen = false; Quickshell.execDetached(["xdg-open", Quickshell.env("HOME") + "/.config"]); } }
+                                                }
+                                                RowLayout {
+                                                    Layout.fillWidth: true
+                                                    spacing: 8
+                                                    ConfirmButton {
+                                                        theme: root
+                                                        Layout.fillWidth: true
+                                                        label: "Log out"
+                                                        onConfirmed: root.powerAction("logout")
+                                                    }
+                                                    ConfirmButton {
+                                                        theme: root
+                                                        Layout.fillWidth: true
+                                                        label: "Reboot"
+                                                        onConfirmed: root.powerAction("reboot")
+                                                    }
+                                                    ConfirmButton {
+                                                        theme: root
+                                                        Layout.fillWidth: true
+                                                        label: "Shut down"
+                                                        onConfirmed: root.powerAction("poweroff")
                                                     }
                                                 }
                                             }
                                         }
 
-                                        // =========== One player ===========
+                                        // ===== 6: Capture =====
                                         ColumnLayout {
-                                            spacing: 10
+                                            spacing: 12
 
+                                            // ---- Which screen to capture ----
                                             RowLayout {
                                                 Layout.fillWidth: true
-                                                spacing: 12
+                                                spacing: 8
+                                                Text { text: "\uf108"; color: root.accent; font.family: root.iconFont; font.pixelSize: 13 }
+                                                Text { text: "Screen"; color: root.fg; font.pixelSize: 13; font.bold: true }
+                                                Item { implicitWidth: 4 }
                                                 SportChip {
                                                     theme: root
-                                                    icon: ""
-                                                    label: root.sportsPlayerFrom === "game" ? "Game" : (root.sportsTeam && root.sportsTeam.abbr ? root.sportsTeam.abbr : "Back")
-                                                    onClicked: root.sportsView = root.sportsPlayerFrom
+                                                    icon: "\uf245"
+                                                    label: "Where my mouse is"
+                                                    active: root.capMon === ""
+                                                    onClicked: pins.adapter.capMonitor = ""
+                                                }
+                                                Repeater {
+                                                    model: Hyprland.monitors
+                                                    delegate: SportChip {
+                                                        required property var modelData
+                                                        required property int index
+                                                        theme: root
+                                                        label: (index + 1) + " · " + modelData.name + "  " + modelData.width + "×" + modelData.height
+                                                        active: root.capMon === modelData.name
+                                                        onClicked: pins.adapter.capMonitor = modelData.name
+                                                    }
                                                 }
                                                 Item { Layout.fillWidth: true }
                                             }
 
-                                            HubCard {
-                                                theme: root
+                                            RowLayout {
                                                 Layout.fillWidth: true
                                                 Layout.fillHeight: true
-                                                clip: true
+                                                spacing: 12
 
-                                                ColumnLayout {
-                                                    anchors.fill: parent
-                                                    anchors.margins: 18
-                                                    spacing: 16
+                                                // ---- Screenshot ----
+                                                HubCard {
+                                                    theme: root
+                                                    Layout.fillWidth: true
+                                                    Layout.fillHeight: true
+                                                    Layout.preferredWidth: 1
 
-                                                    RowLayout {
-                                                        Layout.fillWidth: true
-                                                        spacing: 22
-
-                                                        // headshot on a soft team-coloured card
-                                                        Rectangle {
-                                                            id: shotCard
-                                                            Layout.preferredWidth: 170
-                                                            Layout.preferredHeight: 170
-                                                            radius: 22
-                                                            color: root.overlay
-                                                            border.width: 1
-                                                            border.color: root.glassEdge
-                                                            clip: true
-                                                            Rectangle {
-                                                                anchors.fill: parent
-                                                                radius: parent.radius
-                                                                visible: root.sportsTeam !== null && (root.sportsTeam.color || "") !== ""
-                                                                color: root.sportsTeam && root.sportsTeam.color ? root.sportsTeam.color : "transparent"
-                                                                opacity: 0.45
-                                                            }
-                                                            Image {
-                                                                id: shotImg
-                                                                anchors.fill: parent
-                                                                anchors.topMargin: 10
-                                                                source: root.sportsPlayer ? root.sportsPlayer.headshot : ""
-                                                                sourceSize.width: 340
-                                                                fillMode: Image.PreserveAspectCrop
-                                                                verticalAlignment: Image.AlignBottom
-                                                                asynchronous: true
-                                                                smooth: true
-                                                                mipmap: true
-                                                            }
-                                                            Text {
-                                                                anchors.centerIn: parent
-                                                                visible: shotImg.status !== Image.Ready
-                                                                text: root.sportsPlayer ? (root.sportsPlayer.jersey || "") : ""
-                                                                color: root.fg
-                                                                font.pixelSize: 54
-                                                                font.bold: true
-                                                            }
-                                                        }
-
-                                                        ColumnLayout {
-                                                            Layout.fillWidth: true
-                                                            spacing: 6
-                                                            Text {
-                                                                text: root.sportsPlayer ? root.sportsPlayer.name : ""
-                                                                color: root.fg
-                                                                font.pixelSize: 26
-                                                                font.bold: true
-                                                            }
-                                                            Text {
-                                                                text: root.sportsPlayer ? ["#" + (root.sportsPlayer.jersey || "–"), root.sportsPlayer.pos,
-                                                                    (root.sportsPlayerFrom === "game" ? (root.sportsPlayer.team || "") : (root.sportsTeam ? root.sportsTeam.name : ""))].filter(x => x).join("  ·  ") : ""
-                                                                color: root.muted
-                                                                font.pixelSize: 14
-                                                            }
-                                                            Text {
-                                                                visible: root.sportsPlayer !== null && root.sportsPlayer.injury !== ""
-                                                                text: root.sportsPlayer ? root.sportsPlayer.injury : ""
-                                                                color: root.danger
-                                                                font.pixelSize: 13
-                                                                font.bold: true
-                                                            }
-
-                                                            Row {
-                                                                Layout.topMargin: 10
-                                                                spacing: 10
-                                                                Repeater {
-                                                                    model: root.sportsPlayer ? [
-                                                                        { k: "Height", v: root.sportsPlayer.height },
-                                                                        { k: "Weight", v: root.sportsPlayer.weight },
-                                                                        { k: "Age", v: root.sportsPlayer.age },
-                                                                        { k: "Seasons", v: root.sportsPlayer.exp }
-                                                                    ].filter(x => x.v) : []
-                                                                    delegate: Rectangle {
-                                                                        id: bio
-                                                                        required property var modelData
-                                                                        width: 104
-                                                                        height: 58
-                                                                        radius: 14
-                                                                        color: Qt.rgba(1, 1, 1, 0.05)
-                                                                        border.width: 1
-                                                                        border.color: root.glassEdge
-                                                                        Column {
-                                                                            anchors.centerIn: parent
-                                                                            spacing: 3
-                                                                            Text { anchors.horizontalCenter: parent.horizontalCenter; text: bio.modelData.v; color: root.fg; font.pixelSize: 15; font.bold: true }
-                                                                            Text { anchors.horizontalCenter: parent.horizontalCenter; text: bio.modelData.k; color: root.muted; font.pixelSize: 11 }
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-
-                                                    // ---- stats table ----
                                                     ColumnLayout {
-                                                        Layout.fillWidth: true
-                                                        Layout.fillHeight: true
-                                                        spacing: 4
-                                                        visible: root.sportsPlayerStats !== null && root.sportsPlayerStats.labels.length > 0
+                                                        anchors.fill: parent
+                                                        anchors.margins: 16
+                                                        spacing: 12
 
                                                         RowLayout {
+                                                            spacing: 8
+                                                            Text { text: "\uf030"; color: root.accent; font.family: root.iconFont; font.pixelSize: 15 }
+                                                            Text { text: "Screenshot"; color: root.fg; font.pixelSize: 15; font.bold: true }
+                                                        }
+
+                                                        GridLayout {
                                                             Layout.fillWidth: true
-                                                            Layout.leftMargin: 10
-                                                            Layout.rightMargin: 10
-                                                            spacing: 0
-                                                            Text { Layout.preferredWidth: 130; text: "Averages"; color: root.muted; font.pixelSize: 11; font.bold: true }
+                                                            columns: 2
+                                                            rowSpacing: 10
+                                                            columnSpacing: 10
+
                                                             Repeater {
-                                                                model: root.sportsPlayerStats ? root.sportsPlayerStats.labels : []
-                                                                delegate: Text {
+                                                                model: [
+                                                                    { icon: "\uf125", title: "Area", sub: "Drag a box", mode: "area" },
+                                                                    { icon: "\uf2d0", title: "Window", sub: "Click a window", mode: "window" },
+                                                                    { icon: "\uf108", title: "Screen", sub: root.capMon === "" ? "The one your mouse is on" : root.monLabel(root.capMonUsed), mode: "screen" },
+                                                                    { icon: "\uf26c", title: "All screens", sub: "Every monitor", mode: "all" }
+                                                                ]
+                                                                delegate: Rectangle {
+                                                                    id: cap
                                                                     required property var modelData
                                                                     Layout.fillWidth: true
                                                                     Layout.preferredWidth: 1
-                                                                    horizontalAlignment: Text.AlignRight
-                                                                    text: modelData
-                                                                    color: root.muted
-                                                                    font.pixelSize: 11
-                                                                    font.bold: true
+                                                                    Layout.preferredHeight: 74
+                                                                    radius: 18
+                                                                    color: capMouse.containsMouse ? root.overlay : root.bg
+                                                                    border.width: 1
+                                                                    border.color: root.glassEdge
+                                                                    scale: capMouse.pressed ? 0.95 : (capMouse.containsMouse ? 1.03 : 1)
+                                                                    Behavior on color { ColorAnimation { duration: root.animMs } }
+                                                                    Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+
+                                                                    RowLayout {
+                                                                        anchors.fill: parent
+                                                                        anchors.margins: 12
+                                                                        spacing: 10
+                                                                        Rectangle {
+                                                                            Layout.preferredWidth: 40
+                                                                            Layout.preferredHeight: 40
+                                                                            radius: 20
+                                                                            color: root.overlay
+                                                                            Text { anchors.centerIn: parent; text: cap.modelData.icon; color: root.accent; font.family: root.iconFont; font.pixelSize: 16 }
+                                                                        }
+                                                                        ColumnLayout {
+                                                                            Layout.fillWidth: true
+                                                                            spacing: 1
+                                                                            Text { Layout.fillWidth: true; text: cap.modelData.title; color: root.fg; font.pixelSize: 13; font.bold: true; elide: Text.ElideRight }
+                                                                            Text { Layout.fillWidth: true; text: cap.modelData.sub; color: root.muted; font.pixelSize: 11; elide: Text.ElideRight }
+                                                                        }
+                                                                    }
+                                                                    MouseArea {
+                                                                        id: capMouse
+                                                                        anchors.fill: parent
+                                                                        hoverEnabled: true
+                                                                        cursorShape: Qt.PointingHandCursor
+                                                                        onClicked: root.shot(cap.modelData.mode)
+                                                                    }
                                                                 }
                                                             }
                                                         }
-                                                        Repeater {
-                                                            model: root.sportsPlayerStats ? root.sportsPlayerStats.rows : []
-                                                            delegate: Rectangle {
-                                                                id: srow
-                                                                required property var modelData
-                                                                required property int index
-                                                                Layout.fillWidth: true
-                                                                Layout.preferredHeight: 36
-                                                                radius: 10
-                                                                color: srow.index % 2 === 0 ? Qt.rgba(1, 1, 1, 0.05) : "transparent"
-                                                                RowLayout {
-                                                                    anchors.fill: parent
-                                                                    anchors.leftMargin: 10
-                                                                    anchors.rightMargin: 10
-                                                                    spacing: 0
-                                                                    Text { Layout.preferredWidth: 130; text: srow.modelData.name; color: root.fg; font.pixelSize: 13; font.bold: true; elide: Text.ElideRight }
-                                                                    Repeater {
-                                                                        model: srow.modelData.stats
-                                                                        delegate: Text {
-                                                                            required property var modelData
-                                                                            Layout.fillWidth: true
-                                                                            Layout.preferredWidth: 1
-                                                                            horizontalAlignment: Text.AlignRight
-                                                                            text: modelData
-                                                                            color: root.fg
-                                                                            font.pixelSize: 13
-                                                                        }
-                                                                    }
+
+                                                        // delay
+                                                        RowLayout {
+                                                            Layout.fillWidth: true
+                                                            spacing: 8
+                                                            Text { text: "Delay"; color: root.muted; font.pixelSize: 12 }
+                                                            Item { Layout.fillWidth: true }
+                                                            Repeater {
+                                                                model: [0, 3, 5, 10]
+                                                                delegate: Rectangle {
+                                                                    id: dly
+                                                                    required property int modelData
+                                                                    readonly property bool on: root.shotDelay === dly.modelData
+                                                                    width: 52
+                                                                    height: 30
+                                                                    radius: 10
+                                                                    color: dly.on ? root.accent : (dlyMouse.containsMouse ? root.overlay : root.bg)
+                                                                    border.width: 1
+                                                                    border.color: root.glassEdge
+                                                                    Behavior on color { ColorAnimation { duration: root.animMs } }
+                                                                    Text { anchors.centerIn: parent; text: dly.modelData === 0 ? "Now" : dly.modelData + "s"; color: dly.on ? root.bg : root.fg; font.pixelSize: 12; font.bold: dly.on }
+                                                                    MouseArea { id: dlyMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.shotDelay = dly.modelData }
                                                                 }
                                                             }
                                                         }
                                                         Item { Layout.fillHeight: true }
                                                     }
+                                                }
 
-                                                    Text {
+                                                // ---- Screen recording ----
+                                                HubCard {
+                                                    theme: root
+                                                    Layout.fillWidth: true
+                                                    Layout.fillHeight: true
+                                                    Layout.preferredWidth: 1
+
+                                                    ColumnLayout {
+                                                        anchors.fill: parent
+                                                        anchors.margins: 16
+                                                        spacing: 12
+
+                                                        RowLayout {
+                                                            spacing: 8
+                                                            Text { text: "\uf03d"; color: root.recording ? root.danger : root.accent; font.family: root.iconFont; font.pixelSize: 15 }
+                                                            Text { text: "Screen recording"; color: root.fg; font.pixelSize: 15; font.bold: true }
+                                                        }
+
+                                                        // not installed
+                                                        ColumnLayout {
+                                                            visible: !root.canRecord
+                                                            Layout.fillWidth: true
+                                                            Layout.fillHeight: true
+                                                            spacing: 6
+                                                            Item { Layout.fillHeight: true }
+                                                            Text {
+                                                                Layout.fillWidth: true
+                                                                horizontalAlignment: Text.AlignHCenter
+                                                                wrapMode: Text.Wrap
+                                                                text: "Recording needs wf-recorder.\nInstall it in a terminal with:"
+                                                                color: root.muted
+                                                                font.pixelSize: 13
+                                                            }
+                                                            Text {
+                                                                Layout.alignment: Qt.AlignHCenter
+                                                                text: "sudo pacman -S wf-recorder"
+                                                                color: root.accent
+                                                                font.pixelSize: 13
+                                                                font.family: "monospace"
+                                                            }
+                                                            Item { Layout.fillHeight: true }
+                                                        }
+
+                                                        // recording now
+                                                        ColumnLayout {
+                                                            visible: root.canRecord && root.recording
+                                                            Layout.fillWidth: true
+                                                            Layout.fillHeight: true
+                                                            spacing: 10
+                                                            Item { Layout.fillHeight: true }
+                                                            Rectangle {
+                                                                Layout.alignment: Qt.AlignHCenter
+                                                                width: 22
+                                                                height: 22
+                                                                radius: 11
+                                                                color: root.danger
+                                                                SequentialAnimation on opacity {
+                                                                    running: root.recording
+                                                                    loops: Animation.Infinite
+                                                                    NumberAnimation { to: 0.3; duration: 700 }
+                                                                    NumberAnimation { to: 1; duration: 700 }
+                                                                }
+                                                            }
+                                                            Text {
+                                                                Layout.alignment: Qt.AlignHCenter
+                                                                text: root.fmt(root.recSeconds)
+                                                                color: root.fg
+                                                                font.pixelSize: 34
+                                                                font.bold: true
+                                                            }
+                                                            BarButton {
+                                                                theme: root
+                                                                Layout.alignment: Qt.AlignHCenter
+                                                                icon: "\uf04d"
+                                                                label: "Stop recording"
+                                                                onClicked: mouse => root.stopRecording()
+                                                            }
+                                                            Item { Layout.fillHeight: true }
+                                                        }
+
+                                                        // ready to record
+                                                        ColumnLayout {
+                                                            visible: root.canRecord && !root.recording
+                                                            Layout.fillWidth: true
+                                                            Layout.fillHeight: true
+                                                            spacing: 10
+
+                                                            Repeater {
+                                                                model: [
+                                                                    { icon: "\uf125", title: "Record an area", sub: "Drag a box, then it starts", mode: "area" },
+                                                                    { icon: "\uf108", title: "Record a screen", sub: root.capMon === "" ? "The one your mouse is on" : root.monLabel(root.capMonUsed), mode: "screen" }
+                                                                ]
+                                                                delegate: Rectangle {
+                                                                    id: rcap
+                                                                    required property var modelData
+                                                                    Layout.fillWidth: true
+                                                                    Layout.preferredHeight: 64
+                                                                    radius: 18
+                                                                    color: rcapMouse.containsMouse ? root.overlay : root.bg
+                                                                    border.width: 1
+                                                                    border.color: root.glassEdge
+                                                                    scale: rcapMouse.pressed ? 0.95 : (rcapMouse.containsMouse ? 1.02 : 1)
+                                                                    Behavior on color { ColorAnimation { duration: root.animMs } }
+                                                                    Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+
+                                                                    RowLayout {
+                                                                        anchors.fill: parent
+                                                                        anchors.margins: 12
+                                                                        spacing: 10
+                                                                        Rectangle {
+                                                                            Layout.preferredWidth: 40
+                                                                            Layout.preferredHeight: 40
+                                                                            radius: 20
+                                                                            color: Qt.rgba(root.danger.r, root.danger.g, root.danger.b, 0.18)
+                                                                            Text { anchors.centerIn: parent; text: rcap.modelData.icon; color: root.danger; font.family: root.iconFont; font.pixelSize: 16 }
+                                                                        }
+                                                                        ColumnLayout {
+                                                                            Layout.fillWidth: true
+                                                                            spacing: 1
+                                                                            Text { Layout.fillWidth: true; text: rcap.modelData.title; color: root.fg; font.pixelSize: 13; font.bold: true; elide: Text.ElideRight }
+                                                                            Text { Layout.fillWidth: true; text: rcap.modelData.sub; color: root.muted; font.pixelSize: 11; elide: Text.ElideRight }
+                                                                        }
+                                                                    }
+                                                                    MouseArea {
+                                                                        id: rcapMouse
+                                                                        anchors.fill: parent
+                                                                        hoverEnabled: true
+                                                                        cursorShape: Qt.PointingHandCursor
+                                                                        onClicked: root.record(rcap.modelData.mode)
+                                                                    }
+                                                                }
+                                                            }
+
+                                                            // sound
+                                                            RowLayout {
+                                                                Layout.fillWidth: true
+                                                                spacing: 8
+                                                                Text { text: "Sound"; color: root.muted; font.pixelSize: 12 }
+                                                                Item { Layout.fillWidth: true }
+                                                                Repeater {
+                                                                    model: [
+                                                                        { key: "none", name: "None" },
+                                                                        { key: "system", name: "Computer" },
+                                                                        { key: "mic", name: "Mic" },
+                                                                        { key: "both", name: "Both" }
+                                                                    ]
+                                                                    delegate: Rectangle {
+                                                                        id: aud
+                                                                        required property var modelData
+                                                                        readonly property bool on: root.recAudio === aud.modelData.key
+                                                                        width: audText.implicitWidth + 22
+                                                                        height: 30
+                                                                        radius: 10
+                                                                        color: aud.on ? root.accent : (audMouse.containsMouse ? root.overlay : root.bg)
+                                                                        border.width: 1
+                                                                        border.color: root.glassEdge
+                                                                        Behavior on color { ColorAnimation { duration: root.animMs } }
+                                                                        Text { id: audText; anchors.centerIn: parent; text: aud.modelData.name; color: aud.on ? root.bg : root.fg; font.pixelSize: 12; font.bold: aud.on }
+                                                                        MouseArea { id: audMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.recAudio = aud.modelData.key }
+                                                                    }
+                                                                }
+                                                                // opens the Microphone card (level, test, volume) below
+                                                                Rectangle {
+                                                                    width: 30
+                                                                    height: 30
+                                                                    radius: 15
+                                                                    color: root.micPanel ? root.accent : (micBtnMouse.containsMouse ? root.overlay : root.bg)
+                                                                    border.width: 1
+                                                                    border.color: root.glassEdge
+                                                                    Behavior on color { ColorAnimation { duration: root.animMs } }
+                                                                    Text { anchors.centerIn: parent; text: "\uf130"; font.family: root.iconFont; font.pixelSize: 13; color: root.micPanel ? root.bg : root.fg }
+                                                                    MouseArea { id: micBtnMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.micPanel = !root.micPanel }
+                                                                }
+                                                            }
+                                                            Item { Layout.fillHeight: true }
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            // ---- Microphone: level meter, test, volume (opened from the mic button by Sound) ----
+                                            HubCard {
+                                                theme: root
+                                                visible: root.micPanel
+                                                Layout.fillWidth: true
+                                                Layout.preferredHeight: 168
+
+                                                ColumnLayout {
+                                                    anchors.fill: parent
+                                                    anchors.margins: 14
+                                                    spacing: 10
+
+                                                    RowLayout {
+                                                        Layout.fillWidth: true
+                                                        spacing: 10
+                                                        Text { text: ""; color: root.accent; font.family: root.iconFont; font.pixelSize: 14 }
+                                                        Text { text: "Microphone"; color: root.fg; font.pixelSize: 13; font.bold: true }
+                                                        Text {
+                                                            Layout.maximumWidth: 150
+                                                            text: root.source ? (root.source.description || root.source.name) : "No microphone found"
+                                                            color: root.muted
+                                                            font.pixelSize: 11
+                                                            elide: Text.ElideRight
+                                                        }
+                                                        // live level: talk and watch it move
+                                                        Rectangle {
+                                                            Layout.fillWidth: true
+                                                            implicitHeight: 12
+                                                            radius: 6
+                                                            color: root.bg
+                                                            border.width: 1
+                                                            border.color: root.glassEdge
+                                                            Rectangle {
+                                                                anchors.left: parent.left
+                                                                anchors.verticalCenter: parent.verticalCenter
+                                                                anchors.leftMargin: 2
+                                                                height: parent.height - 4
+                                                                radius: height / 2
+                                                                width: Math.max(height, (parent.width - 4) * Math.min(1, root.micLevel))
+                                                                color: root.micLevel > 0.9 ? root.danger : root.accent
+                                                                Behavior on width { NumberAnimation { duration: 70 } }
+                                                            }
+                                                            // a mark at the level a good, clear voice reaches
+                                                            Rectangle {
+                                                                x: (parent.width - 4) * 0.5 + 2
+                                                                width: 1
+                                                                height: parent.height
+                                                                color: root.muted
+                                                                opacity: 0.6
+                                                            }
+                                                        }
+                                                        BarButton {
+                                                            theme: root
+                                                            icon: root.micTest === "" ? "" : (root.micTest === "rec" ? "" : "")
+                                                            label: root.micTest === "" ? "Test" : (root.micTest === "rec" ? "Talk now…" : "Playing")
+                                                            onClicked: mouse => root.runMicTest()
+                                                        }
+                                                    }
+
+                                                    RowLayout {
+                                                        Layout.fillWidth: true
+                                                        spacing: 16
+
+                                                        ColumnLayout {
+                                                            Layout.fillWidth: true
+                                                            Layout.preferredWidth: 1
+                                                            spacing: 6
+                                                            RowLayout {
+                                                                Layout.fillWidth: true
+                                                                Text { Layout.fillWidth: true; text: "Mic volume (everywhere)"; color: root.fg; font.pixelSize: 12 }
+                                                                Text { text: Math.round(root.micVolShown * 100) + "%"; color: root.muted; font.pixelSize: 12 }
+                                                            }
+                                                            ValueBar {
+                                                                Layout.fillWidth: true
+                                                                theme: root
+                                                                value: root.micVolShown / 2
+                                                                onMoved: v => root.setMicVolume(Math.round(v * 40) / 20)
+                                                            }
+                                                        }
+                                                        ColumnLayout {
+                                                            Layout.fillWidth: true
+                                                            Layout.preferredWidth: 1
+                                                            spacing: 6
+                                                            opacity: root.recAudio === "both" ? 1 : 0.5
+                                                            RowLayout {
+                                                                Layout.fillWidth: true
+                                                                Text { Layout.fillWidth: true; text: "Computer sound when using Both"; color: root.fg; font.pixelSize: 12; elide: Text.ElideRight }
+                                                                Text { text: root.recSysLevel + "%"; color: root.muted; font.pixelSize: 12 }
+                                                            }
+                                                            ValueBar {
+                                                                Layout.fillWidth: true
+                                                                theme: root
+                                                                value: root.recSysLevel / 100
+                                                                onMoved: v => pins.adapter.recSysLevel = Math.max(5, Math.round(v * 20) * 5)
+                                                            }
+                                                        }
+                                                    }
+
+                                                    // ---- background noise removal ----
+                                                    RowLayout {
+                                                        Layout.fillWidth: true
+                                                        spacing: 8
+                                                        HubToggle {
+                                                            theme: root
+                                                            visible: root.denoiseState !== "missing"
+                                                            Layout.preferredWidth: 250
+                                                            Layout.preferredHeight: 50
+                                                            item: ({
+                                                                icon: "\uf131",
+                                                                title: "Remove background noise",
+                                                                sub: root.denoiseState === "busy" ? "Switching…"
+                                                                    : root.denoiseState === "on" ? "Fans, keys and hum filtered out" : "Off",
+                                                                active: root.denoiseState === "on" || (root.denoiseState === "busy" && pins.adapter.micDenoise),
+                                                                ok: root.denoiseState !== "busy",
+                                                                run: () => root.setDenoise(!pins.adapter.micDenoise, "")
+                                                            })
+                                                        }
+                                                        Repeater {
+                                                            model: [ { id: "light", name: "Light" }, { id: "normal", name: "Normal" }, { id: "strong", name: "Strong" } ]
+                                                            delegate: SportChip {
+                                                                required property var modelData
+                                                                visible: root.denoiseState !== "missing"
+                                                                theme: root
+                                                                label: modelData.name
+                                                                active: root.denoiseLevel === modelData.id
+                                                                onClicked: {
+                                                                    if (pins.adapter.micDenoise) root.setDenoise(true, modelData.id);
+                                                                    else pins.adapter.micDenoiseLevel = modelData.id;
+                                                                }
+                                                            }
+                                                        }
+                                                        // the filter isn't installed yet
+                                                        Text {
+                                                            visible: root.denoiseState === "missing"
+                                                            text: "\uf131  Noise removal needs one small package:"
+                                                            font.family: root.iconFont
+                                                            color: root.muted
+                                                            font.pixelSize: 12
+                                                        }
+                                                        BarButton {
+                                                            visible: root.denoiseState === "missing"
+                                                            theme: root
+                                                            icon: "\uf0c5"
+                                                            label: "sudo pacman -S noise-suppression-for-voice"
+                                                            onClicked: mouse => Quickshell.execDetached(["wl-copy", "sudo pacman -S noise-suppression-for-voice"])
+                                                        }
+                                                        Item { Layout.fillWidth: true }
+                                                    }
+                                                }
+                                            }
+
+                                            // ---- Recent screenshots (the Microphone card takes its place while open) ----
+                                            HubCard {
+                                                theme: root
+                                                visible: !root.micPanel
+                                                Layout.fillWidth: true
+                                                Layout.preferredHeight: 128
+
+                                                FolderListModel {
+                                                    id: recentShots
+                                                    folder: "file://" + Quickshell.env("HOME") + "/Pictures/Screenshots"
+                                                    nameFilters: ["*.png", "*.jpg"]
+                                                    showDirs: false
+                                                    sortField: FolderListModel.Time
+                                                }
+
+                                                RowLayout {
+                                                    anchors.fill: parent
+                                                    anchors.margins: 12
+                                                    spacing: 10
+
+                                                    ListView {
+                                                        id: shotStrip
                                                         Layout.fillWidth: true
                                                         Layout.fillHeight: true
-                                                        horizontalAlignment: Text.AlignHCenter
-                                                        verticalAlignment: Text.AlignVCenter
-                                                        visible: root.sportsPlayerStats === null || root.sportsPlayerStats.labels.length === 0
-                                                        text: root.sportsPlayerStats === null ? "Loading stats…" : "No stats for this player yet"
-                                                        color: root.muted
-                                                        font.pixelSize: 13
+                                                        orientation: ListView.Horizontal
+                                                        spacing: 8
+                                                        clip: true
+                                                        model: recentShots
+                                                        delegate: Rectangle {
+                                                            id: rs
+                                                            required property url fileUrl
+                                                            required property int index
+                                                            visible: rs.index < 8
+                                                            width: visible ? 170 : 0
+                                                            height: shotStrip.height
+                                                            radius: 12
+                                                            color: root.overlay
+                                                            border.width: rsMouse.containsMouse ? 2 : 0
+                                                            border.color: root.accent
+                                                            Image {
+                                                                anchors.fill: parent
+                                                                anchors.margins: 3
+                                                                source: rs.fileUrl
+                                                                asynchronous: true
+                                                                fillMode: Image.PreserveAspectCrop
+                                                                sourceSize.width: 340
+                                                            }
+                                                            MouseArea {
+                                                                id: rsMouse
+                                                                anchors.fill: parent
+                                                                hoverEnabled: true
+                                                                cursorShape: Qt.PointingHandCursor
+                                                                onClicked: { root.hubOpen = false; Quickshell.execDetached(["xdg-open", rs.fileUrl.toString()]); }
+                                                            }
+                                                        }
+
+                                                        Text {
+                                                            anchors.centerIn: parent
+                                                            visible: recentShots.count === 0
+                                                            text: "Your screenshots will show up here"
+                                                            color: root.muted
+                                                            font.pixelSize: 12
+                                                        }
+                                                    }
+
+                                                    ColumnLayout {
+                                                        Layout.preferredWidth: 150
+                                                        Layout.maximumWidth: 150
+                                                        Layout.fillWidth: false
+                                                        spacing: 8
+                                                        BarButton {
+                                                            theme: root
+                                                            Layout.fillWidth: true
+                                                            icon: "\uf07b"
+                                                            label: "Screenshots"
+                                                            onClicked: mouse => { root.hubOpen = false; Quickshell.execDetached(["sh", "-c", "mkdir -p \"$HOME/Pictures/Screenshots\" && xdg-open \"$HOME/Pictures/Screenshots\""]); }
+                                                        }
+                                                        BarButton {
+                                                            theme: root
+                                                            Layout.fillWidth: true
+                                                            icon: "\uf07b"
+                                                            label: "Recordings"
+                                                            onClicked: mouse => { root.hubOpen = false; Quickshell.execDetached(["sh", "-c", "mkdir -p \"$HOME/Videos/Recordings\" && xdg-open \"$HOME/Videos/Recordings\""]); }
+                                                        }
                                                     }
                                                 }
                                             }
                                         }
 
-                                        // =========== One game: live box score ===========
+                                        // ===== 7: Sports =====
                                         ColumnLayout {
                                             spacing: 10
 
-                                            RowLayout {
-                                                Layout.fillWidth: true
-                                                spacing: 8
-                                                SportChip {
-                                                    theme: root
-                                                    icon: ""
-                                                    label: "Back"
-                                                    onClicked: root.sportsShow(root.sportsBackTo === "team" ? "team" : root.sportsBackTo)
-                                                }
-                                                Item { Layout.fillWidth: true }
-                                                Text {
-                                                    visible: root.sportsGame !== null && root.sportsGame.state === "in"
-                                                    text: "Live · updates every 15 s"
-                                                    color: root.muted
-                                                    font.pixelSize: 11
-                                                }
-                                            }
-
-                                            // ---- scoreboard: away  score  [status + quarters]  score  home ----
-                                            HubCard {
-                                                theme: root
-                                                Layout.fillWidth: true
-                                                Layout.preferredHeight: 108
-
-                                                RowLayout {
-                                                    anchors.fill: parent
-                                                    anchors.leftMargin: 22
-                                                    anchors.rightMargin: 22
-                                                    spacing: 16
-
-                                                    Repeater {
-                                                        model: ["away", "status", "home"]
-                                                        delegate: Item {
-                                                            id: sbPart
-                                                            required property string modelData
-                                                            required property int index
-                                                            readonly property var t: root.sportsGame ? (modelData === "away" ? root.sportsGame.away : modelData === "home" ? root.sportsGame.home : null) : null
-                                                            readonly property string score: !root.sportsBox ? (t ? t.score : "") : (modelData === "away" ? root.sportsBox.away : root.sportsBox.home)
-                                                            readonly property bool lost: root.sportsGame !== null && root.sportsGame.state === "post" && sbPart.t !== null
-                                                                && Number(sbPart.score) < Number(modelData === "away" ? (root.sportsBox ? root.sportsBox.home : root.sportsGame.home.score) : (root.sportsBox ? root.sportsBox.away : root.sportsGame.away.score))
-                                                            Layout.fillWidth: modelData !== "status"
-                                                            Layout.fillHeight: true
-                                                            Layout.preferredWidth: modelData === "status" ? sbStatus.implicitWidth : 1
-
-                                                            // a team: logo + name, big score toward the middle
-                                                            RowLayout {
-                                                                anchors.fill: parent
-                                                                visible: sbPart.modelData !== "status"
-                                                                layoutDirection: sbPart.modelData === "home" ? Qt.RightToLeft : Qt.LeftToRight
-                                                                spacing: 14
-                                                                TeamLogo {
-                                                                    theme: root
-                                                                    Layout.preferredWidth: 52
-                                                                    Layout.preferredHeight: 52
-                                                                    source: sbPart.t ? sbPart.t.logo : ""
-                                                                    abbr: sbPart.t ? sbPart.t.abbr : ""
-                                                                }
-                                                                Column {
-                                                                    spacing: 2
-                                                                    Text {
-                                                                        text: sbPart.t ? sbPart.t.name : ""
-                                                                        color: sbPart.lost ? root.muted : root.fg
-                                                                        font.pixelSize: 16
-                                                                        font.bold: true
-                                                                    }
-                                                                    Text {
-                                                                        text: sbPart.t ? (sbPart.t.record || sbPart.t.abbr) : ""
-                                                                        color: root.muted
-                                                                        font.pixelSize: 11
-                                                                    }
-                                                                }
-                                                                Item { Layout.fillWidth: true }
-                                                                Text {
-                                                                    text: sbPart.score
-                                                                    color: sbPart.lost ? root.muted : root.fg
-                                                                    font.pixelSize: 38
-                                                                    font.bold: true
-                                                                }
-                                                            }
-
-                                                            // the middle: status and the score by quarter
-                                                            Column {
-                                                                id: sbStatus
-                                                                anchors.centerIn: parent
-                                                                visible: sbPart.modelData === "status"
-                                                                spacing: 6
-                                                                Row {
-                                                                    anchors.horizontalCenter: parent.horizontalCenter
-                                                                    spacing: 6
-                                                                    Rectangle {
-                                                                        visible: root.sportsGame !== null && root.sportsGame.state === "in"
-                                                                        anchors.verticalCenter: parent.verticalCenter
-                                                                        width: 8
-                                                                        height: 8
-                                                                        radius: 4
-                                                                        color: root.danger
-                                                                        SequentialAnimation on opacity {
-                                                                            running: root.sportsGame !== null && root.sportsGame.state === "in" && root.sportsVisible
-                                                                            loops: Animation.Infinite
-                                                                            NumberAnimation { to: 0.25; duration: 700 }
-                                                                            NumberAnimation { to: 1; duration: 700 }
-                                                                        }
-                                                                    }
-                                                                    Text {
-                                                                        text: !root.sportsGame ? "" : root.sportsGame.state === "pre" ? root.sportsTime(root.sportsGame.date)
-                                                                            : (root.sportsBox && root.sportsBox.detail ? root.sportsBox.detail : root.sportsGame.detail)
-                                                                        color: root.sportsGame && root.sportsGame.state === "in" ? root.danger : root.fg
-                                                                        font.pixelSize: 13
-                                                                        font.bold: true
-                                                                    }
-                                                                }
-                                                                // Q1 Q2 Q3 Q4 (OT)
-                                                                Grid {
-                                                                    anchors.horizontalCenter: parent.horizontalCenter
-                                                                    visible: root.sportsBox !== null && root.sportsBox.lines.length > 0
-                                                                    columns: root.sportsBox ? root.sportsBox.lines.length + 1 : 1
-                                                                    columnSpacing: 10
-                                                                    rowSpacing: 2
-                                                                    Repeater {
-                                                                        model: {
-                                                                            if (!root.sportsBox || !root.sportsGame) return [];
-                                                                            const L = root.sportsBox.lines, out = [{ t: "", h: true }];
-                                                                            L.forEach(l => out.push({ t: l.label, h: true }));
-                                                                            out.push({ t: root.sportsGame.away.abbr, h: true });
-                                                                            L.forEach(l => out.push({ t: l.away, h: false }));
-                                                                            out.push({ t: root.sportsGame.home.abbr, h: true });
-                                                                            L.forEach(l => out.push({ t: l.home, h: false }));
-                                                                            return out;
-                                                                        }
-                                                                        delegate: Text {
-                                                                            required property var modelData
-                                                                            horizontalAlignment: Text.AlignHCenter
-                                                                            width: 24
-                                                                            text: modelData.t
-                                                                            color: modelData.h ? root.muted : root.fg
-                                                                            font.pixelSize: 11
-                                                                            font.bold: !modelData.h
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-
-                                            // ---- which team's players ----
+                                            // ---- top row: pages, favourite team, leagues, refresh ----
                                             RowLayout {
                                                 Layout.fillWidth: true
                                                 spacing: 6
+
                                                 Repeater {
-                                                    model: root.sportsBox ? root.sportsBox.teams : []
+                                                    model: [
+                                                        { id: "games", name: "Games", icon: "" },
+                                                        { id: "standings", name: "Standings", icon: "" },
+                                                        { id: "teams", name: "Teams", icon: "" }
+                                                    ]
                                                     delegate: SportChip {
                                                         required property var modelData
-                                                        required property int index
                                                         theme: root
+                                                        icon: modelData.icon
                                                         label: modelData.name
-                                                        active: root.sportsBoxSide === index
-                                                        onClicked: root.sportsBoxSide = index
+                                                        active: root.sportsView === modelData.id
+                                                        onClicked: root.sportsShow(modelData.id)
                                                     }
                                                 }
+
+                                                SportChip {
+                                                    visible: root.sportsFavId !== ""
+                                                    theme: root
+                                                    icon: ""
+                                                    label: root.sportsFavAbbr
+                                                    active: root.sportsView === "team" && root.sportsTeam !== null && root.sportsTeam.id === root.sportsFavId
+                                                    onClicked: root.sportsOpenTeam(root.sportsFavId)
+                                                }
+
                                                 Item { Layout.fillWidth: true }
+
+                                                Repeater {
+                                                    model: root.sportsLeagues
+                                                    delegate: SportChip {
+                                                        required property var modelData
+                                                        theme: root
+                                                        label: modelData.name
+                                                        active: root.sportsLeague === modelData.id
+                                                        onClicked: root.sportsSetLeague(modelData.id)
+                                                    }
+                                                }
+
+                                                SportChip {
+                                                    id: sportsRefreshBtn
+                                                    theme: root
+                                                    icon: ""
+                                                    onClicked: root.sportsRefresh()
+                                                    RotationAnimation {
+                                                        target: sportsRefreshBtn
+                                                        running: root.sportsLoading
+                                                        from: 0
+                                                        to: 360
+                                                        duration: 900
+                                                        loops: Animation.Infinite
+                                                        onStopped: sportsRefreshBtn.rotation = 0
+                                                    }
+                                                }
                                             }
 
-                                            // ---- the box score ----
-                                            HubCard {
-                                                id: boxCard
-                                                theme: root
+                                            // ---- the page for the chosen view ----
+                                            StackLayout {
                                                 Layout.fillWidth: true
                                                 Layout.fillHeight: true
-                                                clip: true
-                                                readonly property var team: root.sportsBox && root.sportsBox.teams.length > root.sportsBoxSide ? root.sportsBox.teams[root.sportsBoxSide] : null
-                                                readonly property int ptsCol: boxCard.team ? boxCard.team.labels.indexOf("PTS") : -1
+                                                currentIndex: ["games", "standings", "teams", "team", "player", "game"].indexOf(root.sportsView)
 
+                                                // =========== Games ===========
                                                 ColumnLayout {
-                                                    anchors.fill: parent
-                                                    anchors.margins: 10
-                                                    spacing: 2
-                                                    visible: boxCard.team !== null && boxCard.team.players.length > 0
+                                                    spacing: 8
 
-                                                    // headings
                                                     RowLayout {
                                                         Layout.fillWidth: true
-                                                        Layout.leftMargin: 8
-                                                        Layout.rightMargin: 8
-                                                        spacing: 0
-                                                        Text { Layout.preferredWidth: 170; text: "Player"; color: root.muted; font.pixelSize: 11; font.bold: true }
-                                                        Repeater {
-                                                            model: boxCard.team ? boxCard.team.labels : []
-                                                            delegate: Text {
+                                                        spacing: 6
+                                                        SportChip { theme: root; icon: ""; onClicked: root.sportsDay -= 1 }
+                                                        Text {
+                                                            Layout.fillWidth: true
+                                                            horizontalAlignment: Text.AlignHCenter
+                                                            text: root.sportsDayLabel
+                                                            color: root.fg
+                                                            font.pixelSize: 15
+                                                            font.bold: true
+                                                        }
+                                                        SportChip { theme: root; label: "Today"; visible: root.sportsDay !== 0; onClicked: root.sportsDay = 0 }
+                                                        SportChip { theme: root; icon: ""; onClicked: root.sportsDay += 1 }
+                                                    }
+
+                                                    Item {
+                                                        Layout.fillWidth: true
+                                                        Layout.fillHeight: true
+
+                                                        GridView {
+                                                            id: gamesGrid
+                                                            anchors.fill: parent
+                                                            clip: true
+                                                            cellWidth: Math.floor(width / 2)
+                                                            cellHeight: 122
+                                                            boundsBehavior: Flickable.StopAtBounds
+                                                            model: root.sportsGames
+
+                                                            delegate: Item {
+                                                                id: gameCard
                                                                 required property var modelData
-                                                                Layout.fillWidth: true
-                                                                Layout.preferredWidth: 1
-                                                                horizontalAlignment: Text.AlignRight
-                                                                text: modelData
+                                                                readonly property var g: modelData
+                                                                readonly property bool live: g.state === "in"
+                                                                readonly property bool fav: root.sportsFavId !== "" && (g.home.id === root.sportsFavId || g.away.id === root.sportsFavId)
+                                                                width: gamesGrid.cellWidth
+                                                                height: gamesGrid.cellHeight
+
+                                                                HubCard {
+                                                                    theme: root
+                                                                    anchors.fill: parent
+                                                                    anchors.margins: 5
+                                                                    radius: 16
+                                                                    border.color: gameCard.fav ? root.accent : root.glassEdge
+                                                                    color: gameOpen.containsMouse ? root.overlay : root.surface
+
+                                                                    // click the card: live box score (team names still open the team)
+                                                                    MouseArea {
+                                                                        id: gameOpen
+                                                                        anchors.fill: parent
+                                                                        hoverEnabled: true
+                                                                        cursorShape: Qt.PointingHandCursor
+                                                                        onClicked: root.sportsOpenGame(gameCard.g)
+                                                                    }
+
+                                                                    ColumnLayout {
+                                                                        anchors.fill: parent
+                                                                        anchors.leftMargin: 14
+                                                                        anchors.rightMargin: 14
+                                                                        anchors.topMargin: 10
+                                                                        anchors.bottomMargin: 10
+                                                                        spacing: 2
+
+                                                                        Repeater {
+                                                                            model: [gameCard.g.away, gameCard.g.home]
+                                                                            delegate: Item {
+                                                                                id: gt
+                                                                                required property var modelData
+                                                                                readonly property bool lost: gameCard.g.state === "post" && !modelData.winner
+                                                                                Layout.fillWidth: true
+                                                                                Layout.preferredHeight: 32
+
+                                                                                RowLayout {
+                                                                                    anchors.fill: parent
+                                                                                    spacing: 10
+                                                                                    TeamLogo {
+                                                                                        theme: root
+                                                                                        Layout.preferredWidth: 28
+                                                                                        Layout.preferredHeight: 28
+                                                                                        source: gt.modelData.logo
+                                                                                        abbr: gt.modelData.abbr
+                                                                                    }
+                                                                                    Text {
+                                                                                        text: gt.modelData.name
+                                                                                        color: gt.lost ? root.muted : root.fg
+                                                                                        font.pixelSize: 14
+                                                                                        font.bold: !gt.lost
+                                                                                        elide: Text.ElideRight
+                                                                                        Layout.maximumWidth: 170
+                                                                                    }
+                                                                                    Text {
+                                                                                        text: gt.modelData.record
+                                                                                        color: root.muted
+                                                                                        font.pixelSize: 11
+                                                                                    }
+                                                                                    Item { Layout.fillWidth: true }
+                                                                                    Text {
+                                                                                        text: gt.modelData.score
+                                                                                        color: gt.lost ? root.muted : root.fg
+                                                                                        font.pixelSize: 20
+                                                                                        font.bold: true
+                                                                                    }
+                                                                                }
+                                                                                MouseArea {
+                                                                                    anchors.fill: parent
+                                                                                    cursorShape: Qt.PointingHandCursor
+                                                                                    onClicked: root.sportsOpenTeam(gt.modelData.id)
+                                                                                }
+                                                                            }
+                                                                        }
+
+                                                                        // status line
+                                                                        RowLayout {
+                                                                            Layout.fillWidth: true
+                                                                            Layout.topMargin: 4
+                                                                            spacing: 6
+                                                                            Rectangle {
+                                                                                visible: gameCard.live
+                                                                                Layout.preferredWidth: 8
+                                                                                Layout.preferredHeight: 8
+                                                                                radius: 4
+                                                                                color: root.danger
+                                                                                SequentialAnimation on opacity {
+                                                                                    running: gameCard.live && root.sportsVisible
+                                                                                    loops: Animation.Infinite
+                                                                                    NumberAnimation { to: 0.25; duration: 700 }
+                                                                                    NumberAnimation { to: 1; duration: 700 }
+                                                                                }
+                                                                            }
+                                                                            Text {
+                                                                                text: gameCard.g.state === "pre" ? root.sportsTime(gameCard.g.date) : gameCard.g.detail
+                                                                                color: gameCard.live ? root.danger : root.muted
+                                                                                font.pixelSize: 12
+                                                                                font.bold: gameCard.live
+                                                                            }
+                                                                            Item { Layout.fillWidth: true }
+                                                                            Text {
+                                                                                text: gameCard.g.tv
+                                                                                color: root.muted
+                                                                                font.pixelSize: 11
+                                                                                elide: Text.ElideRight
+                                                                                Layout.maximumWidth: 180
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+
+                                                        Column {
+                                                            anchors.centerIn: parent
+                                                            spacing: 8
+                                                            visible: root.sportsGames.length === 0
+                                                            Text {
+                                                                anchors.horizontalCenter: parent.horizontalCenter
+                                                                text: "󰠆"
                                                                 color: root.muted
-                                                                font.pixelSize: 11
-                                                                font.bold: true
+                                                                font.family: root.iconFont
+                                                                font.pixelSize: 40
+                                                            }
+                                                            Text {
+                                                                anchors.horizontalCenter: parent.horizontalCenter
+                                                                text: root.sportsLoading ? "Loading games…" : (root.sportsStatus || "No games on this day")
+                                                                color: root.muted
+                                                                font.pixelSize: 14
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                // =========== Standings ===========
+                                                ColumnLayout {
+                                                    spacing: 8
+
+                                                    ListView {
+                                                        Layout.fillWidth: true
+                                                        Layout.preferredHeight: 32
+                                                        orientation: ListView.Horizontal
+                                                        spacing: 6
+                                                        clip: true
+                                                        boundsBehavior: Flickable.StopAtBounds
+                                                        model: root.sportsConfs
+                                                        delegate: SportChip {
+                                                            required property var modelData
+                                                            required property int index
+                                                            theme: root
+                                                            label: modelData.name
+                                                            active: root.sportsConf === index
+                                                            onClicked: root.sportsConf = index
+                                                        }
+                                                    }
+
+                                                    HubCard {
+                                                        theme: root
+                                                        Layout.fillWidth: true
+                                                        Layout.fillHeight: true
+                                                        clip: true
+
+                                                        ColumnLayout {
+                                                            anchors.fill: parent
+                                                            anchors.margins: 12
+                                                            spacing: 4
+
+                                                            // column headings (same widths as the rows below)
+                                                            RowLayout {
+                                                                Layout.fillWidth: true
+                                                                Layout.leftMargin: 8
+                                                                Layout.rightMargin: 8
+                                                                spacing: 0
+                                                                Repeater {
+                                                                    model: [
+                                                                        { t: "#", w: 34, a: Text.AlignLeft },
+                                                                        { t: "Team", w: -1, a: Text.AlignLeft },
+                                                                        { t: "W", w: 52, a: Text.AlignRight },
+                                                                        { t: "L", w: 52, a: Text.AlignRight },
+                                                                        { t: "PCT", w: 64, a: Text.AlignRight },
+                                                                        { t: "GB", w: 56, a: Text.AlignRight },
+                                                                        { t: "STRK", w: 64, a: Text.AlignRight },
+                                                                        { t: "L10", w: 64, a: Text.AlignRight }
+                                                                    ]
+                                                                    delegate: Text {
+                                                                        required property var modelData
+                                                                        Layout.preferredWidth: modelData.w > 0 ? modelData.w : -1
+                                                                        Layout.fillWidth: modelData.w < 0
+                                                                        horizontalAlignment: modelData.a
+                                                                        text: modelData.t
+                                                                        color: root.muted
+                                                                        font.pixelSize: 11
+                                                                        font.bold: true
+                                                                    }
+                                                                }
+                                                            }
+
+                                                            ListView {
+                                                                id: standList
+                                                                Layout.fillWidth: true
+                                                                Layout.fillHeight: true
+                                                                clip: true
+                                                                boundsBehavior: Flickable.StopAtBounds
+                                                                model: root.sportsConfs.length > root.sportsConf ? root.sportsConfs[root.sportsConf].rows : []
+
+                                                                delegate: Rectangle {
+                                                                    id: sr
+                                                                    required property var modelData
+                                                                    required property int index
+                                                                    readonly property bool fav: modelData.id === root.sportsFavId
+                                                                    width: standList.width
+                                                                    height: 38
+                                                                    radius: 10
+                                                                    color: srMouse.containsMouse ? root.overlay : (sr.index % 2 === 0 ? Qt.rgba(1, 1, 1, 0.04) : "transparent")
+                                                                    border.width: sr.fav ? 1 : 0
+                                                                    border.color: root.accent
+
+                                                                    // NBA: line under 6th (playoffs) and 10th (play-in)
+                                                                    Rectangle {
+                                                                        visible: root.sportsLeague === "nba" && (sr.index === 5 || sr.index === 9)
+                                                                        anchors.bottom: parent.bottom
+                                                                        anchors.left: parent.left
+                                                                        anchors.right: parent.right
+                                                                        anchors.leftMargin: 8
+                                                                        anchors.rightMargin: 8
+                                                                        height: 1
+                                                                        color: root.glassEdge
+                                                                    }
+
+                                                                    RowLayout {
+                                                                        anchors.fill: parent
+                                                                        anchors.leftMargin: 8
+                                                                        anchors.rightMargin: 8
+                                                                        spacing: 0
+                                                                        Text { Layout.preferredWidth: 34; text: sr.index + 1; color: root.muted; font.pixelSize: 13 }
+                                                                        RowLayout {
+                                                                            Layout.fillWidth: true
+                                                                            spacing: 10
+                                                                            TeamLogo {
+                                                                                theme: root
+                                                                                Layout.preferredWidth: 24
+                                                                                Layout.preferredHeight: 24
+                                                                                source: sr.modelData.logo
+                                                                                abbr: sr.modelData.abbr
+                                                                            }
+                                                                            Text {
+                                                                                Layout.fillWidth: true
+                                                                                text: sr.modelData.name
+                                                                                color: root.fg
+                                                                                font.pixelSize: 13
+                                                                                font.bold: sr.fav
+                                                                                elide: Text.ElideRight
+                                                                            }
+                                                                        }
+                                                                        Text { Layout.preferredWidth: 52; horizontalAlignment: Text.AlignRight; text: sr.modelData.w; color: root.fg; font.pixelSize: 13; font.bold: true }
+                                                                        Text { Layout.preferredWidth: 52; horizontalAlignment: Text.AlignRight; text: sr.modelData.l; color: root.fg; font.pixelSize: 13 }
+                                                                        Text { Layout.preferredWidth: 64; horizontalAlignment: Text.AlignRight; text: sr.modelData.pct; color: root.muted; font.pixelSize: 13 }
+                                                                        Text { Layout.preferredWidth: 56; horizontalAlignment: Text.AlignRight; text: sr.modelData.gb; color: root.muted; font.pixelSize: 13 }
+                                                                        Text {
+                                                                            Layout.preferredWidth: 64
+                                                                            horizontalAlignment: Text.AlignRight
+                                                                            text: sr.modelData.strk
+                                                                            color: sr.modelData.strk.charAt(0) === "W" ? root.fg : root.muted
+                                                                            font.pixelSize: 13
+                                                                        }
+                                                                        Text { Layout.preferredWidth: 64; horizontalAlignment: Text.AlignRight; text: sr.modelData.l10; color: root.muted; font.pixelSize: 13 }
+                                                                    }
+                                                                    MouseArea {
+                                                                        id: srMouse
+                                                                        anchors.fill: parent
+                                                                        hoverEnabled: true
+                                                                        cursorShape: Qt.PointingHandCursor
+                                                                        onClicked: root.sportsOpenTeam(sr.modelData.id)
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+
+                                                        Text {
+                                                            anchors.centerIn: parent
+                                                            visible: root.sportsConfs.length === 0
+                                                            text: root.sportsLoading ? "Loading standings…" : (root.sportsStatus || "No standings yet")
+                                                            color: root.muted
+                                                            font.pixelSize: 14
+                                                        }
+                                                    }
+                                                }
+
+                                                // =========== Teams ===========
+                                                ColumnLayout {
+                                                    spacing: 8
+
+                                                    // search
+                                                    Rectangle {
+                                                        Layout.fillWidth: true
+                                                        Layout.preferredHeight: 36
+                                                        radius: 12
+                                                        color: root.surface
+                                                        border.width: 1
+                                                        border.color: teamSearch.activeFocus ? root.accent : root.glassEdge
+                                                        Text {
+                                                            id: teamSearchIcon
+                                                            anchors.left: parent.left
+                                                            anchors.leftMargin: 12
+                                                            anchors.verticalCenter: parent.verticalCenter
+                                                            text: ""
+                                                            font.family: root.iconFont
+                                                            font.pixelSize: 13
+                                                            color: root.muted
+                                                        }
+                                                        TextInput {
+                                                            id: teamSearch
+                                                            anchors.left: teamSearchIcon.right
+                                                            anchors.leftMargin: 10
+                                                            anchors.right: parent.right
+                                                            anchors.rightMargin: 12
+                                                            anchors.verticalCenter: parent.verticalCenter
+                                                            color: root.fg
+                                                            font.pixelSize: 13
+                                                            clip: true
+                                                            text: root.sportsTeamFilter
+                                                            onTextEdited: root.sportsTeamFilter = text
+                                                            Keys.onEscapePressed: { text = ""; root.sportsTeamFilter = ""; hubKeys.forceActiveFocus(); }
+                                                            Text {
+                                                                anchors.verticalCenter: parent.verticalCenter
+                                                                visible: teamSearch.text === ""
+                                                                text: "Find a team"
+                                                                color: root.muted
+                                                                font.pixelSize: 13
                                                             }
                                                         }
                                                     }
 
-                                                    ListView {
-                                                        id: boxList
+                                                    Item {
                                                         Layout.fillWidth: true
                                                         Layout.fillHeight: true
-                                                        clip: true
-                                                        boundsBehavior: Flickable.StopAtBounds
-                                                        model: boxCard.team ? boxCard.team.players.concat([{ totals: true }]) : []
 
-                                                        delegate: Rectangle {
-                                                            id: bp
-                                                            required property var modelData
-                                                            required property int index
-                                                            readonly property bool isTotal: modelData.totals === true
-                                                            readonly property bool benchStart: !isTotal && !modelData.starter && index > 0 && boxCard.team.players[index - 1].starter
-                                                            width: boxList.width
-                                                            height: (bp.benchStart ? 22 : 0) + 34
-                                                            radius: 8
-                                                            color: "transparent"
+                                                        GridView {
+                                                            id: teamGrid
+                                                            anchors.fill: parent
+                                                            clip: true
+                                                            cellWidth: Math.floor(width / 6)
+                                                            cellHeight: 112
+                                                            boundsBehavior: Flickable.StopAtBounds
+                                                            model: root.sportsAllTeams
 
-                                                            Text {
-                                                                visible: bp.benchStart
-                                                                x: 8
-                                                                y: 4
-                                                                text: "Bench"
-                                                                color: root.muted
-                                                                font.pixelSize: 11
-                                                                font.bold: true
-                                                            }
+                                                            delegate: Item {
+                                                                id: tc
+                                                                required property var modelData
+                                                                width: teamGrid.cellWidth
+                                                                height: teamGrid.cellHeight
 
-                                                            Rectangle {
-                                                                anchors.left: parent.left
-                                                                anchors.right: parent.right
-                                                                anchors.bottom: parent.bottom
-                                                                height: 34
-                                                                radius: 8
-                                                                color: bpMouse.containsMouse && !bp.isTotal ? root.overlay : (bp.isTotal ? Qt.rgba(1, 1, 1, 0.07) : (bp.index % 2 === 0 ? Qt.rgba(1, 1, 1, 0.035) : "transparent"))
-
-                                                                RowLayout {
+                                                                Rectangle {
                                                                     anchors.fill: parent
-                                                                    anchors.leftMargin: 8
-                                                                    anchors.rightMargin: 8
-                                                                    spacing: 0
+                                                                    anchors.margins: 4
+                                                                    radius: 16
+                                                                    color: tcMouse.containsMouse ? root.overlay : root.surface
+                                                                    border.width: 1
+                                                                    border.color: tc.modelData.id === root.sportsFavId ? root.accent : root.glassEdge
+                                                                    scale: tcMouse.pressed ? 0.95 : 1
+                                                                    Behavior on color { ColorAnimation { duration: 120 } }
+                                                                    Behavior on scale { NumberAnimation { duration: 120 } }
 
-                                                                    Row {
-                                                                        Layout.preferredWidth: 170
+                                                                    Column {
+                                                                        anchors.centerIn: parent
+                                                                        width: parent.width - 16
                                                                         spacing: 8
-                                                                        Text {
-                                                                            width: 22
-                                                                            visible: !bp.isTotal
-                                                                            anchors.verticalCenter: parent.verticalCenter
-                                                                            horizontalAlignment: Text.AlignRight
-                                                                            text: bp.isTotal ? "" : bp.modelData.jersey
-                                                                            color: root.muted
-                                                                            font.pixelSize: 11
+                                                                        TeamLogo {
+                                                                            theme: root
+                                                                            anchors.horizontalCenter: parent.horizontalCenter
+                                                                            width: 46
+                                                                            height: 46
+                                                                            source: tc.modelData.logo
+                                                                            abbr: tc.modelData.abbr
                                                                         }
                                                                         Text {
-                                                                            width: bp.isTotal ? 160 : 132
-                                                                            anchors.verticalCenter: parent.verticalCenter
-                                                                            text: bp.isTotal ? "Team" : bp.modelData.short + (bp.modelData.pos ? "  " + bp.modelData.pos : "")
+                                                                            width: parent.width
+                                                                            horizontalAlignment: Text.AlignHCenter
+                                                                            text: tc.modelData.short
                                                                             color: root.fg
                                                                             font.pixelSize: 12
-                                                                            font.bold: bp.isTotal
+                                                                            font.bold: true
                                                                             elide: Text.ElideRight
                                                                         }
                                                                     }
-
-                                                                    // didn't play: one muted line instead of numbers
-                                                                    Text {
-                                                                        Layout.fillWidth: true
-                                                                        visible: !bp.isTotal && (bp.modelData.dnp || bp.modelData.stats.length === 0)
-                                                                        text: "Didn't play" + (bp.modelData.reason ? "  ·  " + bp.modelData.reason.toLowerCase() : "")
-                                                                        color: root.muted
-                                                                        font.pixelSize: 11
-                                                                        font.italic: true
+                                                                    MouseArea {
+                                                                        id: tcMouse
+                                                                        anchors.fill: parent
+                                                                        hoverEnabled: true
+                                                                        cursorShape: Qt.PointingHandCursor
+                                                                        onClicked: root.sportsOpenTeam(tc.modelData.id)
                                                                     }
+                                                                }
+                                                            }
+                                                        }
+
+                                                        Text {
+                                                            anchors.centerIn: parent
+                                                            visible: root.sportsAllTeams.length === 0
+                                                            text: root.sportsLoading ? "Loading teams…" : (root.sportsStatus || "No teams match")
+                                                            color: root.muted
+                                                            font.pixelSize: 14
+                                                        }
+                                                    }
+                                                }
+
+                                                // =========== One team ===========
+                                                ColumnLayout {
+                                                    spacing: 10
+
+                                                    RowLayout {
+                                                        Layout.fillWidth: true
+                                                        spacing: 12
+                                                        SportChip { theme: root; icon: ""; label: "Back"; onClicked: root.sportsShow(root.sportsBackTo) }
+                                                        TeamLogo {
+                                                            theme: root
+                                                            Layout.preferredWidth: 48
+                                                            Layout.preferredHeight: 48
+                                                            source: root.sportsTeam ? (root.sportsTeam.logo || "") : ""
+                                                            abbr: root.sportsTeam ? (root.sportsTeam.abbr || "") : ""
+                                                        }
+                                                        Column {
+                                                            Layout.fillWidth: true
+                                                            spacing: 2
+                                                            Text {
+                                                                text: root.sportsTeam ? (root.sportsTeam.name || "Loading…") : ""
+                                                                color: root.fg
+                                                                font.pixelSize: 20
+                                                                font.bold: true
+                                                            }
+                                                            Text {
+                                                                text: root.sportsTeam ? [root.sportsTeam.record, root.sportsTeam.standing].filter(x => x).join("  ·  ") : ""
+                                                                color: root.muted
+                                                                font.pixelSize: 12
+                                                            }
+                                                        }
+                                                        SportChip {
+                                                            theme: root
+                                                            icon: ""
+                                                            label: root.sportsTeam && root.sportsTeam.id === root.sportsFavId ? "My team" : "Set as my team"
+                                                            active: root.sportsTeam !== null && root.sportsTeam.id === root.sportsFavId
+                                                            onClicked: root.sportsToggleFav()
+                                                        }
+                                                    }
+
+                                                    RowLayout {
+                                                        Layout.fillWidth: true
+                                                        Layout.fillHeight: true
+                                                        spacing: 12
+
+                                                        // ---- roster ----
+                                                        HubCard {
+                                                            theme: root
+                                                            Layout.fillWidth: true
+                                                            Layout.fillHeight: true
+                                                            Layout.preferredWidth: 3
+                                                            clip: true
+
+                                                            ColumnLayout {
+                                                                anchors.fill: parent
+                                                                anchors.margins: 12
+                                                                spacing: 6
+                                                                Text { text: "Roster"; color: root.fg; font.pixelSize: 14; font.bold: true }
+
+                                                                ListView {
+                                                                    id: rosterList
+                                                                    Layout.fillWidth: true
+                                                                    Layout.fillHeight: true
+                                                                    clip: true
+                                                                    spacing: 2
+                                                                    boundsBehavior: Flickable.StopAtBounds
+                                                                    model: root.sportsRoster
+
+                                                                    delegate: Rectangle {
+                                                                        id: rp
+                                                                        required property var modelData
+                                                                        width: rosterList.width
+                                                                        height: 40
+                                                                        radius: 10
+                                                                        color: rpMouse.containsMouse ? root.overlay : "transparent"
+
+                                                                        RowLayout {
+                                                                            anchors.fill: parent
+                                                                            anchors.leftMargin: 6
+                                                                            anchors.rightMargin: 10
+                                                                            spacing: 10
+                                                                            Rectangle {
+                                                                                Layout.preferredWidth: 30
+                                                                                Layout.preferredHeight: 30
+                                                                                radius: 15
+                                                                                color: root.overlay
+                                                                                Text {
+                                                                                    anchors.centerIn: parent
+                                                                                    text: rp.modelData.jersey || "–"
+                                                                                    color: root.fg
+                                                                                    font.pixelSize: 12
+                                                                                    font.bold: true
+                                                                                }
+                                                                            }
+                                                                            Text {
+                                                                                Layout.fillWidth: true
+                                                                                text: rp.modelData.name
+                                                                                color: root.fg
+                                                                                font.pixelSize: 13
+                                                                                elide: Text.ElideRight
+                                                                            }
+                                                                            Text {
+                                                                                visible: rp.modelData.injury !== ""
+                                                                                text: rp.modelData.injury
+                                                                                color: root.danger
+                                                                                font.pixelSize: 11
+                                                                                font.bold: true
+                                                                            }
+                                                                            Text { text: rp.modelData.pos; color: root.muted; font.pixelSize: 12; Layout.preferredWidth: 28 }
+                                                                            Text { text: rp.modelData.height; color: root.muted; font.pixelSize: 12; Layout.preferredWidth: 48; horizontalAlignment: Text.AlignRight }
+                                                                        }
+                                                                        MouseArea {
+                                                                            id: rpMouse
+                                                                            anchors.fill: parent
+                                                                            hoverEnabled: true
+                                                                            cursorShape: Qt.PointingHandCursor
+                                                                            onClicked: root.sportsOpenPlayerFrom(rp.modelData, "team")
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                            Text {
+                                                                anchors.centerIn: parent
+                                                                visible: root.sportsRoster.length === 0
+                                                                text: root.sportsLoading ? "Loading roster…" : "No roster"
+                                                                color: root.muted
+                                                                font.pixelSize: 13
+                                                            }
+                                                        }
+
+                                                        // ---- schedule ----
+                                                        HubCard {
+                                                            theme: root
+                                                            Layout.fillWidth: true
+                                                            Layout.fillHeight: true
+                                                            Layout.preferredWidth: 2
+                                                            clip: true
+
+                                                            Flickable {
+                                                                anchors.fill: parent
+                                                                anchors.margins: 12
+                                                                contentHeight: schedCol.implicitHeight
+                                                                clip: true
+                                                                boundsBehavior: Flickable.StopAtBounds
+
+                                                                Column {
+                                                                    id: schedCol
+                                                                    width: parent.width
+                                                                    spacing: 6
 
                                                                     Repeater {
-                                                                        model: bp.isTotal ? boxCard.team.totals : (bp.modelData.dnp ? [] : bp.modelData.stats)
+                                                                        model: [
+                                                                            { title: "Coming up", list: root.sportsUpcoming },
+                                                                            { title: "Recent", list: root.sportsRecent }
+                                                                        ]
+                                                                        delegate: Column {
+                                                                            id: sec
+                                                                            required property var modelData
+                                                                            width: schedCol.width
+                                                                            spacing: 4
+                                                                            visible: modelData.list.length > 0
+                                                                            topPadding: 4
+                                                                            Text { text: sec.modelData.title; color: root.fg; font.pixelSize: 14; font.bold: true; bottomPadding: 2 }
+
+                                                                            Repeater {
+                                                                                model: sec.modelData.list
+                                                                                delegate: Rectangle {
+                                                                                    id: sg
+                                                                                    required property var modelData
+                                                                                    readonly property bool live: modelData.state === "in"
+                                                                                    width: sec.width
+                                                                                    height: 38
+                                                                                    radius: 10
+                                                                                    color: sgMouse.containsMouse ? root.overlay : Qt.rgba(1, 1, 1, 0.04)
+
+                                                                                    RowLayout {
+                                                                                        anchors.fill: parent
+                                                                                        anchors.leftMargin: 8
+                                                                                        anchors.rightMargin: 10
+                                                                                        spacing: 8
+                                                                                        // W / L badge, or the date
+                                                                                        Rectangle {
+                                                                                            visible: sg.modelData.state === "post"
+                                                                                            Layout.preferredWidth: 22
+                                                                                            Layout.preferredHeight: 22
+                                                                                            radius: 7
+                                                                                            color: sg.modelData.won ? root.accent : root.overlay
+                                                                                            Text {
+                                                                                                anchors.centerIn: parent
+                                                                                                text: sg.modelData.won ? "W" : "L"
+                                                                                                color: sg.modelData.won ? root.bg : root.fg
+                                                                                                font.pixelSize: 11
+                                                                                                font.bold: true
+                                                                                            }
+                                                                                        }
+                                                                                        Text {
+                                                                                            visible: sg.modelData.state !== "post"
+                                                                                            Layout.preferredWidth: 54
+                                                                                            text: sg.live ? "LIVE" : Qt.formatDate(new Date(sg.modelData.date), "ddd d")
+                                                                                            color: sg.live ? root.danger : root.muted
+                                                                                            font.pixelSize: 12
+                                                                                            font.bold: sg.live
+                                                                                        }
+                                                                                        Text {
+                                                                                            text: sg.modelData.home ? "vs" : "@"
+                                                                                            color: root.muted
+                                                                                            font.pixelSize: 11
+                                                                                        }
+                                                                                        TeamLogo {
+                                                                                            theme: root
+                                                                                            Layout.preferredWidth: 22
+                                                                                            Layout.preferredHeight: 22
+                                                                                            source: sg.modelData.oppLogo
+                                                                                            abbr: sg.modelData.opp
+                                                                                        }
+                                                                                        Text {
+                                                                                            Layout.fillWidth: true
+                                                                                            text: sg.modelData.oppName
+                                                                                            color: root.fg
+                                                                                            font.pixelSize: 13
+                                                                                            elide: Text.ElideRight
+                                                                                        }
+                                                                                        Text {
+                                                                                            text: sg.modelData.state === "pre" ? root.sportsTime(sg.modelData.date)
+                                                                                                : sg.modelData.us + "–" + sg.modelData.them
+                                                                                            color: sg.live ? root.danger : root.muted
+                                                                                            font.pixelSize: 12
+                                                                                            font.bold: sg.modelData.state !== "pre"
+                                                                                        }
+                                                                                    }
+                                                                                    MouseArea {
+                                                                                        id: sgMouse
+                                                                                        anchors.fill: parent
+                                                                                        hoverEnabled: true
+                                                                                        cursorShape: Qt.PointingHandCursor
+                                                                                        onClicked: {
+                                                                                            const me = { id: root.sportsTeam.id, abbr: root.sportsTeam.abbr, name: root.sportsTeam.name, logo: root.sportsTeam.logo, score: sg.modelData.us, record: "" };
+                                                                                            const them = { id: sg.modelData.oppId, abbr: sg.modelData.opp, name: sg.modelData.oppName, logo: sg.modelData.oppLogo, score: sg.modelData.them, record: "" };
+                                                                                            root.sportsOpenGame({ id: sg.modelData.id, date: sg.modelData.date, state: sg.modelData.state, detail: sg.modelData.detail,
+                                                                                                                  away: sg.modelData.home ? them : me, home: sg.modelData.home ? me : them });
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                            Text {
+                                                                anchors.centerIn: parent
+                                                                visible: root.sportsUpcoming.length === 0 && root.sportsRecent.length === 0
+                                                                text: root.sportsLoading ? "Loading schedule…" : "No games scheduled"
+                                                                color: root.muted
+                                                                font.pixelSize: 13
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                // =========== One player ===========
+                                                ColumnLayout {
+                                                    spacing: 10
+
+                                                    RowLayout {
+                                                        Layout.fillWidth: true
+                                                        spacing: 12
+                                                        SportChip {
+                                                            theme: root
+                                                            icon: ""
+                                                            label: root.sportsPlayerFrom === "game" ? "Game" : (root.sportsTeam && root.sportsTeam.abbr ? root.sportsTeam.abbr : "Back")
+                                                            onClicked: root.sportsView = root.sportsPlayerFrom
+                                                        }
+                                                        Item { Layout.fillWidth: true }
+                                                    }
+
+                                                    HubCard {
+                                                        theme: root
+                                                        Layout.fillWidth: true
+                                                        Layout.fillHeight: true
+                                                        clip: true
+
+                                                        ColumnLayout {
+                                                            anchors.fill: parent
+                                                            anchors.margins: 18
+                                                            spacing: 16
+
+                                                            RowLayout {
+                                                                Layout.fillWidth: true
+                                                                spacing: 22
+
+                                                                // headshot on a soft team-coloured card
+                                                                Rectangle {
+                                                                    id: shotCard
+                                                                    Layout.preferredWidth: 170
+                                                                    Layout.preferredHeight: 170
+                                                                    radius: 22
+                                                                    color: root.overlay
+                                                                    border.width: 1
+                                                                    border.color: root.glassEdge
+                                                                    clip: true
+                                                                    Rectangle {
+                                                                        anchors.fill: parent
+                                                                        radius: parent.radius
+                                                                        visible: root.sportsTeam !== null && (root.sportsTeam.color || "") !== ""
+                                                                        color: root.sportsTeam && root.sportsTeam.color ? root.sportsTeam.color : "transparent"
+                                                                        opacity: 0.45
+                                                                    }
+                                                                    Image {
+                                                                        id: shotImg
+                                                                        anchors.fill: parent
+                                                                        anchors.topMargin: 10
+                                                                        source: root.sportsPlayer ? root.sportsPlayer.headshot : ""
+                                                                        sourceSize.width: 340
+                                                                        fillMode: Image.PreserveAspectCrop
+                                                                        verticalAlignment: Image.AlignBottom
+                                                                        asynchronous: true
+                                                                        smooth: true
+                                                                        mipmap: true
+                                                                    }
+                                                                    Text {
+                                                                        anchors.centerIn: parent
+                                                                        visible: shotImg.status !== Image.Ready
+                                                                        text: root.sportsPlayer ? (root.sportsPlayer.jersey || "") : ""
+                                                                        color: root.fg
+                                                                        font.pixelSize: 54
+                                                                        font.bold: true
+                                                                    }
+                                                                }
+
+                                                                ColumnLayout {
+                                                                    Layout.fillWidth: true
+                                                                    spacing: 6
+                                                                    Text {
+                                                                        text: root.sportsPlayer ? root.sportsPlayer.name : ""
+                                                                        color: root.fg
+                                                                        font.pixelSize: 26
+                                                                        font.bold: true
+                                                                    }
+                                                                    Text {
+                                                                        text: root.sportsPlayer ? ["#" + (root.sportsPlayer.jersey || "–"), root.sportsPlayer.pos,
+                                                                            (root.sportsPlayerFrom === "game" ? (root.sportsPlayer.team || "") : (root.sportsTeam ? root.sportsTeam.name : ""))].filter(x => x).join("  ·  ") : ""
+                                                                        color: root.muted
+                                                                        font.pixelSize: 14
+                                                                    }
+                                                                    Text {
+                                                                        visible: root.sportsPlayer !== null && root.sportsPlayer.injury !== ""
+                                                                        text: root.sportsPlayer ? root.sportsPlayer.injury : ""
+                                                                        color: root.danger
+                                                                        font.pixelSize: 13
+                                                                        font.bold: true
+                                                                    }
+
+                                                                    Row {
+                                                                        Layout.topMargin: 10
+                                                                        spacing: 10
+                                                                        Repeater {
+                                                                            model: root.sportsPlayer ? [
+                                                                                { k: "Height", v: root.sportsPlayer.height },
+                                                                                { k: "Weight", v: root.sportsPlayer.weight },
+                                                                                { k: "Age", v: root.sportsPlayer.age },
+                                                                                { k: "Seasons", v: root.sportsPlayer.exp }
+                                                                            ].filter(x => x.v) : []
+                                                                            delegate: Rectangle {
+                                                                                id: bio
+                                                                                required property var modelData
+                                                                                width: 104
+                                                                                height: 58
+                                                                                radius: 14
+                                                                                color: Qt.rgba(1, 1, 1, 0.05)
+                                                                                border.width: 1
+                                                                                border.color: root.glassEdge
+                                                                                Column {
+                                                                                    anchors.centerIn: parent
+                                                                                    spacing: 3
+                                                                                    Text { anchors.horizontalCenter: parent.horizontalCenter; text: bio.modelData.v; color: root.fg; font.pixelSize: 15; font.bold: true }
+                                                                                    Text { anchors.horizontalCenter: parent.horizontalCenter; text: bio.modelData.k; color: root.muted; font.pixelSize: 11 }
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+
+                                                            // ---- stats table ----
+                                                            ColumnLayout {
+                                                                Layout.fillWidth: true
+                                                                Layout.fillHeight: true
+                                                                spacing: 4
+                                                                visible: root.sportsPlayerStats !== null && root.sportsPlayerStats.labels.length > 0
+
+                                                                RowLayout {
+                                                                    Layout.fillWidth: true
+                                                                    Layout.leftMargin: 10
+                                                                    Layout.rightMargin: 10
+                                                                    spacing: 0
+                                                                    Text { Layout.preferredWidth: 130; text: "Averages"; color: root.muted; font.pixelSize: 11; font.bold: true }
+                                                                    Repeater {
+                                                                        model: root.sportsPlayerStats ? root.sportsPlayerStats.labels : []
                                                                         delegate: Text {
                                                                             required property var modelData
-                                                                            required property int index
                                                                             Layout.fillWidth: true
                                                                             Layout.preferredWidth: 1
                                                                             horizontalAlignment: Text.AlignRight
                                                                             text: modelData
-                                                                            color: index === boxCard.ptsCol ? root.fg : (bp.isTotal ? root.fg : Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.82))
-                                                                            font.pixelSize: 12
-                                                                            font.bold: index === boxCard.ptsCol || bp.isTotal
+                                                                            color: root.muted
+                                                                            font.pixelSize: 11
+                                                                            font.bold: true
                                                                         }
                                                                     }
                                                                 }
+                                                                Repeater {
+                                                                    model: root.sportsPlayerStats ? root.sportsPlayerStats.rows : []
+                                                                    delegate: Rectangle {
+                                                                        id: srow
+                                                                        required property var modelData
+                                                                        required property int index
+                                                                        Layout.fillWidth: true
+                                                                        Layout.preferredHeight: 36
+                                                                        radius: 10
+                                                                        color: srow.index % 2 === 0 ? Qt.rgba(1, 1, 1, 0.05) : "transparent"
+                                                                        RowLayout {
+                                                                            anchors.fill: parent
+                                                                            anchors.leftMargin: 10
+                                                                            anchors.rightMargin: 10
+                                                                            spacing: 0
+                                                                            Text { Layout.preferredWidth: 130; text: srow.modelData.name; color: root.fg; font.pixelSize: 13; font.bold: true; elide: Text.ElideRight }
+                                                                            Repeater {
+                                                                                model: srow.modelData.stats
+                                                                                delegate: Text {
+                                                                                    required property var modelData
+                                                                                    Layout.fillWidth: true
+                                                                                    Layout.preferredWidth: 1
+                                                                                    horizontalAlignment: Text.AlignRight
+                                                                                    text: modelData
+                                                                                    color: root.fg
+                                                                                    font.pixelSize: 13
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                                Item { Layout.fillHeight: true }
+                                                            }
 
-                                                                MouseArea {
-                                                                    id: bpMouse
-                                                                    anchors.fill: parent
-                                                                    enabled: !bp.isTotal
-                                                                    hoverEnabled: true
-                                                                    cursorShape: Qt.PointingHandCursor
-                                                                    onClicked: root.sportsOpenPlayerFrom(bp.modelData, "game")
+                                                            Text {
+                                                                Layout.fillWidth: true
+                                                                Layout.fillHeight: true
+                                                                horizontalAlignment: Text.AlignHCenter
+                                                                verticalAlignment: Text.AlignVCenter
+                                                                visible: root.sportsPlayerStats === null || root.sportsPlayerStats.labels.length === 0
+                                                                text: root.sportsPlayerStats === null ? "Loading stats…" : "No stats for this player yet"
+                                                                color: root.muted
+                                                                font.pixelSize: 13
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                // =========== One game: live box score ===========
+                                                ColumnLayout {
+                                                    spacing: 10
+
+                                                    RowLayout {
+                                                        Layout.fillWidth: true
+                                                        spacing: 8
+                                                        SportChip {
+                                                            theme: root
+                                                            icon: ""
+                                                            label: "Back"
+                                                            onClicked: root.sportsShow(root.sportsBackTo === "team" ? "team" : root.sportsBackTo)
+                                                        }
+                                                        Item { Layout.fillWidth: true }
+                                                        Text {
+                                                            visible: root.sportsGame !== null && root.sportsGame.state === "in"
+                                                            text: "Live · updates every 15 s"
+                                                            color: root.muted
+                                                            font.pixelSize: 11
+                                                        }
+                                                    }
+
+                                                    // ---- scoreboard: away  score  [status + quarters]  score  home ----
+                                                    HubCard {
+                                                        theme: root
+                                                        Layout.fillWidth: true
+                                                        Layout.preferredHeight: 108
+
+                                                        RowLayout {
+                                                            anchors.fill: parent
+                                                            anchors.leftMargin: 22
+                                                            anchors.rightMargin: 22
+                                                            spacing: 16
+
+                                                            Repeater {
+                                                                model: ["away", "status", "home"]
+                                                                delegate: Item {
+                                                                    id: sbPart
+                                                                    required property string modelData
+                                                                    required property int index
+                                                                    readonly property var t: root.sportsGame ? (modelData === "away" ? root.sportsGame.away : modelData === "home" ? root.sportsGame.home : null) : null
+                                                                    readonly property string score: !root.sportsBox ? (t ? t.score : "") : (modelData === "away" ? root.sportsBox.away : root.sportsBox.home)
+                                                                    readonly property bool lost: root.sportsGame !== null && root.sportsGame.state === "post" && sbPart.t !== null
+                                                                        && Number(sbPart.score) < Number(modelData === "away" ? (root.sportsBox ? root.sportsBox.home : root.sportsGame.home.score) : (root.sportsBox ? root.sportsBox.away : root.sportsGame.away.score))
+                                                                    Layout.fillWidth: modelData !== "status"
+                                                                    Layout.fillHeight: true
+                                                                    Layout.preferredWidth: modelData === "status" ? sbStatus.implicitWidth : 1
+
+                                                                    // a team: logo + name, big score toward the middle
+                                                                    RowLayout {
+                                                                        anchors.fill: parent
+                                                                        visible: sbPart.modelData !== "status"
+                                                                        layoutDirection: sbPart.modelData === "home" ? Qt.RightToLeft : Qt.LeftToRight
+                                                                        spacing: 14
+                                                                        TeamLogo {
+                                                                            theme: root
+                                                                            Layout.preferredWidth: 52
+                                                                            Layout.preferredHeight: 52
+                                                                            source: sbPart.t ? sbPart.t.logo : ""
+                                                                            abbr: sbPart.t ? sbPart.t.abbr : ""
+                                                                        }
+                                                                        Column {
+                                                                            spacing: 2
+                                                                            Text {
+                                                                                text: sbPart.t ? sbPart.t.name : ""
+                                                                                color: sbPart.lost ? root.muted : root.fg
+                                                                                font.pixelSize: 16
+                                                                                font.bold: true
+                                                                            }
+                                                                            Text {
+                                                                                text: sbPart.t ? (sbPart.t.record || sbPart.t.abbr) : ""
+                                                                                color: root.muted
+                                                                                font.pixelSize: 11
+                                                                            }
+                                                                        }
+                                                                        Item { Layout.fillWidth: true }
+                                                                        Text {
+                                                                            text: sbPart.score
+                                                                            color: sbPart.lost ? root.muted : root.fg
+                                                                            font.pixelSize: 38
+                                                                            font.bold: true
+                                                                        }
+                                                                    }
+
+                                                                    // the middle: status and the score by quarter
+                                                                    Column {
+                                                                        id: sbStatus
+                                                                        anchors.centerIn: parent
+                                                                        visible: sbPart.modelData === "status"
+                                                                        spacing: 6
+                                                                        Row {
+                                                                            anchors.horizontalCenter: parent.horizontalCenter
+                                                                            spacing: 6
+                                                                            Rectangle {
+                                                                                visible: root.sportsGame !== null && root.sportsGame.state === "in"
+                                                                                anchors.verticalCenter: parent.verticalCenter
+                                                                                width: 8
+                                                                                height: 8
+                                                                                radius: 4
+                                                                                color: root.danger
+                                                                                SequentialAnimation on opacity {
+                                                                                    running: root.sportsGame !== null && root.sportsGame.state === "in" && root.sportsVisible
+                                                                                    loops: Animation.Infinite
+                                                                                    NumberAnimation { to: 0.25; duration: 700 }
+                                                                                    NumberAnimation { to: 1; duration: 700 }
+                                                                                }
+                                                                            }
+                                                                            Text {
+                                                                                text: !root.sportsGame ? "" : root.sportsGame.state === "pre" ? root.sportsTime(root.sportsGame.date)
+                                                                                    : (root.sportsBox && root.sportsBox.detail ? root.sportsBox.detail : root.sportsGame.detail)
+                                                                                color: root.sportsGame && root.sportsGame.state === "in" ? root.danger : root.fg
+                                                                                font.pixelSize: 13
+                                                                                font.bold: true
+                                                                            }
+                                                                        }
+                                                                        // Q1 Q2 Q3 Q4 (OT)
+                                                                        Grid {
+                                                                            anchors.horizontalCenter: parent.horizontalCenter
+                                                                            visible: root.sportsBox !== null && root.sportsBox.lines.length > 0
+                                                                            columns: root.sportsBox ? root.sportsBox.lines.length + 1 : 1
+                                                                            columnSpacing: 10
+                                                                            rowSpacing: 2
+                                                                            Repeater {
+                                                                                model: {
+                                                                                    if (!root.sportsBox || !root.sportsGame) return [];
+                                                                                    const L = root.sportsBox.lines, out = [{ t: "", h: true }];
+                                                                                    L.forEach(l => out.push({ t: l.label, h: true }));
+                                                                                    out.push({ t: root.sportsGame.away.abbr, h: true });
+                                                                                    L.forEach(l => out.push({ t: l.away, h: false }));
+                                                                                    out.push({ t: root.sportsGame.home.abbr, h: true });
+                                                                                    L.forEach(l => out.push({ t: l.home, h: false }));
+                                                                                    return out;
+                                                                                }
+                                                                                delegate: Text {
+                                                                                    required property var modelData
+                                                                                    horizontalAlignment: Text.AlignHCenter
+                                                                                    width: 24
+                                                                                    text: modelData.t
+                                                                                    color: modelData.h ? root.muted : root.fg
+                                                                                    font.pixelSize: 11
+                                                                                    font.bold: !modelData.h
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
                                                                 }
                                                             }
                                                         }
                                                     }
-                                                }
 
-                                                Text {
-                                                    anchors.centerIn: parent
-                                                    visible: boxCard.team === null || boxCard.team.players.length === 0
-                                                    horizontalAlignment: Text.AlignHCenter
-                                                    text: root.sportsLoading && !root.sportsBox ? "Loading the box score…"
-                                                        : root.sportsGame && root.sportsGame.state === "pre" ? "Player stats show up here at tip-off"
-                                                        : (root.sportsStatus || "No player stats for this game yet")
-                                                    color: root.muted
-                                                    font.pixelSize: 13
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // ===== 8: Themes =====
-                                Flickable {
-                                    id: themesPage
-                                    clip: true
-                                    contentWidth: width
-                                    contentHeight: themesCol.implicitHeight + 6
-                                    boundsBehavior: Flickable.StopAtBounds
-
-                                    ColumnLayout {
-                                        id: themesCol
-                                        width: themesPage.width
-                                        spacing: 12
-
-                                        // ---- Quick looks: one click sets everything ----
-                                        Text { text: "Quick looks"; color: root.fg; font.pixelSize: 15; font.bold: true }
-                                        Flow {
-                                            Layout.fillWidth: true
-                                            spacing: 8
-                                            Repeater {
-                                                model: root.themePresets
-                                                delegate: Rectangle {
-                                                    id: pre
-                                                    required property var modelData
-                                                    readonly property bool current: root.colorSource === modelData.source
-                                                        && root.themeStyle === modelData.style && root.themeShade === modelData.shade
-                                                        && (modelData.source !== "custom" || pins.adapter.customColor.toLowerCase() === modelData.color)
-                                                    width: preRow.implicitWidth + 24
-                                                    height: 34
-                                                    radius: 17
-                                                    color: pre.current ? root.accent : (preMouse.containsMouse ? root.overlay : root.surface)
-                                                    border.width: 1
-                                                    border.color: root.glassEdge
-                                                    scale: preMouse.pressed ? 0.94 : 1
-                                                    Behavior on color { ColorAnimation { duration: root.animMs } }
-                                                    Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
-                                                    Row {
-                                                        id: preRow
-                                                        anchors.centerIn: parent
-                                                        spacing: 7
-                                                        Rectangle {
-                                                            anchors.verticalCenter: parent.verticalCenter
-                                                            width: 14; height: 14; radius: 7
-                                                            border.width: 1
-                                                            border.color: Qt.rgba(1, 1, 1, 0.5)
-                                                            color: pre.modelData.source === "wallpaper" ? root.seed
-                                                                : (pre.modelData.color || root.seed)
+                                                    // ---- which team's players ----
+                                                    RowLayout {
+                                                        Layout.fillWidth: true
+                                                        spacing: 6
+                                                        Repeater {
+                                                            model: root.sportsBox ? root.sportsBox.teams : []
+                                                            delegate: SportChip {
+                                                                required property var modelData
+                                                                required property int index
+                                                                theme: root
+                                                                label: modelData.name
+                                                                active: root.sportsBoxSide === index
+                                                                onClicked: root.sportsBoxSide = index
+                                                            }
                                                         }
-                                                        Text {
-                                                            anchors.verticalCenter: parent.verticalCenter
-                                                            text: pre.modelData.name
-                                                            color: pre.current ? root.bg : root.fg
-                                                            font.pixelSize: 12
-                                                            font.bold: pre.current
-                                                        }
+                                                        Item { Layout.fillWidth: true }
                                                     }
-                                                    MouseArea {
-                                                        id: preMouse
-                                                        anchors.fill: parent
-                                                        hoverEnabled: true
-                                                        cursorShape: Qt.PointingHandCursor
-                                                        onClicked: root.setTheme(pre.modelData.source, pre.modelData.style, pre.modelData.shade,
-                                                            pre.modelData.tint, pre.modelData.source === "custom" ? pre.modelData.color : "")
-                                                    }
-                                                }
-                                            }
-                                        }
 
-                                        // ---- Style: how the bars are drawn ----
-                                        Text { text: "Style"; color: root.fg; font.pixelSize: 15; font.bold: true; Layout.topMargin: 4 }
-                                        RowLayout {
-                                            Layout.fillWidth: true
-                                            spacing: 10
-                                            Repeater {
-                                                model: root.themeStyles
-                                                delegate: Rectangle {
-                                                    id: stCard
-                                                    required property var modelData
-                                                    readonly property bool current: root.themeStyle === modelData.id
-                                                    readonly property var a: root.styleTable[modelData.id]
-                                                    Layout.fillWidth: true
-                                                    Layout.preferredHeight: 92
-                                                    radius: 18
-                                                    // a colourful backdrop so you can see how see-through each style is
-                                                    gradient: Gradient {
-                                                        orientation: Gradient.Horizontal
-                                                        GradientStop { position: 0; color: root.wallPalette.length > 0 ? root.wallPalette[0] : "#5c6bc0" }
-                                                        GradientStop { position: 1; color: root.wallPalette.length > 1 ? root.wallPalette[1] : "#ff79c6" }
-                                                    }
-                                                    border.width: stCard.current ? 2 : 1
-                                                    border.color: stCard.current ? root.accent : root.glassEdge
-                                                    scale: stMouse.pressed ? 0.95 : (stMouse.containsMouse ? 1.03 : 1)
-                                                    Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+                                                    // ---- the box score ----
+                                                    HubCard {
+                                                        id: boxCard
+                                                        theme: root
+                                                        Layout.fillWidth: true
+                                                        Layout.fillHeight: true
+                                                        clip: true
+                                                        readonly property var team: root.sportsBox && root.sportsBox.teams.length > root.sportsBoxSide ? root.sportsBox.teams[root.sportsBoxSide] : null
+                                                        readonly property int ptsCol: boxCard.team ? boxCard.team.labels.indexOf("PTS") : -1
 
-                                                    // a tiny pill drawn in this style
-                                                    Rectangle {
-                                                        anchors.fill: parent
-                                                        anchors.margins: 9
-                                                        radius: 13
-                                                        color: root.dark ? Qt.hsla(root.hue, root.tsat * 0.35, 0.10, stCard.a[0])
-                                                                         : Qt.hsla(root.hue, root.tsat * 0.25, 0.97, stCard.a[3])
-                                                        border.width: 1
-                                                        border.color: stCard.modelData.id === "neon"
-                                                            ? Qt.rgba(root.accentBase.r, root.accentBase.g, root.accentBase.b, stCard.a[6])
-                                                            : Qt.rgba(1, 1, 1, root.dark ? stCard.a[6] : Math.min(0.9, stCard.a[6] * 2.9))
-                                                        Column {
-                                                            anchors.centerIn: parent
+                                                        ColumnLayout {
+                                                            anchors.fill: parent
+                                                            anchors.margins: 10
                                                             spacing: 2
-                                                            Text {
-                                                                anchors.horizontalCenter: parent.horizontalCenter
-                                                                text: stCard.modelData.name
-                                                                color: root.fg
-                                                                font.pixelSize: 13
-                                                                font.bold: true
+                                                            visible: boxCard.team !== null && boxCard.team.players.length > 0
+
+                                                            // headings
+                                                            RowLayout {
+                                                                Layout.fillWidth: true
+                                                                Layout.leftMargin: 8
+                                                                Layout.rightMargin: 8
+                                                                spacing: 0
+                                                                Text { Layout.preferredWidth: 170; text: "Player"; color: root.muted; font.pixelSize: 11; font.bold: true }
+                                                                Repeater {
+                                                                    model: boxCard.team ? boxCard.team.labels : []
+                                                                    delegate: Text {
+                                                                        required property var modelData
+                                                                        Layout.fillWidth: true
+                                                                        Layout.preferredWidth: 1
+                                                                        horizontalAlignment: Text.AlignRight
+                                                                        text: modelData
+                                                                        color: root.muted
+                                                                        font.pixelSize: 11
+                                                                        font.bold: true
+                                                                    }
+                                                                }
                                                             }
-                                                            Text {
-                                                                anchors.horizontalCenter: parent.horizontalCenter
-                                                                text: stCard.modelData.sub
-                                                                color: root.muted
-                                                                font.pixelSize: 10
+
+                                                            ListView {
+                                                                id: boxList
+                                                                Layout.fillWidth: true
+                                                                Layout.fillHeight: true
+                                                                clip: true
+                                                                boundsBehavior: Flickable.StopAtBounds
+                                                                model: boxCard.team ? boxCard.team.players.concat([{ totals: true }]) : []
+
+                                                                delegate: Rectangle {
+                                                                    id: bp
+                                                                    required property var modelData
+                                                                    required property int index
+                                                                    readonly property bool isTotal: modelData.totals === true
+                                                                    readonly property bool benchStart: !isTotal && !modelData.starter && index > 0 && boxCard.team.players[index - 1].starter
+                                                                    width: boxList.width
+                                                                    height: (bp.benchStart ? 22 : 0) + 34
+                                                                    radius: 8
+                                                                    color: "transparent"
+
+                                                                    Text {
+                                                                        visible: bp.benchStart
+                                                                        x: 8
+                                                                        y: 4
+                                                                        text: "Bench"
+                                                                        color: root.muted
+                                                                        font.pixelSize: 11
+                                                                        font.bold: true
+                                                                    }
+
+                                                                    Rectangle {
+                                                                        anchors.left: parent.left
+                                                                        anchors.right: parent.right
+                                                                        anchors.bottom: parent.bottom
+                                                                        height: 34
+                                                                        radius: 8
+                                                                        color: bpMouse.containsMouse && !bp.isTotal ? root.overlay : (bp.isTotal ? Qt.rgba(1, 1, 1, 0.07) : (bp.index % 2 === 0 ? Qt.rgba(1, 1, 1, 0.035) : "transparent"))
+
+                                                                        RowLayout {
+                                                                            anchors.fill: parent
+                                                                            anchors.leftMargin: 8
+                                                                            anchors.rightMargin: 8
+                                                                            spacing: 0
+
+                                                                            Row {
+                                                                                Layout.preferredWidth: 170
+                                                                                spacing: 8
+                                                                                Text {
+                                                                                    width: 22
+                                                                                    visible: !bp.isTotal
+                                                                                    anchors.verticalCenter: parent.verticalCenter
+                                                                                    horizontalAlignment: Text.AlignRight
+                                                                                    text: bp.isTotal ? "" : bp.modelData.jersey
+                                                                                    color: root.muted
+                                                                                    font.pixelSize: 11
+                                                                                }
+                                                                                Text {
+                                                                                    width: bp.isTotal ? 160 : 132
+                                                                                    anchors.verticalCenter: parent.verticalCenter
+                                                                                    text: bp.isTotal ? "Team" : bp.modelData.short + (bp.modelData.pos ? "  " + bp.modelData.pos : "")
+                                                                                    color: root.fg
+                                                                                    font.pixelSize: 12
+                                                                                    font.bold: bp.isTotal
+                                                                                    elide: Text.ElideRight
+                                                                                }
+                                                                            }
+
+                                                                            // didn't play: one muted line instead of numbers
+                                                                            Text {
+                                                                                Layout.fillWidth: true
+                                                                                visible: !bp.isTotal && (bp.modelData.dnp || bp.modelData.stats.length === 0)
+                                                                                text: "Didn't play" + (bp.modelData.reason ? "  ·  " + bp.modelData.reason.toLowerCase() : "")
+                                                                                color: root.muted
+                                                                                font.pixelSize: 11
+                                                                                font.italic: true
+                                                                            }
+
+                                                                            Repeater {
+                                                                                model: bp.isTotal ? boxCard.team.totals : (bp.modelData.dnp ? [] : bp.modelData.stats)
+                                                                                delegate: Text {
+                                                                                    required property var modelData
+                                                                                    required property int index
+                                                                                    Layout.fillWidth: true
+                                                                                    Layout.preferredWidth: 1
+                                                                                    horizontalAlignment: Text.AlignRight
+                                                                                    text: modelData
+                                                                                    color: index === boxCard.ptsCol ? root.fg : (bp.isTotal ? root.fg : Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.82))
+                                                                                    font.pixelSize: 12
+                                                                                    font.bold: index === boxCard.ptsCol || bp.isTotal
+                                                                                }
+                                                                            }
+                                                                        }
+
+                                                                        MouseArea {
+                                                                            id: bpMouse
+                                                                            anchors.fill: parent
+                                                                            enabled: !bp.isTotal
+                                                                            hoverEnabled: true
+                                                                            cursorShape: Qt.PointingHandCursor
+                                                                            onClicked: root.sportsOpenPlayerFrom(bp.modelData, "game")
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+
+                                                        Text {
+                                                            anchors.centerIn: parent
+                                                            visible: boxCard.team === null || boxCard.team.players.length === 0
+                                                            horizontalAlignment: Text.AlignHCenter
+                                                            text: root.sportsLoading && !root.sportsBox ? "Loading the box score…"
+                                                                : root.sportsGame && root.sportsGame.state === "pre" ? "Player stats show up here at tip-off"
+                                                                : (root.sportsStatus || "No player stats for this game yet")
+                                                            color: root.muted
+                                                            font.pixelSize: 13
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // ===== 8: Themes =====
+                                        Flickable {
+                                            id: themesPage
+                                            clip: true
+                                            contentWidth: width
+                                            contentHeight: themesCol.implicitHeight + 6
+                                            boundsBehavior: Flickable.StopAtBounds
+
+                                            ColumnLayout {
+                                                id: themesCol
+                                                width: themesPage.width
+                                                spacing: 12
+
+                                                // ---- Quick looks: one click sets everything ----
+                                                Text { text: "Quick looks"; color: root.fg; font.pixelSize: 15; font.bold: true }
+                                                Flow {
+                                                    Layout.fillWidth: true
+                                                    spacing: 8
+                                                    Repeater {
+                                                        model: root.themePresets
+                                                        delegate: Rectangle {
+                                                            id: pre
+                                                            required property var modelData
+                                                            readonly property bool current: root.colorSource === modelData.source
+                                                                && root.themeStyle === modelData.style && root.themeShade === modelData.shade
+                                                                && (modelData.source !== "custom" || pins.adapter.customColor.toLowerCase() === modelData.color)
+                                                            width: preRow.implicitWidth + 24
+                                                            height: 34
+                                                            radius: 17
+                                                            color: pre.current ? root.accent : (preMouse.containsMouse ? root.overlay : root.surface)
+                                                            border.width: 1
+                                                            border.color: root.glassEdge
+                                                            scale: preMouse.pressed ? 0.94 : 1
+                                                            Behavior on color { ColorAnimation { duration: root.animMs } }
+                                                            Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+                                                            Row {
+                                                                id: preRow
+                                                                anchors.centerIn: parent
+                                                                spacing: 7
+                                                                Rectangle {
+                                                                    anchors.verticalCenter: parent.verticalCenter
+                                                                    width: 14; height: 14; radius: 7
+                                                                    border.width: 1
+                                                                    border.color: Qt.rgba(1, 1, 1, 0.5)
+                                                                    color: pre.modelData.source === "wallpaper" ? root.seed
+                                                                        : (pre.modelData.color || root.seed)
+                                                                }
+                                                                Text {
+                                                                    anchors.verticalCenter: parent.verticalCenter
+                                                                    text: pre.modelData.name
+                                                                    color: pre.current ? root.bg : root.fg
+                                                                    font.pixelSize: 12
+                                                                    font.bold: pre.current
+                                                                }
+                                                            }
+                                                            MouseArea {
+                                                                id: preMouse
+                                                                anchors.fill: parent
+                                                                hoverEnabled: true
+                                                                cursorShape: Qt.PointingHandCursor
+                                                                onClicked: root.setTheme(pre.modelData.source, pre.modelData.style, pre.modelData.shade,
+                                                                    pre.modelData.tint, pre.modelData.source === "custom" ? pre.modelData.color : "")
                                                             }
                                                         }
                                                     }
-                                                    Rectangle {
-                                                        visible: stCard.current
-                                                        anchors.top: parent.top
-                                                        anchors.right: parent.right
-                                                        anchors.margins: 5
-                                                        width: 18; height: 18; radius: 9
-                                                        color: root.accent
-                                                        Text { anchors.centerIn: parent; text: ""; font.family: root.iconFont; font.pixelSize: 9; color: root.bg }
-                                                    }
-                                                    MouseArea {
-                                                        id: stMouse
-                                                        anchors.fill: parent
-                                                        hoverEnabled: true
-                                                        cursorShape: Qt.PointingHandCursor
-                                                        onClicked: pins.adapter.themeStyle = stCard.modelData.id
-                                                    }
                                                 }
-                                            }
-                                        }
 
-                                        // ---- Colours from / brightness / how strong ----
-                                        RowLayout {
-                                            Layout.fillWidth: true
-                                            Layout.topMargin: 4
-                                            spacing: 18
-
-                                            Column {
-                                                spacing: 6
-                                                Text { text: "Colours from"; color: root.muted; font.pixelSize: 11 }
-                                                Row {
-                                                    spacing: 6
+                                                // ---- Style: how the bars are drawn ----
+                                                Text { text: "Style"; color: root.fg; font.pixelSize: 15; font.bold: true; Layout.topMargin: 4 }
+                                                RowLayout {
+                                                    Layout.fillWidth: true
+                                                    spacing: 10
                                                     Repeater {
-                                                        model: [ { id: "neutral", name: "Neutral", icon: "" },
-                                                                 { id: "wallpaper", name: "Wallpaper", icon: "" },
-                                                                 { id: "custom", name: "My colour", icon: "" } ]
-                                                        delegate: SportChip {
+                                                        model: root.themeStyles
+                                                        delegate: Rectangle {
+                                                            id: stCard
                                                             required property var modelData
-                                                            theme: root
-                                                            label: modelData.name
-                                                            icon: modelData.icon
-                                                            active: root.colorSource === modelData.id
-                                                            onClicked: pins.adapter.colorSource = modelData.id
+                                                            readonly property bool current: root.themeStyle === modelData.id
+                                                            readonly property var a: root.styleTable[modelData.id]
+                                                            Layout.fillWidth: true
+                                                            Layout.preferredHeight: 92
+                                                            radius: 18
+                                                            // a colourful backdrop so you can see how see-through each style is
+                                                            gradient: Gradient {
+                                                                orientation: Gradient.Horizontal
+                                                                GradientStop { position: 0; color: root.wallPalette.length > 0 ? root.wallPalette[0] : "#5c6bc0" }
+                                                                GradientStop { position: 1; color: root.wallPalette.length > 1 ? root.wallPalette[1] : "#ff79c6" }
+                                                            }
+                                                            border.width: stCard.current ? 2 : 1
+                                                            border.color: stCard.current ? root.accent : root.glassEdge
+                                                            scale: stMouse.pressed ? 0.95 : (stMouse.containsMouse ? 1.03 : 1)
+                                                            Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutBack } }
+
+                                                            // a tiny pill drawn in this style
+                                                            Rectangle {
+                                                                anchors.fill: parent
+                                                                anchors.margins: 9
+                                                                radius: 13
+                                                                color: root.dark ? Qt.hsla(root.hue, root.tsat * 0.35, 0.10, stCard.a[0])
+                                                                                 : Qt.hsla(root.hue, root.tsat * 0.25, 0.97, stCard.a[3])
+                                                                border.width: 1
+                                                                border.color: stCard.modelData.id === "neon"
+                                                                    ? Qt.rgba(root.accentBase.r, root.accentBase.g, root.accentBase.b, stCard.a[6])
+                                                                    : Qt.rgba(1, 1, 1, root.dark ? stCard.a[6] : Math.min(0.9, stCard.a[6] * 2.9))
+                                                                Column {
+                                                                    anchors.centerIn: parent
+                                                                    spacing: 2
+                                                                    Text {
+                                                                        anchors.horizontalCenter: parent.horizontalCenter
+                                                                        text: stCard.modelData.name
+                                                                        color: root.fg
+                                                                        font.pixelSize: 13
+                                                                        font.bold: true
+                                                                    }
+                                                                    Text {
+                                                                        anchors.horizontalCenter: parent.horizontalCenter
+                                                                        text: stCard.modelData.sub
+                                                                        color: root.muted
+                                                                        font.pixelSize: 10
+                                                                    }
+                                                                }
+                                                            }
+                                                            Rectangle {
+                                                                visible: stCard.current
+                                                                anchors.top: parent.top
+                                                                anchors.right: parent.right
+                                                                anchors.margins: 5
+                                                                width: 18; height: 18; radius: 9
+                                                                color: root.accent
+                                                                Text { anchors.centerIn: parent; text: ""; font.family: root.iconFont; font.pixelSize: 9; color: root.bg }
+                                                            }
+                                                            MouseArea {
+                                                                id: stMouse
+                                                                anchors.fill: parent
+                                                                hoverEnabled: true
+                                                                cursorShape: Qt.PointingHandCursor
+                                                                onClicked: pins.adapter.themeStyle = stCard.modelData.id
+                                                            }
                                                         }
                                                     }
                                                 }
-                                            }
-                                            Column {
-                                                spacing: 6
-                                                Text { text: "Brightness"; color: root.muted; font.pixelSize: 11 }
-                                                Row {
-                                                    spacing: 6
-                                                    Repeater {
-                                                        model: [ { id: "dark", name: "Dark", icon: "" },
-                                                                 { id: "light", name: "Light", icon: "" },
-                                                                 { id: "auto", name: "Auto", icon: "" } ]
-                                                        delegate: SportChip {
-                                                            required property var modelData
-                                                            theme: root
-                                                            label: modelData.name
-                                                            icon: modelData.icon
-                                                            active: root.themeShade === modelData.id
-                                                            onClicked: pins.adapter.themeShade = modelData.id
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            Column {
-                                                spacing: 6
-                                                opacity: root.glassTheme ? 0.4 : 1
-                                                Text { text: "Colour strength"; color: root.muted; font.pixelSize: 11 }
-                                                Row {
-                                                    spacing: 6
-                                                    Repeater {
-                                                        model: [ { v: 0, name: "Accent only" }, { v: 0.5, name: "Subtle" }, { v: 1, name: "Full" } ]
-                                                        delegate: SportChip {
-                                                            required property var modelData
-                                                            theme: root
-                                                            label: modelData.name
-                                                            active: Math.abs(root.themeTint - modelData.v) < 0.01
-                                                            onClicked: pins.adapter.themeTint = modelData.v
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            Item { Layout.fillWidth: true }
-                                        }
 
-                                        // ---- Colours in your wallpaper ----
-                                        RowLayout {
-                                            Layout.fillWidth: true
-                                            Layout.topMargin: 4
-                                            spacing: 10
-                                            Text { text: "From your wallpaper"; color: root.fg; font.pixelSize: 15; font.bold: true }
-                                            Item { Layout.fillWidth: true }
-                                            SportChip {
-                                                theme: root
-                                                label: "Match my wallpaper"
-                                                icon: ""
-                                                active: root.colorSource === "wallpaper"
-                                                onClicked: pins.adapter.colorSource = "wallpaper"
-                                            }
-                                        }
-                                        Row {
-                                            spacing: 10
-                                            Repeater {
-                                                model: root.wallPalette
-                                                delegate: Rectangle {
-                                                    id: sw
-                                                    required property string modelData
-                                                    readonly property bool current: root.colorSource === "custom" && root.customColor.toLowerCase() === sw.modelData.toLowerCase()
-                                                    width: 40
-                                                    height: 40
-                                                    radius: 40 / 2
-                                                    color: sw.modelData
-                                                    border.width: sw.current ? 3 : 1
-                                                    border.color: sw.current ? root.fg : Qt.rgba(1, 1, 1, 0.35)
-                                                    scale: swMouse.pressed ? 0.85 : (swMouse.containsMouse ? 1.15 : 1)
-                                                    Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutBack } }
+                                                // ---- Colours from / brightness / how strong ----
+                                                RowLayout {
+                                                    Layout.fillWidth: true
+                                                    Layout.topMargin: 4
+                                                    spacing: 18
+
+                                                    Column {
+                                                        spacing: 6
+                                                        Text { text: "Colours from"; color: root.muted; font.pixelSize: 11 }
+                                                        Row {
+                                                            spacing: 6
+                                                            Repeater {
+                                                                model: [ { id: "neutral", name: "Neutral", icon: "" },
+                                                                         { id: "wallpaper", name: "Wallpaper", icon: "" },
+                                                                         { id: "custom", name: "My colour", icon: "" } ]
+                                                                delegate: SportChip {
+                                                                    required property var modelData
+                                                                    theme: root
+                                                                    label: modelData.name
+                                                                    icon: modelData.icon
+                                                                    active: root.colorSource === modelData.id
+                                                                    onClicked: pins.adapter.colorSource = modelData.id
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    Column {
+                                                        spacing: 6
+                                                        Text { text: "Brightness"; color: root.muted; font.pixelSize: 11 }
+                                                        Row {
+                                                            spacing: 6
+                                                            Repeater {
+                                                                model: [ { id: "dark", name: "Dark", icon: "" },
+                                                                         { id: "light", name: "Light", icon: "" },
+                                                                         { id: "auto", name: "Auto", icon: "" } ]
+                                                                delegate: SportChip {
+                                                                    required property var modelData
+                                                                    theme: root
+                                                                    label: modelData.name
+                                                                    icon: modelData.icon
+                                                                    active: root.themeShade === modelData.id
+                                                                    onClicked: pins.adapter.themeShade = modelData.id
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    Column {
+                                                        spacing: 6
+                                                        opacity: root.glassTheme ? 0.4 : 1
+                                                        Text { text: "Colour strength"; color: root.muted; font.pixelSize: 11 }
+                                                        Row {
+                                                            spacing: 6
+                                                            Repeater {
+                                                                model: [ { v: 0, name: "Accent only" }, { v: 0.5, name: "Subtle" }, { v: 1, name: "Full" } ]
+                                                                delegate: SportChip {
+                                                                    required property var modelData
+                                                                    theme: root
+                                                                    label: modelData.name
+                                                                    active: Math.abs(root.themeTint - modelData.v) < 0.01
+                                                                    onClicked: pins.adapter.themeTint = modelData.v
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    Item { Layout.fillWidth: true }
+                                                }
+
+                                                // ---- Colours in your wallpaper ----
+                                                RowLayout {
+                                                    Layout.fillWidth: true
+                                                    Layout.topMargin: 4
+                                                    spacing: 10
+                                                    Text { text: "From your wallpaper"; color: root.fg; font.pixelSize: 15; font.bold: true }
+                                                    Item { Layout.fillWidth: true }
+                                                    SportChip {
+                                                        theme: root
+                                                        label: "Match my wallpaper"
+                                                        icon: ""
+                                                        active: root.colorSource === "wallpaper"
+                                                        onClicked: pins.adapter.colorSource = "wallpaper"
+                                                    }
+                                                }
+                                                Row {
+                                                    spacing: 10
+                                                    Repeater {
+                                                        model: root.wallPalette
+                                                        delegate: Rectangle {
+                                                            id: sw
+                                                            required property string modelData
+                                                            readonly property bool current: root.colorSource === "custom" && root.customColor.toLowerCase() === sw.modelData.toLowerCase()
+                                                            width: 40
+                                                            height: 40
+                                                            radius: 40 / 2
+                                                            color: sw.modelData
+                                                            border.width: sw.current ? 3 : 1
+                                                            border.color: sw.current ? root.fg : Qt.rgba(1, 1, 1, 0.35)
+                                                            scale: swMouse.pressed ? 0.85 : (swMouse.containsMouse ? 1.15 : 1)
+                                                            Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutBack } }
+                                                            Text {
+                                                                anchors.centerIn: parent
+                                                                visible: sw.current
+                                                                text: "\uf00c"
+                                                                font.family: root.iconFont
+                                                                font.pixelSize: 40 * 0.38
+                                                                color: sw.color.hslLightness > 0.6 ? "#1b1b1f" : "white"
+                                                            }
+                                                            MouseArea {
+                                                                id: swMouse
+                                                                anchors.fill: parent
+                                                                hoverEnabled: true
+                                                                cursorShape: Qt.PointingHandCursor
+                                                                onClicked: root.pickColor(sw.modelData)
+                                                            }
+                                                        }
+                                                    }
                                                     Text {
-                                                        anchors.centerIn: parent
-                                                        visible: sw.current
-                                                        text: "\uf00c"
-                                                        font.family: root.iconFont
-                                                        font.pixelSize: 40 * 0.38
-                                                        color: sw.color.hslLightness > 0.6 ? "#1b1b1f" : "white"
-                                                    }
-                                                    MouseArea {
-                                                        id: swMouse
-                                                        anchors.fill: parent
-                                                        hoverEnabled: true
-                                                        cursorShape: Qt.PointingHandCursor
-                                                        onClicked: root.pickColor(sw.modelData)
-                                                    }
-                                                }
-                                            }
-                                            Text {
-                                                visible: root.wallPalette.length === 0
-                                                text: "Pick a wallpaper and its colours show up here"
-                                                color: root.muted
-                                                font.pixelSize: 12
-                                            }
-                                        }
-
-                                        // ---- Lots of colours to pick from ----
-                                        RowLayout {
-                                            Layout.fillWidth: true
-                                            Layout.topMargin: 4
-                                            spacing: 10
-                                            Text { text: "Colours"; color: root.fg; font.pixelSize: 15; font.bold: true }
-                                            Item { Layout.fillWidth: true }
-                                            // type your own: #ff8800
-                                            Rectangle {
-                                                implicitWidth: 150
-                                                implicitHeight: 32
-                                                radius: 16
-                                                color: root.surface
-                                                border.width: 1
-                                                border.color: hexIn.activeFocus ? root.accent : root.glassEdge
-                                                Rectangle {
-                                                    id: hexDot
-                                                    anchors.left: parent.left
-                                                    anchors.leftMargin: 8
-                                                    anchors.verticalCenter: parent.verticalCenter
-                                                    width: 18; height: 18; radius: 9
-                                                    color: pins.adapter.customColor
-                                                    border.width: 1
-                                                    border.color: Qt.rgba(1, 1, 1, 0.5)
-                                                }
-                                                TextInput {
-                                                    id: hexIn
-                                                    anchors.left: hexDot.right
-                                                    anchors.leftMargin: 8
-                                                    anchors.right: parent.right
-                                                    anchors.rightMargin: 10
-                                                    anchors.verticalCenter: parent.verticalCenter
-                                                    color: root.fg
-                                                    font.pixelSize: 13
-                                                    font.family: "JetBrainsMono Nerd Font"
-                                                    clip: true
-                                                    maximumLength: 7
-                                                    validator: RegularExpressionValidator { regularExpression: /#?[0-9a-fA-F]{0,6}/ }
-                                                    onAccepted: {
-                                                        let v = text.trim();
-                                                        if (v[0] !== "#") v = "#" + v;
-                                                        if (/^#[0-9a-fA-F]{6}$/.test(v)) { root.pickColor(v.toLowerCase()); text = ""; }
-                                                    }
-                                                    Keys.onEscapePressed: { text = ""; hubKeys.forceActiveFocus(); }
-                                                    Text {
-                                                        anchors.verticalCenter: parent.verticalCenter
-                                                        visible: hexIn.text === ""
-                                                        text: "#hex + Enter"
+                                                        visible: root.wallPalette.length === 0
+                                                        text: "Pick a wallpaper and its colours show up here"
                                                         color: root.muted
                                                         font.pixelSize: 12
                                                     }
                                                 }
-                                            }
-                                        }
-                                        Flow {
-                                            Layout.fillWidth: true
-                                            spacing: 9
-                                            Repeater {
-                                                model: root.themeSwatches
-                                                delegate: Rectangle {
-                                                    id: sw
-                                                    required property string modelData
-                                                    readonly property bool current: root.colorSource === "custom" && root.customColor.toLowerCase() === sw.modelData.toLowerCase()
-                                                    width: 32
-                                                    height: 32
-                                                    radius: 32 / 2
-                                                    color: sw.modelData
-                                                    border.width: sw.current ? 3 : 1
-                                                    border.color: sw.current ? root.fg : Qt.rgba(1, 1, 1, 0.35)
-                                                    scale: swMouse.pressed ? 0.85 : (swMouse.containsMouse ? 1.15 : 1)
-                                                    Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutBack } }
-                                                    Text {
-                                                        anchors.centerIn: parent
-                                                        visible: sw.current
-                                                        text: "\uf00c"
-                                                        font.family: root.iconFont
-                                                        font.pixelSize: 32 * 0.38
-                                                        color: sw.color.hslLightness > 0.6 ? "#1b1b1f" : "white"
-                                                    }
-                                                    MouseArea {
-                                                        id: swMouse
-                                                        anchors.fill: parent
-                                                        hoverEnabled: true
-                                                        cursorShape: Qt.PointingHandCursor
-                                                        onClicked: root.pickColor(sw.modelData)
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                // ===== 9: Input (keyboard & mouse) =====
-                                Loader {
-                                    active: root.hubTab === 9
-                                    sourceComponent: inputPage
-                                }
-                                // ===== 10: Bluetooth (opened from the Bluetooth tile) =====
-                                ColumnLayout {
-                                    spacing: 12
 
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        spacing: 10
-                                        BarButton {
-                                            theme: root
-                                            icon: ""
-                                            label: "Home"
-                                            onClicked: mouse => root.hubTab = 0
-                                        }
-                                        Text { text: ""; color: root.accent; font.family: root.iconFont; font.pixelSize: 18 }
-                                        Text { text: "Bluetooth"; color: root.fg; font.pixelSize: 18; font.bold: true }
-                                        Item { Layout.fillWidth: true }
-                                        SportChip {
-                                            theme: root
-                                            icon: root.btScanning ? "" : ""
-                                            label: root.btScanning ? "Looking for devices…" : "Find new devices"
-                                            active: root.btScanning
-                                            onClicked: root.btScan()
-                                        }
-                                        SportChip {
-                                            theme: root
-                                            label: root.btState === "yes" ? "On" : "Off"
-                                            icon: ""
-                                            active: root.btState === "yes"
-                                            onClicked: root.btPower(root.btState !== "yes")
-                                        }
-                                    }
-
-                                    Text {
-                                        Layout.fillWidth: true
-                                        text: root.btMsg !== "" ? root.btMsg
-                                            : "Controller: put it in pairing mode (PlayStation: hold Create + PS · Xbox: hold the pair button · Switch: hold sync), press Find new devices, then click it."
-                                        color: root.btMsg.indexOf("Couldn't") === 0 ? root.danger : root.muted
-                                        font.pixelSize: 12
-                                        wrapMode: Text.Wrap
-                                    }
-
-                                    HubCard {
-                                        theme: root
-                                        Layout.fillWidth: true
-                                        Layout.fillHeight: true
-
-                                        ListView {
-                                            id: btView
-                                            anchors.fill: parent
-                                            anchors.margins: 10
-                                            clip: true
-                                            spacing: 6
-                                            boundsBehavior: Flickable.StopAtBounds
-                                            model: root.btDevices
-                                            delegate: Rectangle {
-                                                id: btd
-                                                required property var modelData
-                                                readonly property bool busy: root.btBusy === btd.modelData.mac
-                                                width: btView.width
-                                                height: 58
-                                                radius: 16
-                                                color: btdMouse.containsMouse ? root.overlay : root.surface
-                                                border.width: btd.modelData.connected ? 2 : 1
-                                                border.color: btd.modelData.connected ? root.accent : root.glassEdge
-
+                                                // ---- Lots of colours to pick from ----
                                                 RowLayout {
-                                                    anchors.fill: parent
-                                                    anchors.leftMargin: 14
-                                                    anchors.rightMargin: 10
-                                                    spacing: 12
+                                                    Layout.fillWidth: true
+                                                    Layout.topMargin: 4
+                                                    spacing: 10
+                                                    Text { text: "Colours"; color: root.fg; font.pixelSize: 15; font.bold: true }
+                                                    Item { Layout.fillWidth: true }
+                                                    // type your own: #ff8800
                                                     Rectangle {
-                                                        Layout.preferredWidth: 38
-                                                        Layout.preferredHeight: 38
-                                                        radius: 19
-                                                        color: btd.modelData.connected ? root.accent : root.overlay
-                                                        Text {
-                                                            anchors.centerIn: parent
-                                                            text: root.btIconFor(btd.modelData.icon, btd.modelData.name)
-                                                            font.family: root.iconFont
-                                                            font.pixelSize: 16
-                                                            color: btd.modelData.connected ? root.bg : root.fg
+                                                        implicitWidth: 150
+                                                        implicitHeight: 32
+                                                        radius: 16
+                                                        color: root.surface
+                                                        border.width: 1
+                                                        border.color: hexIn.activeFocus ? root.accent : root.glassEdge
+                                                        Rectangle {
+                                                            id: hexDot
+                                                            anchors.left: parent.left
+                                                            anchors.leftMargin: 8
+                                                            anchors.verticalCenter: parent.verticalCenter
+                                                            width: 18; height: 18; radius: 9
+                                                            color: pins.adapter.customColor
+                                                            border.width: 1
+                                                            border.color: Qt.rgba(1, 1, 1, 0.5)
                                                         }
-                                                    }
-                                                    ColumnLayout {
-                                                        Layout.fillWidth: true
-                                                        spacing: 2
-                                                        Text { Layout.fillWidth: true; text: btd.modelData.name; color: root.fg; font.pixelSize: 14; font.bold: true; elide: Text.ElideRight }
-                                                        Text {
-                                                            text: btd.busy ? "Working…"
-                                                                : btd.modelData.connected ? "Connected" + (btd.modelData.battery >= 0 ? " · " + btd.modelData.battery + "% battery" : "")
-                                                                : btd.modelData.paired ? "Paired · click to connect" : "New · click to pair"
-                                                            color: btd.modelData.connected ? root.accent : root.muted
-                                                            font.pixelSize: 11
+                                                        TextInput {
+                                                            id: hexIn
+                                                            anchors.left: hexDot.right
+                                                            anchors.leftMargin: 8
+                                                            anchors.right: parent.right
+                                                            anchors.rightMargin: 10
+                                                            anchors.verticalCenter: parent.verticalCenter
+                                                            color: root.fg
+                                                            font.pixelSize: 13
+                                                            font.family: "JetBrainsMono Nerd Font"
+                                                            clip: true
+                                                            maximumLength: 7
+                                                            validator: RegularExpressionValidator { regularExpression: /#?[0-9a-fA-F]{0,6}/ }
+                                                            onAccepted: {
+                                                                let v = text.trim();
+                                                                if (v[0] !== "#") v = "#" + v;
+                                                                if (/^#[0-9a-fA-F]{6}$/.test(v)) { root.pickColor(v.toLowerCase()); text = ""; }
+                                                            }
+                                                            Keys.onEscapePressed: { text = ""; hubKeys.forceActiveFocus(); }
+                                                            Text {
+                                                                anchors.verticalCenter: parent.verticalCenter
+                                                                visible: hexIn.text === ""
+                                                                text: "#hex + Enter"
+                                                                color: root.muted
+                                                                font.pixelSize: 12
+                                                            }
                                                         }
-                                                    }
-                                                    SportChip {
-                                                        visible: !btd.busy
-                                                        theme: root
-                                                        label: btd.modelData.connected ? "Disconnect" : (btd.modelData.paired ? "Connect" : "Pair")
-                                                        active: !btd.modelData.connected && !btd.modelData.paired
-                                                        onClicked: root.btDo(btd.modelData.connected ? "disconnect" : (btd.modelData.paired ? "connect" : "pair"), btd.modelData.mac)
-                                                    }
-                                                    SportChip {
-                                                        visible: !btd.busy && btd.modelData.paired
-                                                        theme: root
-                                                        label: "Forget"
-                                                        onClicked: root.btDo("remove", btd.modelData.mac)
-                                                    }
-                                                    Text {
-                                                        visible: btd.busy
-                                                        text: ""
-                                                        font.family: root.iconFont
-                                                        font.pixelSize: 16
-                                                        color: root.accent
-                                                        RotationAnimation on rotation { running: btd.busy; loops: Animation.Infinite; from: 0; to: 360; duration: 1000 }
                                                     }
                                                 }
-                                                MouseArea {
-                                                    id: btdMouse
-                                                    anchors.fill: parent
-                                                    z: -1
-                                                    hoverEnabled: true
-                                                    cursorShape: Qt.PointingHandCursor
-                                                    onClicked: if (!btd.busy && !btd.modelData.connected)
-                                                        root.btDo(btd.modelData.paired ? "connect" : "pair", btd.modelData.mac)
+                                                Flow {
+                                                    Layout.fillWidth: true
+                                                    spacing: 9
+                                                    Repeater {
+                                                        model: root.themeSwatches
+                                                        delegate: Rectangle {
+                                                            id: sw
+                                                            required property string modelData
+                                                            readonly property bool current: root.colorSource === "custom" && root.customColor.toLowerCase() === sw.modelData.toLowerCase()
+                                                            width: 32
+                                                            height: 32
+                                                            radius: 32 / 2
+                                                            color: sw.modelData
+                                                            border.width: sw.current ? 3 : 1
+                                                            border.color: sw.current ? root.fg : Qt.rgba(1, 1, 1, 0.35)
+                                                            scale: swMouse.pressed ? 0.85 : (swMouse.containsMouse ? 1.15 : 1)
+                                                            Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutBack } }
+                                                            Text {
+                                                                anchors.centerIn: parent
+                                                                visible: sw.current
+                                                                text: "\uf00c"
+                                                                font.family: root.iconFont
+                                                                font.pixelSize: 32 * 0.38
+                                                                color: sw.color.hslLightness > 0.6 ? "#1b1b1f" : "white"
+                                                            }
+                                                            MouseArea {
+                                                                id: swMouse
+                                                                anchors.fill: parent
+                                                                hoverEnabled: true
+                                                                cursorShape: Qt.PointingHandCursor
+                                                                onClicked: root.pickColor(sw.modelData)
+                                                            }
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
-                                        Text {
-                                            anchors.centerIn: parent
-                                            visible: btView.count === 0
-                                            text: root.btState === "yes" ? (root.btScanning ? "Looking…" : "No devices yet. Press Find new devices.") : "Bluetooth is off"
-                                            color: root.muted
-                                            font.pixelSize: 13
+                                        // ===== 9: Input (keyboard & mouse) =====
+                                        Loader {
+                                            active: root.hubTab === 9
+                                            sourceComponent: inputPage
+                                        }
+                                        // ===== 10: Bluetooth (opened from the Bluetooth tile) =====
+                                        ColumnLayout {
+                                            spacing: 12
+
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 10
+                                                BarButton {
+                                                    theme: root
+                                                    icon: ""
+                                                    label: "Home"
+                                                    onClicked: mouse => root.hubTab = 0
+                                                }
+                                                Text { text: ""; color: root.accent; font.family: root.iconFont; font.pixelSize: 18 }
+                                                Text { text: "Bluetooth"; color: root.fg; font.pixelSize: 18; font.bold: true }
+                                                Item { Layout.fillWidth: true }
+                                                SportChip {
+                                                    theme: root
+                                                    icon: root.btScanning ? "" : ""
+                                                    label: root.btScanning ? "Looking for devices…" : "Find new devices"
+                                                    active: root.btScanning
+                                                    onClicked: root.btScan()
+                                                }
+                                                SportChip {
+                                                    theme: root
+                                                    label: root.btState === "yes" ? "On" : "Off"
+                                                    icon: ""
+                                                    active: root.btState === "yes"
+                                                    onClicked: root.btPower(root.btState !== "yes")
+                                                }
+                                            }
+
+                                            Text {
+                                                Layout.fillWidth: true
+                                                text: root.btMsg !== "" ? root.btMsg
+                                                    : "Controller: put it in pairing mode (PlayStation: hold Create + PS · Xbox: hold the pair button · Switch: hold sync), press Find new devices, then click it."
+                                                color: root.btMsg.indexOf("Couldn't") === 0 ? root.danger : root.muted
+                                                font.pixelSize: 12
+                                                wrapMode: Text.Wrap
+                                            }
+
+                                            HubCard {
+                                                theme: root
+                                                Layout.fillWidth: true
+                                                Layout.fillHeight: true
+
+                                                ListView {
+                                                    id: btView
+                                                    anchors.fill: parent
+                                                    anchors.margins: 10
+                                                    clip: true
+                                                    spacing: 6
+                                                    boundsBehavior: Flickable.StopAtBounds
+                                                    model: root.btDevices
+                                                    delegate: Rectangle {
+                                                        id: btd
+                                                        required property var modelData
+                                                        readonly property bool busy: root.btBusy === btd.modelData.mac
+                                                        width: btView.width
+                                                        height: 58
+                                                        radius: 16
+                                                        color: btdMouse.containsMouse ? root.overlay : root.surface
+                                                        border.width: btd.modelData.connected ? 2 : 1
+                                                        border.color: btd.modelData.connected ? root.accent : root.glassEdge
+
+                                                        RowLayout {
+                                                            anchors.fill: parent
+                                                            anchors.leftMargin: 14
+                                                            anchors.rightMargin: 10
+                                                            spacing: 12
+                                                            Rectangle {
+                                                                Layout.preferredWidth: 38
+                                                                Layout.preferredHeight: 38
+                                                                radius: 19
+                                                                color: btd.modelData.connected ? root.accent : root.overlay
+                                                                Text {
+                                                                    anchors.centerIn: parent
+                                                                    text: root.btIconFor(btd.modelData.icon, btd.modelData.name)
+                                                                    font.family: root.iconFont
+                                                                    font.pixelSize: 16
+                                                                    color: btd.modelData.connected ? root.bg : root.fg
+                                                                }
+                                                            }
+                                                            ColumnLayout {
+                                                                Layout.fillWidth: true
+                                                                spacing: 2
+                                                                Text { Layout.fillWidth: true; text: btd.modelData.name; color: root.fg; font.pixelSize: 14; font.bold: true; elide: Text.ElideRight }
+                                                                Text {
+                                                                    text: btd.busy ? "Working…"
+                                                                        : btd.modelData.connected ? "Connected" + (btd.modelData.battery >= 0 ? " · " + btd.modelData.battery + "% battery" : "")
+                                                                        : btd.modelData.paired ? "Paired · click to connect" : "New · click to pair"
+                                                                    color: btd.modelData.connected ? root.accent : root.muted
+                                                                    font.pixelSize: 11
+                                                                }
+                                                            }
+                                                            SportChip {
+                                                                visible: !btd.busy
+                                                                theme: root
+                                                                label: btd.modelData.connected ? "Disconnect" : (btd.modelData.paired ? "Connect" : "Pair")
+                                                                active: !btd.modelData.connected && !btd.modelData.paired
+                                                                onClicked: root.btDo(btd.modelData.connected ? "disconnect" : (btd.modelData.paired ? "connect" : "pair"), btd.modelData.mac)
+                                                            }
+                                                            SportChip {
+                                                                visible: !btd.busy && btd.modelData.paired
+                                                                theme: root
+                                                                label: "Forget"
+                                                                onClicked: root.btDo("remove", btd.modelData.mac)
+                                                            }
+                                                            Text {
+                                                                visible: btd.busy
+                                                                text: ""
+                                                                font.family: root.iconFont
+                                                                font.pixelSize: 16
+                                                                color: root.accent
+                                                                RotationAnimation on rotation { running: btd.busy; loops: Animation.Infinite; from: 0; to: 360; duration: 1000 }
+                                                            }
+                                                        }
+                                                        MouseArea {
+                                                            id: btdMouse
+                                                            anchors.fill: parent
+                                                            z: -1
+                                                            hoverEnabled: true
+                                                            cursorShape: Qt.PointingHandCursor
+                                                            onClicked: if (!btd.busy && !btd.modelData.connected)
+                                                                root.btDo(btd.modelData.paired ? "connect" : "pair", btd.modelData.mac)
+                                                        }
+                                                    }
+                                                }
+                                                Text {
+                                                    anchors.centerIn: parent
+                                                    visible: btView.count === 0
+                                                    text: root.btState === "yes" ? (root.btScanning ? "Looking…" : "No devices yet. Press Find new devices.") : "Bluetooth is off"
+                                                    color: root.muted
+                                                    font.pixelSize: 13
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -9043,1148 +9225,1164 @@ ShellRoot {
                 }
 
                 // ===== App store =====
-                Item {
-                    id: storeView
+                Loader {
+                    // only built while the store is open
                     anchors.fill: parent
-                    anchors.margins: 20
-                    visible: root.storeMode
-                    opacity: launcher.grown && root.storeMode ? 1 : 0
-                    Behavior on opacity { NumberAnimation { duration: root.animMs * 2 } }
-                    onVisibleChanged: if (visible) storeSearch.forceActiveFocus()
+                    active: launcher.visible && root.storeMode
+                    sourceComponent: Component {
+                        Item {
+                            id: storeView
+                            Component.onCompleted: if (visible) Qt.callLater(() => storeSearch.forceActiveFocus())
+                            anchors.fill: parent
+                            anchors.margins: 20
+                            visible: root.storeMode
+                            opacity: launcher.grown && root.storeMode ? 1 : 0
+                            Behavior on opacity { NumberAnimation { duration: root.animMs * 2 } }
+                            onVisibleChanged: if (visible) storeSearch.forceActiveFocus()
 
-                    ColumnLayout {
-                        anchors.fill: parent
-                        spacing: 12
+                            ColumnLayout {
+                                anchors.fill: parent
+                                spacing: 12
 
-                        // ---- top: back, search, where from ----
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: 8
-                            Rectangle {
-                                implicitWidth: 92
-                                implicitHeight: 46
-                                radius: 16
-                                color: sBack.containsMouse ? root.overlay : root.surface
-                                border.width: 1
-                                border.color: root.glassEdge
-                                Row {
-                                    anchors.centerIn: parent
+                                // ---- top: back, search, where from ----
+                                RowLayout {
+                                    Layout.fillWidth: true
                                     spacing: 8
-                                    Text { text: ""; font.family: root.iconFont; font.pixelSize: 13; color: root.fg; anchors.verticalCenter: parent.verticalCenter }
-                                    Text { text: "Apps"; color: root.fg; font.pixelSize: 13; anchors.verticalCenter: parent.verticalCenter }
-                                }
-                                MouseArea { id: sBack; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.storeMode = false }
-                            }
-                            Rectangle {
-                                Layout.fillWidth: true
-                                implicitHeight: 46
-                                radius: 16
-                                color: root.surface
-                                border.width: 1
-                                border.color: storeSearch.activeFocus ? root.accent : root.glassEdge
-                                Text {
-                                    id: sSearchIcon
-                                    anchors.left: parent.left
-                                    anchors.leftMargin: 14
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    text: root.storeLoading ? "" : ""
-                                    font.family: root.iconFont
-                                    font.pixelSize: 14
-                                    color: root.accent
-                                }
-                                TextInput {
-                                    id: storeSearch
-                                    anchors.left: sSearchIcon.right
-                                    anchors.leftMargin: 10
-                                    anchors.right: parent.right
-                                    anchors.rightMargin: 14
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    color: root.fg
-                                    font.pixelSize: 15
-                                    clip: true
-                                    text: root.storeQuery
-                                    onTextChanged: root.storeQuery = text
-                                    Keys.onReturnPressed: root.storeSearchNow()
-                                    Keys.onEscapePressed: { if (text !== "") text = ""; else root.launcherOpen = false; }
-                                    Text {
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        visible: storeSearch.text === ""
-                                        text: "Search Flathub, Arch and the AUR"
-                                        color: root.muted
-                                        font.pixelSize: 15
+                                    Rectangle {
+                                        implicitWidth: 92
+                                        implicitHeight: 46
+                                        radius: 16
+                                        color: sBack.containsMouse ? root.overlay : root.surface
+                                        border.width: 1
+                                        border.color: root.glassEdge
+                                        Row {
+                                            anchors.centerIn: parent
+                                            spacing: 8
+                                            Text { text: ""; font.family: root.iconFont; font.pixelSize: 13; color: root.fg; anchors.verticalCenter: parent.verticalCenter }
+                                            Text { text: "Apps"; color: root.fg; font.pixelSize: 13; anchors.verticalCenter: parent.verticalCenter }
+                                        }
+                                        MouseArea { id: sBack; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.storeMode = false }
                                     }
-                                }
-                            }
-                            Repeater {
-                                model: [ { id: "all", name: "All" }, { id: "flatpak", name: "Flathub" },
-                                         { id: "repo", name: "Arch" }, { id: "aur", name: "AUR" } ]
-                                delegate: SportChip {
-                                    required property var modelData
-                                    theme: root
-                                    label: modelData.name
-                                    active: root.storeSrc === modelData.id
-                                    onClicked: root.storeSrc = modelData.id
-                                }
-                            }
-                        }
-
-                        Text {
-                            Layout.fillWidth: true
-                            text: root.storeQuery.trim() === "" ? "Popular apps — or type above to search everything"
-                                : root.storeLoading ? "Searching…"
-                                : root.storeShown.length + " found"
-                            color: root.muted
-                            font.pixelSize: 12
-                        }
-
-                        // ---- results ----
-                        GridView {
-                            id: storeGrid
-                            Layout.fillWidth: true
-                            Layout.fillHeight: true
-                            clip: true
-                            boundsBehavior: Flickable.StopAtBounds
-                            model: root.storeShown
-                            readonly property int cols: width > 900 ? 3 : 2
-                            cellWidth: Math.floor(width / cols)
-                            cellHeight: 104
-
-                            delegate: Item {
-                                id: sr
-                                required property var modelData
-                                readonly property string busy: root.storeBusy[sr.modelData.id] || ""
-                                width: storeGrid.cellWidth
-                                height: storeGrid.cellHeight
-
-                                Rectangle {
-                                    anchors.fill: parent
-                                    anchors.margins: 5
-                                    radius: 18
-                                    color: srMouse.containsMouse ? root.overlay : root.surface
-                                    border.width: 1
-                                    border.color: root.glassEdge
-                                    Behavior on color { ColorAnimation { duration: root.animMs } }
-
-                                    MouseArea { id: srMouse; anchors.fill: parent; hoverEnabled: true }
-
-                                    RowLayout {
-                                        anchors.fill: parent
-                                        anchors.margins: 12
-                                        spacing: 12
-
-                                        // icon: Flathub's picture, the app's own icon if it's on your PC, or a box
-                                        Item {
-                                            Layout.preferredWidth: 52
-                                            Layout.preferredHeight: 52
-                                            Rectangle {
-                                                anchors.fill: parent
-                                                radius: 14
-                                                color: root.overlay
-                                                visible: srImg.status !== Image.Ready
-                                                Text {
-                                                    anchors.centerIn: parent
-                                                    text: sr.modelData.src === "flatpak" ? "" : ""
-                                                    font.family: root.iconFont
-                                                    font.pixelSize: 20
-                                                    color: root.accent
-                                                }
-                                            }
-                                            Image {
-                                                id: srImg
-                                                anchors.fill: parent
-                                                asynchronous: true
-                                                fillMode: Image.PreserveAspectFit
-                                                sourceSize.width: 104
-                                                cache: false
-                                                source: sr.modelData.icon !== "" ? sr.modelData.icon
-                                                    : Quickshell.iconPath(sr.modelData.id, true)
+                                    Rectangle {
+                                        Layout.fillWidth: true
+                                        implicitHeight: 46
+                                        radius: 16
+                                        color: root.surface
+                                        border.width: 1
+                                        border.color: storeSearch.activeFocus ? root.accent : root.glassEdge
+                                        Text {
+                                            id: sSearchIcon
+                                            anchors.left: parent.left
+                                            anchors.leftMargin: 14
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            text: root.storeLoading ? "" : ""
+                                            font.family: root.iconFont
+                                            font.pixelSize: 14
+                                            color: root.accent
+                                        }
+                                        TextInput {
+                                            id: storeSearch
+                                            anchors.left: sSearchIcon.right
+                                            anchors.leftMargin: 10
+                                            anchors.right: parent.right
+                                            anchors.rightMargin: 14
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            color: root.fg
+                                            font.pixelSize: 15
+                                            clip: true
+                                            text: root.storeQuery
+                                            onTextChanged: root.storeQuery = text
+                                            Keys.onReturnPressed: root.storeSearchNow()
+                                            Keys.onEscapePressed: { if (text !== "") text = ""; else root.launcherOpen = false; }
+                                            Text {
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                visible: storeSearch.text === ""
+                                                text: "Search Flathub, Arch and the AUR"
+                                                color: root.muted
+                                                font.pixelSize: 15
                                             }
                                         }
+                                    }
+                                    Repeater {
+                                        model: [ { id: "all", name: "All" }, { id: "flatpak", name: "Flathub" },
+                                                 { id: "repo", name: "Arch" }, { id: "aur", name: "AUR" } ]
+                                        delegate: SportChip {
+                                            required property var modelData
+                                            theme: root
+                                            label: modelData.name
+                                            active: root.storeSrc === modelData.id
+                                            onClicked: root.storeSrc = modelData.id
+                                        }
+                                    }
+                                }
 
-                                        ColumnLayout {
-                                            Layout.fillWidth: true
-                                            spacing: 3
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: root.storeQuery.trim() === "" ? "Popular apps — or type above to search everything"
+                                        : root.storeLoading ? "Searching…"
+                                        : root.storeShown.length + " found"
+                                    color: root.muted
+                                    font.pixelSize: 12
+                                }
+
+                                // ---- results ----
+                                GridView {
+                                    id: storeGrid
+                                    Layout.fillWidth: true
+                                    Layout.fillHeight: true
+                                    clip: true
+                                    boundsBehavior: Flickable.StopAtBounds
+                                    model: root.storeShown
+                                    readonly property int cols: width > 900 ? 3 : 2
+                                    cellWidth: Math.floor(width / cols)
+                                    cellHeight: 104
+
+                                    delegate: Item {
+                                        id: sr
+                                        required property var modelData
+                                        readonly property string busy: root.storeBusy[sr.modelData.id] || ""
+                                        width: storeGrid.cellWidth
+                                        height: storeGrid.cellHeight
+
+                                        Rectangle {
+                                            anchors.fill: parent
+                                            anchors.margins: 5
+                                            radius: 18
+                                            color: srMouse.containsMouse ? root.overlay : root.surface
+                                            border.width: 1
+                                            border.color: root.glassEdge
+                                            Behavior on color { ColorAnimation { duration: root.animMs } }
+
+                                            MouseArea { id: srMouse; anchors.fill: parent; hoverEnabled: true }
+
                                             RowLayout {
-                                                Layout.fillWidth: true
-                                                spacing: 6
-                                                Text {
-                                                    Layout.fillWidth: true
-                                                    text: sr.modelData.name
-                                                    color: root.fg
-                                                    font.pixelSize: 14
-                                                    font.bold: true
-                                                    elide: Text.ElideRight
+                                                anchors.fill: parent
+                                                anchors.margins: 12
+                                                spacing: 12
+
+                                                // icon: Flathub's picture, the app's own icon if it's on your PC, or a box
+                                                Item {
+                                                    Layout.preferredWidth: 52
+                                                    Layout.preferredHeight: 52
+                                                    Rectangle {
+                                                        anchors.fill: parent
+                                                        radius: 14
+                                                        color: root.overlay
+                                                        visible: srImg.status !== Image.Ready
+                                                        Text {
+                                                            anchors.centerIn: parent
+                                                            text: sr.modelData.src === "flatpak" ? "" : ""
+                                                            font.family: root.iconFont
+                                                            font.pixelSize: 20
+                                                            color: root.accent
+                                                        }
+                                                    }
+                                                    Image {
+                                                        id: srImg
+                                                        anchors.fill: parent
+                                                        asynchronous: true
+                                                        fillMode: Image.PreserveAspectFit
+                                                        sourceSize.width: 104
+                                                        cache: false
+                                                        source: sr.modelData.icon !== "" ? sr.modelData.icon
+                                                            : Quickshell.iconPath(sr.modelData.id, true)
+                                                    }
                                                 }
-                                                Rectangle {
-                                                    implicitWidth: srSrc.implicitWidth + 12
-                                                    implicitHeight: 18
-                                                    radius: 9
-                                                    color: sr.modelData.src === "aur" ? Qt.rgba(1, 0.6, 0.2, 0.25)
-                                                        : sr.modelData.src === "repo" ? Qt.rgba(0.2, 0.6, 1, 0.25) : Qt.rgba(0.4, 0.9, 0.5, 0.22)
+
+                                                ColumnLayout {
+                                                    Layout.fillWidth: true
+                                                    spacing: 3
+                                                    RowLayout {
+                                                        Layout.fillWidth: true
+                                                        spacing: 6
+                                                        Text {
+                                                            Layout.fillWidth: true
+                                                            text: sr.modelData.name
+                                                            color: root.fg
+                                                            font.pixelSize: 14
+                                                            font.bold: true
+                                                            elide: Text.ElideRight
+                                                        }
+                                                        Rectangle {
+                                                            implicitWidth: srSrc.implicitWidth + 12
+                                                            implicitHeight: 18
+                                                            radius: 9
+                                                            color: sr.modelData.src === "aur" ? Qt.rgba(1, 0.6, 0.2, 0.25)
+                                                                : sr.modelData.src === "repo" ? Qt.rgba(0.2, 0.6, 1, 0.25) : Qt.rgba(0.4, 0.9, 0.5, 0.22)
+                                                            Text {
+                                                                id: srSrc
+                                                                anchors.centerIn: parent
+                                                                text: sr.modelData.src === "aur" ? "AUR" : sr.modelData.src === "repo" ? "Arch" : "Flathub"
+                                                                color: root.fg
+                                                                font.pixelSize: 9
+                                                                font.bold: true
+                                                            }
+                                                        }
+                                                    }
                                                     Text {
-                                                        id: srSrc
-                                                        anchors.centerIn: parent
-                                                        text: sr.modelData.src === "aur" ? "AUR" : sr.modelData.src === "repo" ? "Arch" : "Flathub"
-                                                        color: root.fg
+                                                        Layout.fillWidth: true
+                                                        text: sr.modelData.desc
+                                                        color: root.muted
+                                                        font.pixelSize: 11
+                                                        wrapMode: Text.Wrap
+                                                        maximumLineCount: 2
+                                                        elide: Text.ElideRight
+                                                    }
+                                                    Text {
+                                                        visible: sr.modelData.src === "aur" && sr.modelData.votes > 0
+                                                        text: sr.modelData.votes + " votes" + (sr.modelData.outdated ? " · out of date" : "")
+                                                        color: root.muted
                                                         font.pixelSize: 9
-                                                        font.bold: true
+                                                    }
+                                                }
+
+                                                // install / open / remove
+                                                ColumnLayout {
+                                                    spacing: 6
+                                                    SportChip {
+                                                        visible: sr.busy === ""
+                                                        theme: root
+                                                        label: sr.modelData.installed ? "Open" : "Install"
+                                                        icon: sr.modelData.installed ? "" : ""
+                                                        active: !sr.modelData.installed
+                                                        onClicked: sr.modelData.installed ? root.storeOpen(sr.modelData) : root.storeInstall(sr.modelData)
+                                                    }
+                                                    SportChip {
+                                                        visible: sr.busy === "" && sr.modelData.installed
+                                                        theme: root
+                                                        label: "Remove"
+                                                        onClicked: root.storeRemove(sr.modelData)
+                                                    }
+                                                    Row {
+                                                        visible: sr.busy !== ""
+                                                        spacing: 6
+                                                        Text {
+                                                            text: ""
+                                                            font.family: root.iconFont
+                                                            font.pixelSize: 13
+                                                            color: root.accent
+                                                            RotationAnimation on rotation { running: sr.busy !== ""; loops: Animation.Infinite; from: 0; to: 360; duration: 1000 }
+                                                        }
+                                                        Text {
+                                                            text: sr.busy === "remove" ? "Removing…" : "Installing…"
+                                                            color: root.muted
+                                                            font.pixelSize: 11
+                                                        }
                                                     }
                                                 }
                                             }
-                                            Text {
-                                                Layout.fillWidth: true
-                                                text: sr.modelData.desc
-                                                color: root.muted
-                                                font.pixelSize: 11
-                                                wrapMode: Text.Wrap
-                                                maximumLineCount: 2
-                                                elide: Text.ElideRight
-                                            }
-                                            Text {
-                                                visible: sr.modelData.src === "aur" && sr.modelData.votes > 0
-                                                text: sr.modelData.votes + " votes" + (sr.modelData.outdated ? " · out of date" : "")
-                                                color: root.muted
-                                                font.pixelSize: 9
-                                            }
-                                        }
-
-                                        // install / open / remove
-                                        ColumnLayout {
-                                            spacing: 6
-                                            SportChip {
-                                                visible: sr.busy === ""
-                                                theme: root
-                                                label: sr.modelData.installed ? "Open" : "Install"
-                                                icon: sr.modelData.installed ? "" : ""
-                                                active: !sr.modelData.installed
-                                                onClicked: sr.modelData.installed ? root.storeOpen(sr.modelData) : root.storeInstall(sr.modelData)
-                                            }
-                                            SportChip {
-                                                visible: sr.busy === "" && sr.modelData.installed
-                                                theme: root
-                                                label: "Remove"
-                                                onClicked: root.storeRemove(sr.modelData)
-                                            }
-                                            Row {
-                                                visible: sr.busy !== ""
-                                                spacing: 6
-                                                Text {
-                                                    text: ""
-                                                    font.family: root.iconFont
-                                                    font.pixelSize: 13
-                                                    color: root.accent
-                                                    RotationAnimation on rotation { running: sr.busy !== ""; loops: Animation.Infinite; from: 0; to: 360; duration: 1000 }
-                                                }
-                                                Text {
-                                                    text: sr.busy === "remove" ? "Removing…" : "Installing…"
-                                                    color: root.muted
-                                                    font.pixelSize: 11
-                                                }
-                                            }
                                         }
                                     }
                                 }
-                            }
-                        }
 
-                        Text {
-                            Layout.fillWidth: true
-                            visible: !root.storeHasFlatpak || !root.storeHasParu
-                            text: (!root.storeHasFlatpak ? "For Flathub apps install flatpak: sudo pacman -S flatpak.  " : "")
-                                + (!root.storeHasParu ? "For AUR packages install paru: sudo pacman -S paru" : "")
-                            color: root.muted
-                            font.pixelSize: 11
-                            wrapMode: Text.Wrap
+                                Text {
+                                    Layout.fillWidth: true
+                                    visible: !root.storeHasFlatpak || !root.storeHasParu
+                                    text: (!root.storeHasFlatpak ? "For Flathub apps install flatpak: sudo pacman -S flatpak.  " : "")
+                                        + (!root.storeHasParu ? "For AUR packages install paru: sudo pacman -S paru" : "")
+                                    color: root.muted
+                                    font.pixelSize: 11
+                                    wrapMode: Text.Wrap
+                                }
+                            }
                         }
                     }
                 }
 
                 // ===== Games library =====
-                Item {
-                    id: gamesView
+                Loader {
+                    // only built while the Games library is open (its cover art used memory all the time)
                     anchors.fill: parent
-                    anchors.margins: 20
-                    visible: root.gamesMode
-                    opacity: launcher.grown && root.gamesMode ? 1 : 0
-                    Behavior on opacity { NumberAnimation { duration: root.animMs * 2 } }
-                    onVisibleChanged: if (visible) gamesSearch.forceActiveFocus()
-
-                    RowLayout {
-                        anchors.fill: parent
-                        spacing: 16
-
-                        // ---- sidebar: where from, collections, filters ----
-                        ColumnLayout {
-                            Layout.preferredWidth: 220
-                            Layout.maximumWidth: 220
-                            Layout.fillWidth: false
-                            Layout.fillHeight: true
-                            spacing: 6
-
-                            Rectangle {
-                                Layout.fillWidth: true
-                                implicitHeight: 40
-                                radius: 14
-                                color: gBack.containsMouse ? root.overlay : root.surface
-                                border.width: 1
-                                border.color: root.glassEdge
-                                Row {
-                                    anchors.centerIn: parent
-                                    spacing: 8
-                                    Text { text: ""; font.family: root.iconFont; font.pixelSize: 13; color: root.fg; anchors.verticalCenter: parent.verticalCenter }
-                                    Text { text: "Apps"; color: root.fg; font.pixelSize: 13; anchors.verticalCenter: parent.verticalCenter }
-                                }
-                                MouseArea { id: gBack; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.gamesMode = false }
-                            }
-
-                            // everything below scrolls if your collections get long
-                            Flickable {
-                                Layout.fillWidth: true
-                                Layout.fillHeight: true
-                                clip: true
-                                contentWidth: width
-                                contentHeight: sideCol.implicitHeight
-                                boundsBehavior: Flickable.StopAtBounds
-
-                                Column {
-                                    id: sideCol
-                                    width: parent.width
-                                    spacing: 3
-
-                                    Text { text: "Library"; color: root.muted; font.pixelSize: 11; topPadding: 8; bottomPadding: 2 }
-                                    Repeater {
-                                        model: [
-                                            { id: "all", name: "All games", icon: "" },
-                                            { id: "steam", name: "Steam", icon: "" },
-                                            { id: "heroic", name: "Heroic", icon: "" },
-                                            { id: "recomp", name: "Recomp", icon: "" },
-                                            { id: "switch1", name: "Switch", icon: "\uf11b" },
-                                            { id: "switch2", name: "Switch 2", icon: "\uf11b" }
-                                        ]
-                                        delegate: Rectangle {
-                                            id: gs
-                                            required property var modelData
-                                            readonly property bool sel: root.gamesSrc === modelData.id && root.gamesCol === "" && root.gamesMyCol === "" && !root.gamesHiddenView
-                                            width: sideCol.width
-                                            height: 38
-                                            radius: 12
-                                            color: gs.sel ? root.accent : (gsMouse.containsMouse ? root.overlay : "transparent")
-                                            Behavior on color { ColorAnimation { duration: root.animMs } }
-                                            RowLayout {
-                                                anchors.fill: parent
-                                                anchors.leftMargin: 12
-                                                anchors.rightMargin: 12
-                                                spacing: 10
-                                                Text { text: gs.modelData.icon; font.family: root.iconFont; font.pixelSize: 14; color: gs.sel ? root.bg : root.accent }
-                                                Text { Layout.fillWidth: true; text: gs.modelData.name; color: gs.sel ? root.bg : root.fg; font.pixelSize: 13; font.bold: gs.sel }
-                                                Text { text: root.gamesCount(gs.modelData.id); color: gs.sel ? root.bg : root.muted; font.pixelSize: 11 }
-                                            }
-                                            MouseArea {
-                                                id: gsMouse
-                                                anchors.fill: parent
-                                                hoverEnabled: true
-                                                cursorShape: Qt.PointingHandCursor
-                                                onClicked: { root.gamesSrc = gs.modelData.id; root.gamesCol = ""; root.gamesMyCol = ""; root.gamesHiddenView = false; }
-                                            }
-                                        }
-                                    }
-                                    // hidden games (only when you've hidden some)
-                                    Rectangle {
-                                        visible: root.gamesHidden.length > 0
-                                        width: sideCol.width
-                                        height: 34
-                                        radius: 12
-                                        color: root.gamesHiddenView ? root.accent : (ghMouse.containsMouse ? root.overlay : "transparent")
-                                        RowLayout {
-                                            anchors.fill: parent
-                                            anchors.leftMargin: 12
-                                            anchors.rightMargin: 12
-                                            spacing: 10
-                                            Text { text: ""; font.family: root.iconFont; font.pixelSize: 13; color: root.gamesHiddenView ? root.bg : root.muted }
-                                            Text { Layout.fillWidth: true; text: "Hidden"; color: root.gamesHiddenView ? root.bg : root.muted; font.pixelSize: 12 }
-                                            Text { text: root.gamesHidden.length; color: root.gamesHiddenView ? root.bg : root.muted; font.pixelSize: 11 }
-                                        }
-                                        MouseArea { id: ghMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { root.gamesHiddenView = !root.gamesHiddenView; root.gamesMyCol = ""; root.gamesCol = ""; } }
-                                    }
-
-                                    // ---- your own collections ----
-                                    Text { text: "My collections"; color: root.muted; font.pixelSize: 11; topPadding: 10; bottomPadding: 2 }
-                                    Repeater {
-                                        model: root.gamesMyCols
-                                        delegate: Rectangle {
-                                            id: mc2
-                                            required property var modelData
-                                            readonly property bool sel: root.gamesMyCol === modelData.id
-                                            width: sideCol.width
-                                            height: 34
-                                            radius: 11
-                                            color: mc2.sel ? root.accent : (mcMouse.containsMouse || mcDel.containsMouse ? root.overlay : "transparent")
-                                            Text {
-                                                anchors.verticalCenter: parent.verticalCenter
-                                                x: 12
-                                                width: parent.width - 54
-                                                text: mc2.modelData.name
-                                                elide: Text.ElideRight
-                                                color: mc2.sel ? root.bg : root.fg
-                                                font.pixelSize: 12
-                                                font.bold: mc2.sel
-                                            }
-                                            Text {
-                                                anchors.verticalCenter: parent.verticalCenter
-                                                anchors.right: parent.right
-                                                anchors.rightMargin: 30
-                                                text: mc2.modelData.keys.length
-                                                color: mc2.sel ? root.bg : root.muted
-                                                font.pixelSize: 11
-                                            }
-                                            MouseArea {
-                                                id: mcMouse
-                                                anchors.fill: parent
-                                                hoverEnabled: true
-                                                cursorShape: Qt.PointingHandCursor
-                                                onClicked: { root.gamesMyCol = mc2.sel ? "" : mc2.modelData.id; root.gamesCol = ""; root.gamesHiddenView = false; }
-                                            }
-                                            // delete (press twice to be sure)
-                                            Text {
-                                                anchors.verticalCenter: parent.verticalCenter
-                                                anchors.right: parent.right
-                                                anchors.rightMargin: 10
-                                                property bool armed: false
-                                                visible: mcMouse.containsMouse || mcDel.containsMouse || armed
-                                                text: armed ? "" : ""
-                                                font.family: root.iconFont
-                                                font.pixelSize: 11
-                                                color: armed ? root.danger : (mc2.sel ? root.bg : root.muted)
-                                                MouseArea {
-                                                    id: mcDel
-                                                    anchors.fill: parent
-                                                    anchors.margins: -6
-                                                    hoverEnabled: true
-                                                    cursorShape: Qt.PointingHandCursor
-                                                    onClicked: { if (parent.armed) root.gamesDeleteCol(mc2.modelData.id); else { parent.armed = true; disarm.restart(); } }
-                                                }
-                                                Timer { id: disarm; interval: 2500; onTriggered: parent.armed = false }
-                                            }
-                                        }
-                                    }
-                                    // + New collection
-                                    Rectangle {
-                                        width: sideCol.width
-                                        height: 34
-                                        radius: 11
-                                        color: newColIn.activeFocus ? root.surface : (newColMouse.containsMouse ? root.overlay : "transparent")
-                                        border.width: newColIn.activeFocus ? 1 : 0
-                                        border.color: root.accent
-                                        Text {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            x: 12
-                                            visible: !newColIn.activeFocus && newColIn.text === ""
-                                            text: "  New collection"
-                                            font.family: root.iconFont
-                                            color: root.accent
-                                            font.pixelSize: 12
-                                        }
-                                        MouseArea { id: newColMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.IBeamCursor; onClicked: newColIn.forceActiveFocus() }
-                                        TextInput {
-                                            id: newColIn
-                                            anchors.fill: parent
-                                            anchors.leftMargin: 12
-                                            anchors.rightMargin: 12
-                                            verticalAlignment: TextInput.AlignVCenter
-                                            color: root.fg
-                                            font.pixelSize: 12
-                                            clip: true
-                                            onAccepted: {
-                                                const id = root.gamesNewCollection(text, gamesView.pendingKey);
-                                                text = "";
-                                                gamesView.pendingKey = "";
-                                                if (id !== "") { root.gamesMyCol = id; root.gamesHiddenView = false; }
-                                                gamesSearch.forceActiveFocus();
-                                            }
-                                            Keys.onEscapePressed: { text = ""; gamesView.pendingKey = ""; gamesSearch.forceActiveFocus(); }
-                                        }
-                                    }
-
-                                    // ---- Steam's collections ----
-                                    Text { visible: root.gamesCols.length > 0; text: "Steam collections"; color: root.muted; font.pixelSize: 11; topPadding: 10; bottomPadding: 2 }
-                                    Repeater {
-                                        model: root.gamesCols
-                                        delegate: Rectangle {
-                                            id: gc2
-                                            required property var modelData
-                                            readonly property bool sel: root.gamesCol === modelData.id
-                                            width: sideCol.width
-                                            height: 34
-                                            radius: 11
-                                            color: gc2.sel ? root.accent : (gcMouse.containsMouse ? root.overlay : "transparent")
-                                            Text {
-                                                anchors.verticalCenter: parent.verticalCenter
-                                                x: 12
-                                                width: parent.width - 24
-                                                text: gc2.modelData.name
-                                                elide: Text.ElideRight
-                                                color: gc2.sel ? root.bg : root.fg
-                                                font.pixelSize: 12
-                                                font.bold: gc2.sel
-                                            }
-                                            MouseArea {
-                                                id: gcMouse
-                                                anchors.fill: parent
-                                                hoverEnabled: true
-                                                cursorShape: Qt.PointingHandCursor
-                                                onClicked: { root.gamesSrc = "steam"; root.gamesCol = gc2.sel ? "" : gc2.modelData.id; root.gamesMyCol = ""; root.gamesHiddenView = false; }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // open the launchers themselves, or add a game by hand
-                            Text { text: "Open"; color: root.muted; font.pixelSize: 11 }
-                            Flow {
-                                Layout.fillWidth: true
-                                spacing: 6
-                                SportChip { theme: root; label: "Steam"; onClicked: { root.launcherOpen = false; Quickshell.execDetached(["steam"]); } }
-                                SportChip { theme: root; label: "Heroic"; onClicked: { root.launcherOpen = false; Quickshell.execDetached(["sh", "-c", "heroic || flatpak run com.heroicgameslauncher.hgl"]); } }
-                                SportChip {
-                                    visible: root.gamesRecompLauncher !== ""
-                                    theme: root
-                                    label: "RecompLauncher"
-                                    onClicked: { root.launcherOpen = false; Quickshell.execDetached([root.gamesRecompLauncher]); }
-                                }
-                                SportChip {
-                                    visible: root.gamesEden.length > 0
-                                    theme: root
-                                    label: "Eden"
-                                    onClicked: { root.launcherOpen = false; Quickshell.execDetached(root.gamesEden); }
-                                }
-                                SportChip {
-                                    visible: root.gamesEglantine.length > 0
-                                    theme: root
-                                    label: "Eglantine"
-                                    onClicked: { root.launcherOpen = false; Quickshell.execDetached(root.gamesEglantine); }
-                                }
-                                SportChip { theme: root; icon: ""; label: "Add a game"; onClicked: root.gamesPickToAdd() }
-                                SportChip { theme: root; icon: root.gamesCoversBusy ? "\uf110" : "\uf03e"; label: "Find covers"; onClicked: root.gamesFindAllCovers() }
-                            }
-                            Text {
-                                visible: root.gamesCoversNote !== ""
-                                Layout.fillWidth: true
-                                text: root.gamesCoversNote
-                                color: root.muted
-                                font.pixelSize: 10
-                                wrapMode: Text.Wrap
-                            }
-                            Text {
-                                visible: root.gamesNote !== ""
-                                Layout.fillWidth: true
-                                text: root.gamesNote
-                                color: root.muted
-                                font.pixelSize: 10
-                                wrapMode: Text.Wrap
-                            }
-                        }
-
-                        // ---- search, filters and the covers ----
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            Layout.fillHeight: true
-                            spacing: 12
+                    active: launcher.visible && root.gamesMode
+                    sourceComponent: Component {
+                        Item {
+                            id: gamesView
+                            Component.onCompleted: if (visible) Qt.callLater(() => gamesSearch.forceActiveFocus())
+                            anchors.fill: parent
+                            anchors.margins: 20
+                            visible: root.gamesMode
+                            opacity: launcher.grown && root.gamesMode ? 1 : 0
+                            Behavior on opacity { NumberAnimation { duration: root.animMs * 2 } }
+                            onVisibleChanged: if (visible) gamesSearch.forceActiveFocus()
 
                             RowLayout {
-                                Layout.fillWidth: true
-                                spacing: 8
-                                Rectangle {
-                                    Layout.fillWidth: true
-                                    implicitHeight: 44
-                                    radius: 16
-                                    color: root.surface
-                                    border.width: 1
-                                    border.color: gamesSearch.activeFocus ? root.accent : root.glassEdge
-                                    Text {
-                                        id: gSearchIcon
-                                        anchors.left: parent.left
-                                        anchors.leftMargin: 14
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        text: ""
-                                        font.family: root.iconFont
-                                        font.pixelSize: 14
-                                        color: root.accent
+                                anchors.fill: parent
+                                spacing: 16
+
+                                // ---- sidebar: where from, collections, filters ----
+                                ColumnLayout {
+                                    Layout.preferredWidth: 220
+                                    Layout.maximumWidth: 220
+                                    Layout.fillWidth: false
+                                    Layout.fillHeight: true
+                                    spacing: 6
+
+                                    Rectangle {
+                                        Layout.fillWidth: true
+                                        implicitHeight: 40
+                                        radius: 14
+                                        color: gBack.containsMouse ? root.overlay : root.surface
+                                        border.width: 1
+                                        border.color: root.glassEdge
+                                        Row {
+                                            anchors.centerIn: parent
+                                            spacing: 8
+                                            Text { text: ""; font.family: root.iconFont; font.pixelSize: 13; color: root.fg; anchors.verticalCenter: parent.verticalCenter }
+                                            Text { text: "Apps"; color: root.fg; font.pixelSize: 13; anchors.verticalCenter: parent.verticalCenter }
+                                        }
+                                        MouseArea { id: gBack; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.gamesMode = false }
                                     }
-                                    TextInput {
-                                        id: gamesSearch
-                                        anchors.left: gSearchIcon.right
-                                        anchors.leftMargin: 10
-                                        anchors.right: parent.right
-                                        anchors.rightMargin: 14
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        color: root.fg
-                                        font.pixelSize: 14
+
+                                    // everything below scrolls if your collections get long
+                                    Flickable {
+                                        Layout.fillWidth: true
+                                        Layout.fillHeight: true
                                         clip: true
-                                        text: root.gamesQuery
-                                        onTextChanged: root.gamesQuery = text
-                                        Keys.onEscapePressed: { if (text !== "") text = ""; else root.launcherOpen = false; }
-                                        Keys.onReturnPressed: if (gamesGrid.count > 0) root.gamePlay(root.gamesShown[0])
-                                        Text {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            visible: gamesSearch.text === ""
-                                            text: "Search " + root.gamesShown.length + " games"
-                                            color: root.muted
-                                            font.pixelSize: 14
+                                        contentWidth: width
+                                        contentHeight: sideCol.implicitHeight
+                                        boundsBehavior: Flickable.StopAtBounds
+
+                                        Column {
+                                            id: sideCol
+                                            width: parent.width
+                                            spacing: 3
+
+                                            Text { text: "Library"; color: root.muted; font.pixelSize: 11; topPadding: 8; bottomPadding: 2 }
+                                            Repeater {
+                                                model: [
+                                                    { id: "all", name: "All games", icon: "" },
+                                                    { id: "steam", name: "Steam", icon: "" },
+                                                    { id: "heroic", name: "Heroic", icon: "" },
+                                                    { id: "recomp", name: "Recomp", icon: "" },
+                                                    { id: "switch1", name: "Switch", icon: "\uf11b" },
+                                                    { id: "switch2", name: "Switch 2", icon: "\uf11b" }
+                                                ]
+                                                delegate: Rectangle {
+                                                    id: gs
+                                                    required property var modelData
+                                                    readonly property bool sel: root.gamesSrc === modelData.id && root.gamesCol === "" && root.gamesMyCol === "" && !root.gamesHiddenView
+                                                    width: sideCol.width
+                                                    height: 38
+                                                    radius: 12
+                                                    color: gs.sel ? root.accent : (gsMouse.containsMouse ? root.overlay : "transparent")
+                                                    Behavior on color { ColorAnimation { duration: root.animMs } }
+                                                    RowLayout {
+                                                        anchors.fill: parent
+                                                        anchors.leftMargin: 12
+                                                        anchors.rightMargin: 12
+                                                        spacing: 10
+                                                        Text { text: gs.modelData.icon; font.family: root.iconFont; font.pixelSize: 14; color: gs.sel ? root.bg : root.accent }
+                                                        Text { Layout.fillWidth: true; text: gs.modelData.name; color: gs.sel ? root.bg : root.fg; font.pixelSize: 13; font.bold: gs.sel }
+                                                        Text { text: root.gamesCount(gs.modelData.id); color: gs.sel ? root.bg : root.muted; font.pixelSize: 11 }
+                                                    }
+                                                    MouseArea {
+                                                        id: gsMouse
+                                                        anchors.fill: parent
+                                                        hoverEnabled: true
+                                                        cursorShape: Qt.PointingHandCursor
+                                                        onClicked: { root.gamesSrc = gs.modelData.id; root.gamesCol = ""; root.gamesMyCol = ""; root.gamesHiddenView = false; }
+                                                    }
+                                                }
+                                            }
+                                            // hidden games (only when you've hidden some)
+                                            Rectangle {
+                                                visible: root.gamesHidden.length > 0
+                                                width: sideCol.width
+                                                height: 34
+                                                radius: 12
+                                                color: root.gamesHiddenView ? root.accent : (ghMouse.containsMouse ? root.overlay : "transparent")
+                                                RowLayout {
+                                                    anchors.fill: parent
+                                                    anchors.leftMargin: 12
+                                                    anchors.rightMargin: 12
+                                                    spacing: 10
+                                                    Text { text: ""; font.family: root.iconFont; font.pixelSize: 13; color: root.gamesHiddenView ? root.bg : root.muted }
+                                                    Text { Layout.fillWidth: true; text: "Hidden"; color: root.gamesHiddenView ? root.bg : root.muted; font.pixelSize: 12 }
+                                                    Text { text: root.gamesHidden.length; color: root.gamesHiddenView ? root.bg : root.muted; font.pixelSize: 11 }
+                                                }
+                                                MouseArea { id: ghMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { root.gamesHiddenView = !root.gamesHiddenView; root.gamesMyCol = ""; root.gamesCol = ""; } }
+                                            }
+
+                                            // ---- your own collections ----
+                                            Text { text: "My collections"; color: root.muted; font.pixelSize: 11; topPadding: 10; bottomPadding: 2 }
+                                            Repeater {
+                                                model: root.gamesMyCols
+                                                delegate: Rectangle {
+                                                    id: mc2
+                                                    required property var modelData
+                                                    readonly property bool sel: root.gamesMyCol === modelData.id
+                                                    width: sideCol.width
+                                                    height: 34
+                                                    radius: 11
+                                                    color: mc2.sel ? root.accent : (mcMouse.containsMouse || mcDel.containsMouse ? root.overlay : "transparent")
+                                                    Text {
+                                                        anchors.verticalCenter: parent.verticalCenter
+                                                        x: 12
+                                                        width: parent.width - 54
+                                                        text: mc2.modelData.name
+                                                        elide: Text.ElideRight
+                                                        color: mc2.sel ? root.bg : root.fg
+                                                        font.pixelSize: 12
+                                                        font.bold: mc2.sel
+                                                    }
+                                                    Text {
+                                                        anchors.verticalCenter: parent.verticalCenter
+                                                        anchors.right: parent.right
+                                                        anchors.rightMargin: 30
+                                                        text: mc2.modelData.keys.length
+                                                        color: mc2.sel ? root.bg : root.muted
+                                                        font.pixelSize: 11
+                                                    }
+                                                    MouseArea {
+                                                        id: mcMouse
+                                                        anchors.fill: parent
+                                                        hoverEnabled: true
+                                                        cursorShape: Qt.PointingHandCursor
+                                                        onClicked: { root.gamesMyCol = mc2.sel ? "" : mc2.modelData.id; root.gamesCol = ""; root.gamesHiddenView = false; }
+                                                    }
+                                                    // delete (press twice to be sure)
+                                                    Text {
+                                                        anchors.verticalCenter: parent.verticalCenter
+                                                        anchors.right: parent.right
+                                                        anchors.rightMargin: 10
+                                                        property bool armed: false
+                                                        visible: mcMouse.containsMouse || mcDel.containsMouse || armed
+                                                        text: armed ? "" : ""
+                                                        font.family: root.iconFont
+                                                        font.pixelSize: 11
+                                                        color: armed ? root.danger : (mc2.sel ? root.bg : root.muted)
+                                                        MouseArea {
+                                                            id: mcDel
+                                                            anchors.fill: parent
+                                                            anchors.margins: -6
+                                                            hoverEnabled: true
+                                                            cursorShape: Qt.PointingHandCursor
+                                                            onClicked: { if (parent.armed) root.gamesDeleteCol(mc2.modelData.id); else { parent.armed = true; disarm.restart(); } }
+                                                        }
+                                                        Timer { id: disarm; interval: 2500; onTriggered: parent.armed = false }
+                                                    }
+                                                }
+                                            }
+                                            // + New collection
+                                            Rectangle {
+                                                width: sideCol.width
+                                                height: 34
+                                                radius: 11
+                                                color: newColIn.activeFocus ? root.surface : (newColMouse.containsMouse ? root.overlay : "transparent")
+                                                border.width: newColIn.activeFocus ? 1 : 0
+                                                border.color: root.accent
+                                                Text {
+                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    x: 12
+                                                    visible: !newColIn.activeFocus && newColIn.text === ""
+                                                    text: "  New collection"
+                                                    font.family: root.iconFont
+                                                    color: root.accent
+                                                    font.pixelSize: 12
+                                                }
+                                                MouseArea { id: newColMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.IBeamCursor; onClicked: newColIn.forceActiveFocus() }
+                                                TextInput {
+                                                    id: newColIn
+                                                    anchors.fill: parent
+                                                    anchors.leftMargin: 12
+                                                    anchors.rightMargin: 12
+                                                    verticalAlignment: TextInput.AlignVCenter
+                                                    color: root.fg
+                                                    font.pixelSize: 12
+                                                    clip: true
+                                                    onAccepted: {
+                                                        const id = root.gamesNewCollection(text, gamesView.pendingKey);
+                                                        text = "";
+                                                        gamesView.pendingKey = "";
+                                                        if (id !== "") { root.gamesMyCol = id; root.gamesHiddenView = false; }
+                                                        gamesSearch.forceActiveFocus();
+                                                    }
+                                                    Keys.onEscapePressed: { text = ""; gamesView.pendingKey = ""; gamesSearch.forceActiveFocus(); }
+                                                }
+                                            }
+
+                                            // ---- Steam's collections ----
+                                            Text { visible: root.gamesCols.length > 0; text: "Steam collections"; color: root.muted; font.pixelSize: 11; topPadding: 10; bottomPadding: 2 }
+                                            Repeater {
+                                                model: root.gamesCols
+                                                delegate: Rectangle {
+                                                    id: gc2
+                                                    required property var modelData
+                                                    readonly property bool sel: root.gamesCol === modelData.id
+                                                    width: sideCol.width
+                                                    height: 34
+                                                    radius: 11
+                                                    color: gc2.sel ? root.accent : (gcMouse.containsMouse ? root.overlay : "transparent")
+                                                    Text {
+                                                        anchors.verticalCenter: parent.verticalCenter
+                                                        x: 12
+                                                        width: parent.width - 24
+                                                        text: gc2.modelData.name
+                                                        elide: Text.ElideRight
+                                                        color: gc2.sel ? root.bg : root.fg
+                                                        font.pixelSize: 12
+                                                        font.bold: gc2.sel
+                                                    }
+                                                    MouseArea {
+                                                        id: gcMouse
+                                                        anchors.fill: parent
+                                                        hoverEnabled: true
+                                                        cursorShape: Qt.PointingHandCursor
+                                                        onClicked: { root.gamesSrc = "steam"; root.gamesCol = gc2.sel ? "" : gc2.modelData.id; root.gamesMyCol = ""; root.gamesHiddenView = false; }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // open the launchers themselves, or add a game by hand
+                                    Text { text: "Open"; color: root.muted; font.pixelSize: 11 }
+                                    Flow {
+                                        Layout.fillWidth: true
+                                        spacing: 6
+                                        SportChip { theme: root; label: "Steam"; onClicked: { root.launcherOpen = false; Quickshell.execDetached(["steam"]); } }
+                                        SportChip { theme: root; label: "Heroic"; onClicked: { root.launcherOpen = false; Quickshell.execDetached(["sh", "-c", "heroic || flatpak run com.heroicgameslauncher.hgl"]); } }
+                                        SportChip {
+                                            visible: root.gamesRecompLauncher !== ""
+                                            theme: root
+                                            label: "RecompLauncher"
+                                            onClicked: { root.launcherOpen = false; Quickshell.execDetached([root.gamesRecompLauncher]); }
+                                        }
+                                        SportChip {
+                                            visible: root.gamesEden.length > 0
+                                            theme: root
+                                            label: "Eden"
+                                            onClicked: { root.launcherOpen = false; Quickshell.execDetached(root.gamesEden); }
+                                        }
+                                        SportChip {
+                                            visible: root.gamesEglantine.length > 0
+                                            theme: root
+                                            label: "Eglantine"
+                                            onClicked: { root.launcherOpen = false; Quickshell.execDetached(root.gamesEglantine); }
+                                        }
+                                        SportChip { theme: root; icon: ""; label: "Add a game"; onClicked: root.gamesPickToAdd() }
+                                        SportChip { theme: root; icon: root.gamesCoversBusy ? "\uf110" : "\uf03e"; label: "Find covers"; onClicked: root.gamesFindAllCovers() }
+                                    }
+                                    Text {
+                                        visible: root.gamesCoversNote !== ""
+                                        Layout.fillWidth: true
+                                        text: root.gamesCoversNote
+                                        color: root.muted
+                                        font.pixelSize: 10
+                                        wrapMode: Text.Wrap
+                                    }
+                                    Text {
+                                        visible: root.gamesNote !== ""
+                                        Layout.fillWidth: true
+                                        text: root.gamesNote
+                                        color: root.muted
+                                        font.pixelSize: 10
+                                        wrapMode: Text.Wrap
+                                    }
+                                }
+
+                                // ---- search, filters and the covers ----
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    Layout.fillHeight: true
+                                    spacing: 12
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 8
+                                        Rectangle {
+                                            Layout.fillWidth: true
+                                            implicitHeight: 44
+                                            radius: 16
+                                            color: root.surface
+                                            border.width: 1
+                                            border.color: gamesSearch.activeFocus ? root.accent : root.glassEdge
+                                            Text {
+                                                id: gSearchIcon
+                                                anchors.left: parent.left
+                                                anchors.leftMargin: 14
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                text: ""
+                                                font.family: root.iconFont
+                                                font.pixelSize: 14
+                                                color: root.accent
+                                            }
+                                            TextInput {
+                                                id: gamesSearch
+                                                anchors.left: gSearchIcon.right
+                                                anchors.leftMargin: 10
+                                                anchors.right: parent.right
+                                                anchors.rightMargin: 14
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                color: root.fg
+                                                font.pixelSize: 14
+                                                clip: true
+                                                text: root.gamesQuery
+                                                onTextChanged: root.gamesQuery = text
+                                                Keys.onEscapePressed: { if (text !== "") text = ""; else root.launcherOpen = false; }
+                                                Keys.onReturnPressed: if (gamesGrid.count > 0) root.gamePlay(root.gamesShown[0])
+                                                Text {
+                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    visible: gamesSearch.text === ""
+                                                    text: "Search " + root.gamesShown.length + " games"
+                                                    color: root.muted
+                                                    font.pixelSize: 14
+                                                }
+                                            }
+                                        }
+                                        SportChip { theme: root; label: "Installed"; icon: ""; active: root.gamesInstalledOnly; onClicked: root.gamesInstalledOnly = !root.gamesInstalledOnly }
+                                        SportChip { theme: root; label: "Recent"; active: root.gamesSort === "recent"; onClicked: root.gamesSort = "recent" }
+                                        SportChip { theme: root; label: "A–Z"; active: root.gamesSort === "az"; onClicked: root.gamesSort = "az" }
+                                        SportChip { theme: root; icon: root.gamesLoading ? "" : ""; label: ""; onClicked: root.gamesRefresh() }
+                                    }
+
+                                    GridView {
+                                        id: gamesGrid
+                                        Layout.fillWidth: true
+                                        Layout.fillHeight: true
+                                        clip: true
+                                        boundsBehavior: Flickable.StopAtBounds
+                                        model: root.gamesShown
+                                        readonly property int cols: Math.max(3, Math.floor(width / 160))
+                                        cellWidth: Math.floor(width / cols)
+                                        cellHeight: cellWidth * 1.5 + 34
+                                        cacheBuffer: 1200
+
+                                        delegate: Item {
+                                            id: gcard
+                                            required property var modelData
+                                            width: gamesGrid.cellWidth
+                                            height: gamesGrid.cellHeight
+
+                                            Rectangle {
+                                                id: gArt
+                                                anchors.top: parent.top
+                                                anchors.horizontalCenter: parent.horizontalCenter
+                                                width: parent.width - 14
+                                                height: width * 1.5
+                                                radius: 14
+                                                color: root.overlay
+                                                border.width: gMouse.containsMouse ? 2 : 1
+                                                border.color: gMouse.containsMouse ? root.accent : root.glassEdge
+                                                scale: gMouse.pressed ? 0.96 : (gMouse.containsMouse ? 1.04 : 1)
+                                                Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutCubic } }
+                                                clip: true
+
+                                                // a plain tile with the name while there's no picture
+                                                Text {
+                                                    anchors.centerIn: parent
+                                                    width: parent.width - 16
+                                                    visible: gImg.status !== Image.Ready
+                                                    text: gcard.modelData.name
+                                                    horizontalAlignment: Text.AlignHCenter
+                                                    wrapMode: Text.Wrap
+                                                    color: root.fg
+                                                    font.pixelSize: 13
+                                                    font.bold: true
+                                                }
+                                                Image {
+                                                    id: gImg
+                                                    anchors.fill: parent
+                                                    anchors.margins: 1
+                                                    property int tryNo: 0
+                                                    source: tryNo === 0 ? (gcard.modelData.cover || gcard.modelData.header || "") : (tryNo === 1 ? (gcard.modelData.header || "") : "")
+                                                    onStatusChanged: if (status === Image.Error && tryNo < 2) tryNo++
+                                                    fillMode: Image.PreserveAspectCrop
+                                                    asynchronous: true
+                                                    cache: false
+                                                    sourceSize.width: 240
+                                                    opacity: gcard.modelData.installed ? 1 : 0.55
+                                                }
+                                                // where it's from
+                                                Rectangle {
+                                                    anchors.top: parent.top
+                                                    anchors.left: parent.left
+                                                    anchors.margins: 6
+                                                    width: gSrc.implicitWidth + 12
+                                                    height: 20
+                                                    radius: 10
+                                                    color: Qt.rgba(0, 0, 0, 0.55)
+                                                    Text {
+                                                        id: gSrc
+                                                        anchors.centerIn: parent
+                                                        text: gcard.modelData.src === "steam" ? "Steam" : gcard.modelData.src === "heroic" ? (gcard.modelData.store || "Heroic")
+                                                            : (gcard.modelData.src === "switch1" || gcard.modelData.src === "switch2") ? gcard.modelData.store
+                                                            : (gcard.modelData.added ? "Added" : "Recomp")
+                                                        color: "white"
+                                                        font.pixelSize: 9
+                                                        font.bold: true
+                                                    }
+                                                }
+                                                // play / install button on hover
+                                                Rectangle {
+                                                    anchors.centerIn: parent
+                                                    visible: gMouse.containsMouse
+                                                    width: 54
+                                                    height: 54
+                                                    radius: 27
+                                                    color: root.accent
+                                                    Text {
+                                                        anchors.centerIn: parent
+                                                        anchors.horizontalCenterOffset: gcard.modelData.installed ? 2 : 0
+                                                        text: gcard.modelData.installed ? "" : ""
+                                                        font.family: root.iconFont
+                                                        font.pixelSize: 20
+                                                        color: root.bg
+                                                    }
+                                                }
+                                            }
+                                            Text {
+                                                anchors.top: gArt.bottom
+                                                anchors.topMargin: 6
+                                                anchors.horizontalCenter: parent.horizontalCenter
+                                                width: gArt.width
+                                                text: gcard.modelData.name
+                                                elide: Text.ElideRight
+                                                horizontalAlignment: Text.AlignHCenter
+                                                color: gcard.modelData.installed ? root.fg : root.muted
+                                                font.pixelSize: 12
+                                            }
+                                            Text {
+                                                anchors.top: gArt.bottom
+                                                anchors.topMargin: 21
+                                                anchors.horizontalCenter: parent.horizontalCenter
+                                                visible: !gcard.modelData.installed
+                                                text: "Not installed"
+                                                color: root.muted
+                                                font.pixelSize: 9
+                                            }
+                                            MouseArea {
+                                                id: gMouse
+                                                anchors.fill: gArt
+                                                hoverEnabled: true
+                                                cursorShape: Qt.PointingHandCursor
+                                                acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                                onClicked: mouse => {
+                                                    if (mouse.button === Qt.RightButton) gamesView.openGameMenu(gcard.modelData, gMouse, mouse.x, mouse.y);
+                                                    else root.gamePlay(gcard.modelData);
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    Text {
+                                        Layout.fillWidth: true
+                                        visible: gamesGrid.count === 0
+                                        horizontalAlignment: Text.AlignHCenter
+                                        text: root.gamesLoading ? "Finding your games…"
+                                            : root.gamesAll.length === 0 ? "No games found. Open Steam or Heroic once, then press refresh."
+                                            : root.gamesMyCol !== "" ? "This collection is empty. Right-click any game to add it here."
+                                            : root.gamesSrc === "recomp" ? "No recomp games found. Press \"Add a game\" and pick the game's program or AppImage."
+                                            : "Nothing matches"
+                                        color: root.muted
+                                        font.pixelSize: 13
+                                    }
+                                    Text {
+                                        visible: root.gamesMissingNames > 0
+                                        text: "Looking up the names of " + root.gamesMissingNames + " more Steam games…"
+                                        color: root.muted
+                                        font.pixelSize: 11
+                                    }
+                                }
+                            }
+                
+                            // ---- right-click menu for a game ----
+                            property var menuGame: null
+                            property real menuX: 0
+                            property real menuY: 0
+                            property string pendingKey: ""          // the game a new collection will start with
+                            function openGameMenu(g, item, mx, my) {
+                                const p = item.mapToItem(gamesView, mx, my);
+                                menuX = Math.min(p.x, gamesView.width - 230);
+                                menuY = Math.min(p.y, gamesView.height - gameMenuCol.implicitHeight - 20);
+                                menuGame = g;
+                            }
+                            readonly property var menuItems: {
+                                const g = menuGame;
+                                if (!g) return [];
+                                const out = [];
+                                out.push({ text: g.installed ? "Play" : "Install", icon: g.installed ? "" : "", act: () => root.gamePlay(g) });
+                                for (const c of root.gamesMyCols) {
+                                    const has = c.keys.indexOf(g.key) >= 0;
+                                    out.push({ text: (has ? "Remove from " : "Add to ") + c.name, icon: has ? "" : "",
+                                               act: () => root.gamesToggleCol(c.id, g.key) });
+                                }
+                                out.push({ text: "Edit details…", icon: "\uf044", act: () => gamesView.openEdit(g) });
+                                out.push({ text: "New collection with this game…", icon: "", act: () => { gamesView.pendingKey = g.key; newColIn.forceActiveFocus(); } });
+                                const hid = root.gamesIsHidden(g.key);
+                                out.push({ text: hid ? "Show this game again" : "Hide this game", icon: hid ? "" : "", act: () => root.gamesHide(g.key, !hid) });
+                                if (g.added) out.push({ text: "Remove from the list", icon: "", danger: true, act: () => root.gamesRemoveAdded(g.key) });
+                                return out;
+                            }
+                            MouseArea {
+                                anchors.fill: parent
+                                visible: gamesView.menuGame !== null
+                                z: 40
+                                acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                onClicked: gamesView.menuGame = null
+                            }
+                            Rectangle {
+                                visible: gamesView.menuGame !== null
+                                z: 41
+                                x: gamesView.menuX
+                                y: gamesView.menuY
+                                width: 230
+                                height: gameMenuCol.implicitHeight + 12
+                                radius: 14
+                                color: root.bg
+                                border.width: 1
+                                border.color: root.glassEdge
+                                Column {
+                                    id: gameMenuCol
+                                    anchors.centerIn: parent
+                                    width: parent.width - 12
+                                    Text {
+                                        width: parent.width
+                                        leftPadding: 10
+                                        topPadding: 4
+                                        bottomPadding: 6
+                                        text: gamesView.menuGame ? gamesView.menuGame.name : ""
+                                        elide: Text.ElideRight
+                                        color: root.muted
+                                        font.pixelSize: 11
+                                        font.bold: true
+                                    }
+                                    Repeater {
+                                        model: gamesView.menuItems
+                                        delegate: Rectangle {
+                                            id: gmi
+                                            required property var modelData
+                                            width: gameMenuCol.width
+                                            height: 32
+                                            radius: 9
+                                            color: gmiMouse.containsMouse ? root.overlay : "transparent"
+                                            Row {
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                x: 10
+                                                spacing: 10
+                                                Text { width: 14; text: gmi.modelData.icon; font.family: root.iconFont; font.pixelSize: 11; color: gmi.modelData.danger ? root.danger : root.accent; anchors.verticalCenter: parent.verticalCenter }
+                                                Text { text: gmi.modelData.text; color: gmi.modelData.danger ? root.danger : root.fg; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
+                                            }
+                                            MouseArea {
+                                                id: gmiMouse
+                                                anchors.fill: parent
+                                                hoverEnabled: true
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: {
+                                                    const act = gmi.modelData.act;
+                                                    gamesView.menuGame = null;
+                                                    act();
+                                                }
+                                            }
                                         }
                                     }
                                 }
-                                SportChip { theme: root; label: "Installed"; icon: ""; active: root.gamesInstalledOnly; onClicked: root.gamesInstalledOnly = !root.gamesInstalledOnly }
-                                SportChip { theme: root; label: "Recent"; active: root.gamesSort === "recent"; onClicked: root.gamesSort = "recent" }
-                                SportChip { theme: root; label: "A–Z"; active: root.gamesSort === "az"; onClicked: root.gamesSort = "az" }
-                                SportChip { theme: root; icon: root.gamesLoading ? "" : ""; label: ""; onClicked: root.gamesRefresh() }
                             }
+                
+                            // ---- edit a game's details ----
+                            property var editGame: null
+                            property string editName: ""
+                            property string editCover: ""
+                            property string editPath: ""
+                            function openEdit(g) {
+                                const e = root.gamesEdits[g.key] || {};
+                                editName = e.name || g.name;
+                                editCover = e.cover || "";
+                                editPath = e.path || "";
+                                root.gamesCoverCands = [];
+                                editGame = g;
+                                editNameIn.forceActiveFocus();
+                            }
+                            function saveEdit() {
+                                const g = editGame;
+                                if (!g) return;
+                                const base = g.origName || g.name;
+                                root.gamesSaveEdit(g.key, {
+                                    name: editName.trim() === base ? "" : editName,
+                                    cover: editCover,
+                                    path: editPath
+                                });
+                                if (editCover.indexOf("http") === 0) root.gamesKeepCover(g.key, editCover);
+                                editGame = null;
+                                gamesSearch.forceActiveFocus();
+                            }
+                            MouseArea {
+                                anchors.fill: parent
+                                visible: gamesView.editGame !== null
+                                z: 50
+                                onClicked: gamesView.editGame = null
+                                Rectangle { anchors.fill: parent; radius: 20; color: Qt.rgba(0, 0, 0, 0.35) }
+                            }
+                            Rectangle {
+                                id: editBox
+                                visible: gamesView.editGame !== null
+                                z: 51
+                                anchors.centerIn: parent
+                                width: 680
+                                height: 560
+                                radius: 24
+                                color: root.bg
+                                border.width: 1
+                                border.color: root.glassEdge
+                                MouseArea { anchors.fill: parent }        // clicks inside stay inside
 
-                            GridView {
-                                id: gamesGrid
-                                Layout.fillWidth: true
-                                Layout.fillHeight: true
-                                clip: true
-                                boundsBehavior: Flickable.StopAtBounds
-                                model: root.gamesShown
-                                readonly property int cols: Math.max(3, Math.floor(width / 160))
-                                cellWidth: Math.floor(width / cols)
-                                cellHeight: cellWidth * 1.5 + 34
-                                cacheBuffer: 1200
+                                RowLayout {
+                                    anchors.fill: parent
+                                    anchors.margins: 22
+                                    spacing: 22
 
-                                delegate: Item {
-                                    id: gcard
-                                    required property var modelData
-                                    width: gamesGrid.cellWidth
-                                    height: gamesGrid.cellHeight
-
+                                    // cover preview
                                     Rectangle {
-                                        id: gArt
-                                        anchors.top: parent.top
-                                        anchors.horizontalCenter: parent.horizontalCenter
-                                        width: parent.width - 14
-                                        height: width * 1.5
-                                        radius: 14
+                                        Layout.preferredWidth: 220
+                                        Layout.preferredHeight: 330
+                                        Layout.alignment: Qt.AlignTop
+                                        radius: 16
                                         color: root.overlay
-                                        border.width: gMouse.containsMouse ? 2 : 1
-                                        border.color: gMouse.containsMouse ? root.accent : root.glassEdge
-                                        scale: gMouse.pressed ? 0.96 : (gMouse.containsMouse ? 1.04 : 1)
-                                        Behavior on scale { NumberAnimation { duration: root.animMs; easing.type: Easing.OutCubic } }
                                         clip: true
-
-                                        // a plain tile with the name while there's no picture
                                         Text {
                                             anchors.centerIn: parent
-                                            width: parent.width - 16
-                                            visible: gImg.status !== Image.Ready
-                                            text: gcard.modelData.name
-                                            horizontalAlignment: Text.AlignHCenter
+                                            width: parent.width - 20
+                                            visible: editImg.status !== Image.Ready
+                                            text: gamesView.editName
                                             wrapMode: Text.Wrap
+                                            horizontalAlignment: Text.AlignHCenter
                                             color: root.fg
-                                            font.pixelSize: 13
+                                            font.pixelSize: 15
                                             font.bold: true
                                         }
                                         Image {
-                                            id: gImg
+                                            id: editImg
                                             anchors.fill: parent
-                                            anchors.margins: 1
-                                            property int tryNo: 0
-                                            source: tryNo === 0 ? (gcard.modelData.cover || gcard.modelData.header || "") : (tryNo === 1 ? (gcard.modelData.header || "") : "")
-                                            onStatusChanged: if (status === Image.Error && tryNo < 2) tryNo++
                                             fillMode: Image.PreserveAspectCrop
                                             asynchronous: true
-                                            cache: false
-                                            sourceSize.width: 240
-                                            opacity: gcard.modelData.installed ? 1 : 0.55
-                                        }
-                                        // where it's from
-                                        Rectangle {
-                                            anchors.top: parent.top
-                                            anchors.left: parent.left
-                                            anchors.margins: 6
-                                            width: gSrc.implicitWidth + 12
-                                            height: 20
-                                            radius: 10
-                                            color: Qt.rgba(0, 0, 0, 0.55)
-                                            Text {
-                                                id: gSrc
-                                                anchors.centerIn: parent
-                                                text: gcard.modelData.src === "steam" ? "Steam" : gcard.modelData.src === "heroic" ? (gcard.modelData.store || "Heroic")
-                                                    : (gcard.modelData.src === "switch1" || gcard.modelData.src === "switch2") ? gcard.modelData.store
-                                                    : (gcard.modelData.added ? "Added" : "Recomp")
-                                                color: "white"
-                                                font.pixelSize: 9
-                                                font.bold: true
-                                            }
-                                        }
-                                        // play / install button on hover
-                                        Rectangle {
-                                            anchors.centerIn: parent
-                                            visible: gMouse.containsMouse
-                                            width: 54
-                                            height: 54
-                                            radius: 27
-                                            color: root.accent
-                                            Text {
-                                                anchors.centerIn: parent
-                                                anchors.horizontalCenterOffset: gcard.modelData.installed ? 2 : 0
-                                                text: gcard.modelData.installed ? "" : ""
-                                                font.family: root.iconFont
-                                                font.pixelSize: 20
-                                                color: root.bg
-                                            }
+                                            sourceSize.width: 440
+                                            source: gamesView.editCover !== ""
+                                                ? (gamesView.editCover.indexOf("/") === 0 ? "file://" + gamesView.editCover : gamesView.editCover)
+                                                : (gamesView.editGame ? (gamesView.editGame.origCover || gamesView.editGame.cover || "") : "")
                                         }
                                     }
-                                    Text {
-                                        anchors.top: gArt.bottom
-                                        anchors.topMargin: 6
-                                        anchors.horizontalCenter: parent.horizontalCenter
-                                        width: gArt.width
-                                        text: gcard.modelData.name
-                                        elide: Text.ElideRight
-                                        horizontalAlignment: Text.AlignHCenter
-                                        color: gcard.modelData.installed ? root.fg : root.muted
-                                        font.pixelSize: 12
-                                    }
-                                    Text {
-                                        anchors.top: gArt.bottom
-                                        anchors.topMargin: 21
-                                        anchors.horizontalCenter: parent.horizontalCenter
-                                        visible: !gcard.modelData.installed
-                                        text: "Not installed"
-                                        color: root.muted
-                                        font.pixelSize: 9
-                                    }
-                                    MouseArea {
-                                        id: gMouse
-                                        anchors.fill: gArt
-                                        hoverEnabled: true
-                                        cursorShape: Qt.PointingHandCursor
-                                        acceptedButtons: Qt.LeftButton | Qt.RightButton
-                                        onClicked: mouse => {
-                                            if (mouse.button === Qt.RightButton) gamesView.openGameMenu(gcard.modelData, gMouse, mouse.x, mouse.y);
-                                            else root.gamePlay(gcard.modelData);
-                                        }
-                                    }
-                                }
-                            }
 
-                            Text {
-                                Layout.fillWidth: true
-                                visible: gamesGrid.count === 0
-                                horizontalAlignment: Text.AlignHCenter
-                                text: root.gamesLoading ? "Finding your games…"
-                                    : root.gamesAll.length === 0 ? "No games found. Open Steam or Heroic once, then press refresh."
-                                    : root.gamesMyCol !== "" ? "This collection is empty. Right-click any game to add it here."
-                                    : root.gamesSrc === "recomp" ? "No recomp games found. Press \"Add a game\" and pick the game's program or AppImage."
-                                    : "Nothing matches"
-                                color: root.muted
-                                font.pixelSize: 13
-                            }
-                            Text {
-                                visible: root.gamesMissingNames > 0
-                                text: "Looking up the names of " + root.gamesMissingNames + " more Steam games…"
-                                color: root.muted
-                                font.pixelSize: 11
-                            }
-                        }
-                    }
-                
-                    // ---- right-click menu for a game ----
-                    property var menuGame: null
-                    property real menuX: 0
-                    property real menuY: 0
-                    property string pendingKey: ""          // the game a new collection will start with
-                    function openGameMenu(g, item, mx, my) {
-                        const p = item.mapToItem(gamesView, mx, my);
-                        menuX = Math.min(p.x, gamesView.width - 230);
-                        menuY = Math.min(p.y, gamesView.height - gameMenuCol.implicitHeight - 20);
-                        menuGame = g;
-                    }
-                    readonly property var menuItems: {
-                        const g = menuGame;
-                        if (!g) return [];
-                        const out = [];
-                        out.push({ text: g.installed ? "Play" : "Install", icon: g.installed ? "" : "", act: () => root.gamePlay(g) });
-                        for (const c of root.gamesMyCols) {
-                            const has = c.keys.indexOf(g.key) >= 0;
-                            out.push({ text: (has ? "Remove from " : "Add to ") + c.name, icon: has ? "" : "",
-                                       act: () => root.gamesToggleCol(c.id, g.key) });
-                        }
-                        out.push({ text: "Edit details…", icon: "\uf044", act: () => gamesView.openEdit(g) });
-                        out.push({ text: "New collection with this game…", icon: "", act: () => { gamesView.pendingKey = g.key; newColIn.forceActiveFocus(); } });
-                        const hid = root.gamesIsHidden(g.key);
-                        out.push({ text: hid ? "Show this game again" : "Hide this game", icon: hid ? "" : "", act: () => root.gamesHide(g.key, !hid) });
-                        if (g.added) out.push({ text: "Remove from the list", icon: "", danger: true, act: () => root.gamesRemoveAdded(g.key) });
-                        return out;
-                    }
-                    MouseArea {
-                        anchors.fill: parent
-                        visible: gamesView.menuGame !== null
-                        z: 40
-                        acceptedButtons: Qt.LeftButton | Qt.RightButton
-                        onClicked: gamesView.menuGame = null
-                    }
-                    Rectangle {
-                        visible: gamesView.menuGame !== null
-                        z: 41
-                        x: gamesView.menuX
-                        y: gamesView.menuY
-                        width: 230
-                        height: gameMenuCol.implicitHeight + 12
-                        radius: 14
-                        color: root.bg
-                        border.width: 1
-                        border.color: root.glassEdge
-                        Column {
-                            id: gameMenuCol
-                            anchors.centerIn: parent
-                            width: parent.width - 12
-                            Text {
-                                width: parent.width
-                                leftPadding: 10
-                                topPadding: 4
-                                bottomPadding: 6
-                                text: gamesView.menuGame ? gamesView.menuGame.name : ""
-                                elide: Text.ElideRight
-                                color: root.muted
-                                font.pixelSize: 11
-                                font.bold: true
-                            }
-                            Repeater {
-                                model: gamesView.menuItems
-                                delegate: Rectangle {
-                                    id: gmi
-                                    required property var modelData
-                                    width: gameMenuCol.width
-                                    height: 32
-                                    radius: 9
-                                    color: gmiMouse.containsMouse ? root.overlay : "transparent"
-                                    Row {
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        x: 10
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        Layout.fillHeight: true
                                         spacing: 10
-                                        Text { width: 14; text: gmi.modelData.icon; font.family: root.iconFont; font.pixelSize: 11; color: gmi.modelData.danger ? root.danger : root.accent; anchors.verticalCenter: parent.verticalCenter }
-                                        Text { text: gmi.modelData.text; color: gmi.modelData.danger ? root.danger : root.fg; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
-                                    }
-                                    MouseArea {
-                                        id: gmiMouse
-                                        anchors.fill: parent
-                                        hoverEnabled: true
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: {
-                                            const act = gmi.modelData.act;
-                                            gamesView.menuGame = null;
-                                            act();
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                
-                    // ---- edit a game's details ----
-                    property var editGame: null
-                    property string editName: ""
-                    property string editCover: ""
-                    property string editPath: ""
-                    function openEdit(g) {
-                        const e = root.gamesEdits[g.key] || {};
-                        editName = e.name || g.name;
-                        editCover = e.cover || "";
-                        editPath = e.path || "";
-                        root.gamesCoverCands = [];
-                        editGame = g;
-                        editNameIn.forceActiveFocus();
-                    }
-                    function saveEdit() {
-                        const g = editGame;
-                        if (!g) return;
-                        const base = g.origName || g.name;
-                        root.gamesSaveEdit(g.key, {
-                            name: editName.trim() === base ? "" : editName,
-                            cover: editCover,
-                            path: editPath
-                        });
-                        if (editCover.indexOf("http") === 0) root.gamesKeepCover(g.key, editCover);
-                        editGame = null;
-                        gamesSearch.forceActiveFocus();
-                    }
-                    MouseArea {
-                        anchors.fill: parent
-                        visible: gamesView.editGame !== null
-                        z: 50
-                        onClicked: gamesView.editGame = null
-                        Rectangle { anchors.fill: parent; radius: 20; color: Qt.rgba(0, 0, 0, 0.35) }
-                    }
-                    Rectangle {
-                        id: editBox
-                        visible: gamesView.editGame !== null
-                        z: 51
-                        anchors.centerIn: parent
-                        width: 680
-                        height: 560
-                        radius: 24
-                        color: root.bg
-                        border.width: 1
-                        border.color: root.glassEdge
-                        MouseArea { anchors.fill: parent }        // clicks inside stay inside
 
-                        RowLayout {
-                            anchors.fill: parent
-                            anchors.margins: 22
-                            spacing: 22
+                                        Text { text: "Edit game"; color: root.fg; font.pixelSize: 18; font.bold: true }
 
-                            // cover preview
-                            Rectangle {
-                                Layout.preferredWidth: 220
-                                Layout.preferredHeight: 330
-                                Layout.alignment: Qt.AlignTop
-                                radius: 16
-                                color: root.overlay
-                                clip: true
-                                Text {
-                                    anchors.centerIn: parent
-                                    width: parent.width - 20
-                                    visible: editImg.status !== Image.Ready
-                                    text: gamesView.editName
-                                    wrapMode: Text.Wrap
-                                    horizontalAlignment: Text.AlignHCenter
-                                    color: root.fg
-                                    font.pixelSize: 15
-                                    font.bold: true
-                                }
-                                Image {
-                                    id: editImg
-                                    anchors.fill: parent
-                                    fillMode: Image.PreserveAspectCrop
-                                    asynchronous: true
-                                    sourceSize.width: 440
-                                    source: gamesView.editCover !== ""
-                                        ? (gamesView.editCover.indexOf("/") === 0 ? "file://" + gamesView.editCover : gamesView.editCover)
-                                        : (gamesView.editGame ? (gamesView.editGame.origCover || gamesView.editGame.cover || "") : "")
-                                }
-                            }
-
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                Layout.fillHeight: true
-                                spacing: 10
-
-                                Text { text: "Edit game"; color: root.fg; font.pixelSize: 18; font.bold: true }
-
-                                Text { text: "Name"; color: root.muted; font.pixelSize: 11; Layout.topMargin: 4 }
-                                Rectangle {
-                                    Layout.fillWidth: true
-                                    implicitHeight: 40
-                                    radius: 12
-                                    color: root.surface
-                                    border.width: 1
-                                    border.color: editNameIn.activeFocus ? root.accent : root.glassEdge
-                                    TextInput {
-                                        id: editNameIn
-                                        anchors.fill: parent
-                                        anchors.leftMargin: 12
-                                        anchors.rightMargin: 12
-                                        verticalAlignment: TextInput.AlignVCenter
-                                        color: root.fg
-                                        font.pixelSize: 14
-                                        clip: true
-                                        text: gamesView.editName
-                                        onTextChanged: gamesView.editName = text
-                                        Keys.onReturnPressed: gamesView.saveEdit()
-                                        Keys.onEscapePressed: gamesView.editGame = null
-                                    }
-                                }
-
-                                Text { text: "Cover picture"; color: root.muted; font.pixelSize: 11; Layout.topMargin: 4 }
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    spacing: 6
-                                    SportChip {
-                                        theme: root
-                                        icon: root.gamesCoverSearching ? "\uf110" : "\uf002"
-                                        label: "Find online"
-                                        active: true
-                                        onClicked: root.gamesFindCover(gamesView.editName)
-                                    }
-                                    SportChip {
-                                        theme: root
-                                        icon: "\uf03e"
-                                        label: "Pick a picture"
-                                        onClicked: root.gamesPickFile("image", p => gamesView.editCover = p)
-                                    }
-                                    SportChip {
-                                        theme: root
-                                        visible: gamesView.editCover !== ""
-                                        icon: ""
-                                        label: "Original"
-                                        onClicked: gamesView.editCover = ""
-                                    }
-                                    Item { Layout.fillWidth: true }
-                                }
-                                // pictures found online: click one to use it
-                                Flickable {
-                                    Layout.fillWidth: true
-                                    Layout.preferredHeight: root.gamesCoverCands.length > 0 || root.gamesCoverSearching ? 104 : 0
-                                    visible: Layout.preferredHeight > 0
-                                    clip: true
-                                    contentWidth: candRow.width
-                                    flickableDirection: Flickable.HorizontalFlick
-                                    boundsBehavior: Flickable.StopAtBounds
-                                    Row {
-                                        id: candRow
-                                        spacing: 8
-                                        Text {
-                                            visible: root.gamesCoverSearching
-                                            text: "Searching…"
-                                            color: root.muted
-                                            font.pixelSize: 12
-                                        }
-                                        Repeater {
-                                            model: root.gamesCoverCands
-                                            delegate: Rectangle {
-                                                id: cand
-                                                required property var modelData
-                                                readonly property bool picked: gamesView.editCover === cand.modelData.url
-                                                width: 68
-                                                height: 100
-                                                radius: 10
-                                                color: root.overlay
+                                        Text { text: "Name"; color: root.muted; font.pixelSize: 11; Layout.topMargin: 4 }
+                                        Rectangle {
+                                            Layout.fillWidth: true
+                                            implicitHeight: 40
+                                            radius: 12
+                                            color: root.surface
+                                            border.width: 1
+                                            border.color: editNameIn.activeFocus ? root.accent : root.glassEdge
+                                            TextInput {
+                                                id: editNameIn
+                                                anchors.fill: parent
+                                                anchors.leftMargin: 12
+                                                anchors.rightMargin: 12
+                                                verticalAlignment: TextInput.AlignVCenter
+                                                color: root.fg
+                                                font.pixelSize: 14
                                                 clip: true
-                                                border.width: cand.picked ? 3 : (candMouse.containsMouse ? 2 : 0)
-                                                border.color: root.accent
-                                                Image {
-                                                    anchors.fill: parent
-                                                    anchors.margins: cand.picked ? 3 : 0
-                                                    source: cand.modelData.thumb
-                                                    fillMode: Image.PreserveAspectCrop
-                                                    asynchronous: true
-                                                    sourceSize.width: 140
+                                                text: gamesView.editName
+                                                onTextChanged: gamesView.editName = text
+                                                Keys.onReturnPressed: gamesView.saveEdit()
+                                                Keys.onEscapePressed: gamesView.editGame = null
+                                            }
+                                        }
+
+                                        Text { text: "Cover picture"; color: root.muted; font.pixelSize: 11; Layout.topMargin: 4 }
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 6
+                                            SportChip {
+                                                theme: root
+                                                icon: root.gamesCoverSearching ? "\uf110" : "\uf002"
+                                                label: "Find online"
+                                                active: true
+                                                onClicked: root.gamesFindCover(gamesView.editName)
+                                            }
+                                            SportChip {
+                                                theme: root
+                                                icon: "\uf03e"
+                                                label: "Pick a picture"
+                                                onClicked: root.gamesPickFile("image", p => gamesView.editCover = p)
+                                            }
+                                            SportChip {
+                                                theme: root
+                                                visible: gamesView.editCover !== ""
+                                                icon: ""
+                                                label: "Original"
+                                                onClicked: gamesView.editCover = ""
+                                            }
+                                            Item { Layout.fillWidth: true }
+                                        }
+                                        // pictures found online: click one to use it
+                                        Flickable {
+                                            Layout.fillWidth: true
+                                            Layout.preferredHeight: root.gamesCoverCands.length > 0 || root.gamesCoverSearching ? 104 : 0
+                                            visible: Layout.preferredHeight > 0
+                                            clip: true
+                                            contentWidth: candRow.width
+                                            flickableDirection: Flickable.HorizontalFlick
+                                            boundsBehavior: Flickable.StopAtBounds
+                                            Row {
+                                                id: candRow
+                                                spacing: 8
+                                                Text {
+                                                    visible: root.gamesCoverSearching
+                                                    text: "Searching…"
+                                                    color: root.muted
+                                                    font.pixelSize: 12
                                                 }
-                                                MouseArea {
-                                                    id: candMouse
-                                                    anchors.fill: parent
-                                                    hoverEnabled: true
-                                                    cursorShape: Qt.PointingHandCursor
-                                                    onClicked: gamesView.editCover = cand.modelData.url
+                                                Repeater {
+                                                    model: root.gamesCoverCands
+                                                    delegate: Rectangle {
+                                                        id: cand
+                                                        required property var modelData
+                                                        readonly property bool picked: gamesView.editCover === cand.modelData.url
+                                                        width: 68
+                                                        height: 100
+                                                        radius: 10
+                                                        color: root.overlay
+                                                        clip: true
+                                                        border.width: cand.picked ? 3 : (candMouse.containsMouse ? 2 : 0)
+                                                        border.color: root.accent
+                                                        Image {
+                                                            anchors.fill: parent
+                                                            anchors.margins: cand.picked ? 3 : 0
+                                                            source: cand.modelData.thumb
+                                                            fillMode: Image.PreserveAspectCrop
+                                                            asynchronous: true
+                                                            sourceSize.width: 140
+                                                        }
+                                                        MouseArea {
+                                                            id: candMouse
+                                                            anchors.fill: parent
+                                                            hoverEnabled: true
+                                                            cursorShape: Qt.PointingHandCursor
+                                                            onClicked: gamesView.editCover = cand.modelData.url
+                                                        }
+                                                    }
+                                                }
+                                                Text {
+                                                    visible: !root.gamesCoverSearching && root.gamesCoverCands.length === 0
+                                                    text: "Nothing found. Try changing the name above, then search again."
+                                                    color: root.muted
+                                                    font.pixelSize: 12
                                                 }
                                             }
                                         }
-                                        Text {
-                                            visible: !root.gamesCoverSearching && root.gamesCoverCands.length === 0
-                                            text: "Nothing found. Try changing the name above, then search again."
-                                            color: root.muted
-                                            font.pixelSize: 12
+
+                                        Rectangle {
+                                            Layout.fillWidth: true
+                                            implicitHeight: 36
+                                            radius: 12
+                                            color: root.surface
+                                            border.width: 1
+                                            border.color: editUrlIn.activeFocus ? root.accent : root.glassEdge
+                                            TextInput {
+                                                id: editUrlIn
+                                                anchors.fill: parent
+                                                anchors.leftMargin: 12
+                                                anchors.rightMargin: 12
+                                                verticalAlignment: TextInput.AlignVCenter
+                                                color: root.fg
+                                                font.pixelSize: 12
+                                                clip: true
+                                                text: gamesView.editCover.indexOf("http") === 0 ? gamesView.editCover : ""
+                                                onEditingFinished: if (text.trim().indexOf("http") === 0) gamesView.editCover = text.trim()
+                                                Keys.onReturnPressed: { if (text.trim().indexOf("http") === 0) gamesView.editCover = text.trim(); }
+                                                Text {
+                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    visible: editUrlIn.text === ""
+                                                    text: "…or paste a picture's web link and press Enter"
+                                                    color: root.muted
+                                                    font.pixelSize: 12
+                                                }
+                                            }
                                         }
-                                    }
-                                }
 
-                                Rectangle {
-                                    Layout.fillWidth: true
-                                    implicitHeight: 36
-                                    radius: 12
-                                    color: root.surface
-                                    border.width: 1
-                                    border.color: editUrlIn.activeFocus ? root.accent : root.glassEdge
-                                    TextInput {
-                                        id: editUrlIn
-                                        anchors.fill: parent
-                                        anchors.leftMargin: 12
-                                        anchors.rightMargin: 12
-                                        verticalAlignment: TextInput.AlignVCenter
-                                        color: root.fg
-                                        font.pixelSize: 12
-                                        clip: true
-                                        text: gamesView.editCover.indexOf("http") === 0 ? gamesView.editCover : ""
-                                        onEditingFinished: if (text.trim().indexOf("http") === 0) gamesView.editCover = text.trim()
-                                        Keys.onReturnPressed: { if (text.trim().indexOf("http") === 0) gamesView.editCover = text.trim(); }
+                                        // how it starts: only for games that are a program on this PC (recomp / added)
                                         Text {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            visible: editUrlIn.text === ""
-                                            text: "…or paste a picture's web link and press Enter"
+                                            visible: !!gamesView.editGame && gamesView.editGame.src === "recomp"
+                                            text: "Game program"
                                             color: root.muted
-                                            font.pixelSize: 12
-                                        }
-                                    }
-                                }
-
-                                // how it starts: only for games that are a program on this PC (recomp / added)
-                                Text {
-                                    visible: !!gamesView.editGame && gamesView.editGame.src === "recomp"
-                                    text: "Game program"
-                                    color: root.muted
-                                    font.pixelSize: 11
-                                    Layout.topMargin: 4
-                                }
-                                RowLayout {
-                                    visible: !!gamesView.editGame && gamesView.editGame.src === "recomp"
-                                    Layout.fillWidth: true
-                                    spacing: 6
-                                    Text {
-                                        Layout.fillWidth: true
-                                        text: gamesView.editPath !== "" ? gamesView.editPath : (gamesView.editGame ? (gamesView.editGame.origId || gamesView.editGame.id) : "")
-                                        elide: Text.ElideMiddle
-                                        color: root.fg
-                                        font.pixelSize: 11
-                                    }
-                                    SportChip {
-                                        theme: root
-                                        label: "Change"
-                                        onClicked: root.gamesPickFile("program", p => gamesView.editPath = p)
-                                    }
-                                }
-
-                                Item { Layout.fillHeight: true }
-
-                                // optional: a free SteamGridDB key gives much better covers (especially Switch games)
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    spacing: 8
-                                    Text { text: "SteamGridDB key"; color: root.muted; font.pixelSize: 11 }
-                                    Rectangle {
-                                        Layout.fillWidth: true
-                                        implicitHeight: 30
-                                        radius: 10
-                                        color: root.surface
-                                        border.width: 1
-                                        border.color: sgdbIn.activeFocus ? root.accent : root.glassEdge
-                                        TextInput {
-                                            id: sgdbIn
-                                            anchors.fill: parent
-                                            anchors.leftMargin: 10
-                                            anchors.rightMargin: 10
-                                            verticalAlignment: TextInput.AlignVCenter
-                                            color: root.fg
                                             font.pixelSize: 11
-                                            clip: true
-                                            echoMode: activeFocus ? TextInput.Normal : TextInput.Password
-                                            text: pins.adapter.sgdbKey
-                                            onEditingFinished: pins.adapter.sgdbKey = text.trim()
+                                            Layout.topMargin: 4
+                                        }
+                                        RowLayout {
+                                            visible: !!gamesView.editGame && gamesView.editGame.src === "recomp"
+                                            Layout.fillWidth: true
+                                            spacing: 6
                                             Text {
-                                                anchors.verticalCenter: parent.verticalCenter
-                                                visible: sgdbIn.text === ""
-                                                text: "optional · free at steamgriddb.com → Preferences → API"
-                                                color: root.muted
+                                                Layout.fillWidth: true
+                                                text: gamesView.editPath !== "" ? gamesView.editPath : (gamesView.editGame ? (gamesView.editGame.origId || gamesView.editGame.id) : "")
+                                                elide: Text.ElideMiddle
+                                                color: root.fg
                                                 font.pixelSize: 11
                                             }
+                                            SportChip {
+                                                theme: root
+                                                label: "Change"
+                                                onClicked: root.gamesPickFile("program", p => gamesView.editPath = p)
+                                            }
+                                        }
+
+                                        Item { Layout.fillHeight: true }
+
+                                        // optional: a free SteamGridDB key gives much better covers (especially Switch games)
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 8
+                                            Text { text: "SteamGridDB key"; color: root.muted; font.pixelSize: 11 }
+                                            Rectangle {
+                                                Layout.fillWidth: true
+                                                implicitHeight: 30
+                                                radius: 10
+                                                color: root.surface
+                                                border.width: 1
+                                                border.color: sgdbIn.activeFocus ? root.accent : root.glassEdge
+                                                TextInput {
+                                                    id: sgdbIn
+                                                    anchors.fill: parent
+                                                    anchors.leftMargin: 10
+                                                    anchors.rightMargin: 10
+                                                    verticalAlignment: TextInput.AlignVCenter
+                                                    color: root.fg
+                                                    font.pixelSize: 11
+                                                    clip: true
+                                                    echoMode: activeFocus ? TextInput.Normal : TextInput.Password
+                                                    text: pins.adapter.sgdbKey
+                                                    onEditingFinished: pins.adapter.sgdbKey = text.trim()
+                                                    Text {
+                                                        anchors.verticalCenter: parent.verticalCenter
+                                                        visible: sgdbIn.text === ""
+                                                        text: "optional · free at steamgriddb.com → Preferences → API"
+                                                        color: root.muted
+                                                        font.pixelSize: 11
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 8
+                                            SportChip {
+                                                theme: root
+                                                visible: !!gamesView.editGame && !!root.gamesEdits[gamesView.editGame.key]
+                                                icon: ""
+                                                label: "Undo all my changes"
+                                                onClicked: { root.gamesSaveEdit(gamesView.editGame.key, {}); gamesView.editGame = null; }
+                                            }
+                                            Item { Layout.fillWidth: true }
+                                            SportChip { theme: root; label: "Cancel"; onClicked: gamesView.editGame = null }
+                                            SportChip { theme: root; icon: ""; label: "Save"; active: true; onClicked: gamesView.saveEdit() }
                                         }
                                     }
-                                }
-
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    spacing: 8
-                                    SportChip {
-                                        theme: root
-                                        visible: !!gamesView.editGame && !!root.gamesEdits[gamesView.editGame.key]
-                                        icon: ""
-                                        label: "Undo all my changes"
-                                        onClicked: { root.gamesSaveEdit(gamesView.editGame.key, {}); gamesView.editGame = null; }
-                                    }
-                                    Item { Layout.fillWidth: true }
-                                    SportChip { theme: root; label: "Cancel"; onClicked: gamesView.editGame = null }
-                                    SportChip { theme: root; icon: ""; label: "Save"; active: true; onClicked: gamesView.saveEdit() }
                                 }
                             }
                         }
@@ -15974,6 +16172,238 @@ ShellRoot {
         }
     }
 
+    // ---------- Keyboard shortcut cheat sheet window (Super+K) ----------
+    Variants {
+        model: Quickshell.screens
+
+        PanelWindow {
+            id: keysWin
+            required property var modelData
+            screen: modelData
+            property real k: 0                       // 0 = hidden, 1 = fully open
+            readonly property bool here: !Hyprland.focusedMonitor || Hyprland.focusedMonitor.name === modelData.name
+            visible: here && (root.keysOpen || k > 0)
+            Behavior on k { NumberAnimation { duration: root.keysOpen ? 260 : 180; easing.type: Easing.OutCubic } }
+            Connections {
+                target: root
+                function onKeysOpenChanged() { keysWin.k = root.keysOpen ? 1 : 0; }
+            }
+
+            WlrLayershell.layer: WlrLayer.Overlay
+            WlrLayershell.namespace: "quickshell-keys"
+            WlrLayershell.keyboardFocus: root.keysOpen ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
+            exclusionMode: ExclusionMode.Ignore
+            anchors {
+                top: true
+                bottom: true
+                left: true
+                right: true
+            }
+            color: Qt.rgba(0, 0, 0, 0.30 * keysWin.k)
+
+            // click outside the card to close
+            MouseArea { anchors.fill: parent; onClicked: root.keysOpen = false }
+
+            Rectangle {
+                id: keysCard
+                width: Math.min(1240, keysWin.width - 80)
+                height: Math.min(800, keysWin.height - 80)
+                anchors.centerIn: parent
+                radius: 28
+                color: root.popupBg
+                border.width: 1
+                border.color: root.glassEdge
+                clip: true
+                opacity: keysWin.k
+                scale: 0.94 + 0.06 * keysWin.k
+
+                GlassShine { radius: parent.radius; dark: root.dark }
+                MouseArea { anchors.fill: parent }   // clicks inside don't close it
+
+                // only built while it's open
+                Loader {
+                    anchors.fill: parent
+                    active: keysWin.visible
+                    sourceComponent: Component {
+                        ColumnLayout {
+                            anchors.fill: parent
+                            anchors.margins: 24
+                            spacing: 18
+
+                            Component.onCompleted: Qt.callLater(() => keysSearch.forceActiveFocus())
+
+                            // ---- header ----
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 12
+                                Text { text: ""; color: root.accent; font.family: root.iconFont; font.pixelSize: 22 }
+                                Text { text: "Keyboard shortcuts"; color: root.fg; font.pixelSize: 20; font.bold: true }
+                                Item { Layout.fillWidth: true }
+                                Rectangle {
+                                    Layout.preferredWidth: 320
+                                    Layout.preferredHeight: 38
+                                    radius: 14
+                                    color: root.surface
+                                    border.width: 1
+                                    border.color: keysSearch.activeFocus ? root.accent : root.glassEdge
+                                    Text {
+                                        id: kSearchIcon
+                                        anchors.left: parent.left
+                                        anchors.leftMargin: 12
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: ""
+                                        font.family: root.iconFont
+                                        font.pixelSize: 13
+                                        color: root.accent
+                                    }
+                                    TextInput {
+                                        id: keysSearch
+                                        anchors.left: kSearchIcon.right
+                                        anchors.leftMargin: 10
+                                        anchors.right: parent.right
+                                        anchors.rightMargin: 12
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        color: root.fg
+                                        font.pixelSize: 13
+                                        clip: true
+                                        onTextChanged: root.keysQuery = text
+                                        Keys.onEscapePressed: { if (text !== "") text = ""; else root.keysOpen = false; }
+                                        Text {
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            visible: keysSearch.text === ""
+                                            text: "Find a shortcut… (e.g. screenshot)"
+                                            color: root.muted
+                                            font.pixelSize: 13
+                                        }
+                                    }
+                                }
+                                Rectangle {
+                                    Layout.preferredWidth: 38
+                                    Layout.preferredHeight: 38
+                                    radius: 19
+                                    color: kClose.containsMouse ? root.overlay : root.surface
+                                    Text { anchors.centerIn: parent; text: ""; color: root.muted; font.family: root.iconFont; font.pixelSize: 14 }
+                                    MouseArea { id: kClose; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.keysOpen = false }
+                                }
+                            }
+
+                            // ---- the three columns of groups ----
+                            Flickable {
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                contentHeight: keyCols.implicitHeight
+                                clip: true
+                                boundsBehavior: Flickable.StopAtBounds
+
+                                RowLayout {
+                                    id: keyCols
+                                    width: parent.width
+                                    spacing: 16
+
+                                    Repeater {
+                                        model: root.keyGroups
+                                        delegate: ColumnLayout {
+                                            id: kCol
+                                            required property var modelData
+                                            Layout.fillWidth: true
+                                            Layout.preferredWidth: 1
+                                            Layout.alignment: Qt.AlignTop
+                                            spacing: 16
+
+                                            Repeater {
+                                                model: kCol.modelData
+                                                delegate: Rectangle {
+                                                    id: kGroup
+                                                    required property var modelData
+                                                    readonly property var rows: { root.keysQuery; return kGroup.modelData.keys.filter(r => root.keysMatch(r)); }
+                                                    visible: rows.length > 0
+                                                    Layout.fillWidth: true
+                                                    implicitHeight: kGroupCol.implicitHeight + 28
+                                                    radius: 18
+                                                    color: root.surface
+                                                    border.width: 1
+                                                    border.color: root.glassEdge
+
+                                                    ColumnLayout {
+                                                        id: kGroupCol
+                                                        anchors.left: parent.left
+                                                        anchors.right: parent.right
+                                                        anchors.top: parent.top
+                                                        anchors.margins: 14
+                                                        spacing: 9
+
+                                                        RowLayout {
+                                                            spacing: 8
+                                                            Text { text: kGroup.modelData.icon; color: root.accent; font.family: root.iconFont; font.pixelSize: 13 }
+                                                            Text { text: kGroup.modelData.title; color: root.fg; font.pixelSize: 14; font.bold: true }
+                                                        }
+
+                                                        Repeater {
+                                                            model: kGroup.rows
+                                                            delegate: RowLayout {
+                                                                id: kRow
+                                                                required property var modelData
+                                                                Layout.fillWidth: true
+                                                                spacing: 10
+                                                                // the keys, drawn as little keycaps
+                                                                Flow {
+                                                                    Layout.preferredWidth: 196
+                                                                    Layout.alignment: Qt.AlignTop
+                                                                    spacing: 4
+                                                                    Repeater {
+                                                                        model: kRow.modelData[0]
+                                                                        delegate: Rectangle {
+                                                                            required property var modelData
+                                                                            width: capTxt.implicitWidth + 14
+                                                                            height: 22
+                                                                            radius: 6
+                                                                            color: root.bg
+                                                                            border.width: 1
+                                                                            border.color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.45)
+                                                                            Text {
+                                                                                id: capTxt
+                                                                                anchors.centerIn: parent
+                                                                                text: parent.modelData
+                                                                                color: root.fg
+                                                                                font.pixelSize: 11
+                                                                                font.bold: true
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                                Text {
+                                                                    Layout.fillWidth: true
+                                                                    Layout.alignment: Qt.AlignVCenter
+                                                                    text: kRow.modelData[1]
+                                                                    color: root.fg
+                                                                    opacity: 0.85
+                                                                    font.pixelSize: 12
+                                                                    wrapMode: Text.WordWrap
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Text {
+                                visible: root.keysQuery !== "" && !root.keyGroups.some(c => c.some(g => g.keys.some(r => root.keysMatch(r))))
+                                Layout.alignment: Qt.AlignHCenter
+                                text: "No shortcut matches “" + root.keysQuery + "”"
+                                color: root.muted
+                                font.pixelSize: 13
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // ---------- Wallpaper picker (scroll through, click or Enter to set) ----------
     Variants {
         model: Quickshell.screens
@@ -16575,16 +17005,19 @@ ShellRoot {
                     z: -1
                     renderTarget: Canvas.Image
                     readonly property string src: pins.adapter.wallpaper
+                    property string loaded: ""          // the full-size copy it's holding, freed once used
 
                     onSrcChanged: {
+                        if (loaded !== "" && loaded !== src) { unloadImage(loaded); loaded = ""; }
                         if (src === "") {
                             root.seed = "#89b4fa";
                             root.wallIsLight = false;
                         } else {
+                            loaded = src;
                             loadImage(src);
                         }
                     }
-                    Component.onCompleted: if (src !== "") loadImage(src)
+                    Component.onCompleted: if (src !== "") { loaded = src; loadImage(src); }
                     onImageLoaded: requestPaint()
                     onPaint: {
                         if (src === "" || !isImageLoaded(src)) return;
@@ -16596,6 +17029,9 @@ ShellRoot {
                         wp.inkFrom = wp.findFocus(px, width, height);
                         wp.focusSrc = src;
                         wp.tryBegin();
+                        // colours are picked: drop the full-size picture it loaded to do that
+                        const done = src;
+                        Qt.callLater(() => { if (sampler.loaded === done) { sampler.unloadImage(done); sampler.loaded = ""; } });
                     }
                 }
 
@@ -16604,6 +17040,8 @@ ShellRoot {
                     anchors.fill: parent
                     asynchronous: true
                     fillMode: Image.PreserveAspectCrop
+                    // decode at screen size, not the photo's full size (a 6K photo is ~100 MB in memory)
+                    sourceSize: Qt.size(Math.round(modelData.width * (modelData.devicePixelRatio || 1)), Math.round(modelData.height * (modelData.devicePixelRatio || 1)))
                     visible: wp.aFront && !wp.running
                     onStatusChanged: if (status === Image.Ready && !wp.aFront) wp.tryBegin()
                 }
@@ -16613,6 +17051,8 @@ ShellRoot {
                     anchors.fill: parent
                     asynchronous: true
                     fillMode: Image.PreserveAspectCrop
+                    // decode at screen size, not the photo's full size (a 6K photo is ~100 MB in memory)
+                    sourceSize: Qt.size(Math.round(modelData.width * (modelData.devicePixelRatio || 1)), Math.round(modelData.height * (modelData.devicePixelRatio || 1)))
                     visible: !wp.aFront && !wp.running
                     onStatusChanged: if (status === Image.Ready && wp.aFront) wp.tryBegin()
                 }
