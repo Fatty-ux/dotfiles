@@ -8725,6 +8725,13 @@ ShellRoot {
         gamesLoading = true;
         gamesScan.running = true;
     }
+    // Games and Store act like a window: they stay open when you click somewhere else, on the
+    // monitor you opened them on, until you press X (or Esc).
+    property string gamesScreen: ""
+    onGamesModeChanged: if (gamesMode) gamesScreen = Hyprland.focusedMonitor ? Hyprland.focusedMonitor.name : ""
+    onStoreModeChanged: if (storeMode) gamesScreen = Hyprland.focusedMonitor ? Hyprland.focusedMonitor.name : ""
+    // a file picker is open (choosing a cover or a game): step aside so it can be seen and clicked
+    readonly property bool gamesPicking: gamesArtPicker.running || gamesPicker.running
     function openGames() {
         storeMode = false;
         gamesMode = true;
@@ -8755,7 +8762,14 @@ ShellRoot {
             // while the card shrinks back into the dock pill.
             readonly property bool focusedHere: !Hyprland.focusedMonitor || Hyprland.focusedMonitor.name === modelData.name
             property bool grown: false
-            visible: focusedHere && (root.launcherOpen || card.height > card.pillH + 1)
+            // Games / Store float like a window and stay on the monitor they were opened on
+            readonly property bool floating: root.gamesMode || root.storeMode
+            readonly property bool onItsScreen: floating && root.gamesScreen !== "" ? modelData.name === root.gamesScreen : focusedHere
+            visible: onItsScreen && (root.launcherOpen || card.height > card.pillH + 1)
+            // with Games / Store open, only the card takes clicks; the rest goes to your windows
+            mask: root.gamesPicking ? launchNoMask : (floating ? launchCardMask : null)
+            Region { id: launchCardMask; item: card }
+            Region { id: launchNoMask }
             Connections {
                 target: root
                 function onLauncherOpenChanged() { launcher.grown = root.launcherOpen; }
@@ -8763,7 +8777,8 @@ ShellRoot {
 
             WlrLayershell.layer: WlrLayer.Overlay
             WlrLayershell.namespace: "quickshell-launcher"
-            WlrLayershell.keyboardFocus: root.launcherOpen ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
+            WlrLayershell.keyboardFocus: !root.launcherOpen || root.gamesPicking ? WlrKeyboardFocus.None
+                : (floating ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.Exclusive)
             exclusionMode: ExclusionMode.Ignore
             anchors {
                 top: true
@@ -8776,7 +8791,7 @@ ShellRoot {
             Rectangle {
                 anchors.fill: parent
                 color: "black"
-                opacity: launcher.grown ? 0.16 : 0
+                opacity: launcher.grown && !launcher.floating ? 0.16 : 0
                 Behavior on opacity { NumberAnimation { duration: root.animMs * 2 } }
             }
 
@@ -8854,15 +8869,19 @@ ShellRoot {
                 else root.pin(key);
             }
 
-            // Click outside the card to close
+            // Click outside the card to close (not for Games / Store, which have an X)
             MouseArea {
                 anchors.fill: parent
+                enabled: !launcher.floating
                 onClicked: root.launcherOpen = false
             }
 
             // The card grows out of the dock pill at the bottom, and shrinks back into it when closed
             Rectangle {
                 id: card
+                // hidden while a file picker is open, so the picker isn't stuck behind it
+                opacity: root.gamesPicking ? 0 : 1
+                Behavior on opacity { NumberAnimation { duration: 120 } }
                 readonly property real pillW: root.dockPillW
                 readonly property real pillH: 22
                 readonly property real pillGap: -10         // the tab hangs off the bottom edge like this
@@ -9424,6 +9443,17 @@ ShellRoot {
                                             onClicked: root.storeSrc = modelData.id
                                         }
                                     }
+                                    // close the Games / Store window (clicking outside it no longer does)
+                                    Rectangle {
+                                        implicitWidth: 44
+                                        implicitHeight: 44
+                                        radius: 16
+                                        color: sCloseMouse.containsMouse ? Qt.rgba(root.danger.r, root.danger.g, root.danger.b, 0.25) : root.surface
+                                        border.width: 1
+                                        border.color: root.glassEdge
+                                        Text { anchors.centerIn: parent; text: "\uf00d"; font.family: root.iconFont; font.pixelSize: 14; color: sCloseMouse.containsMouse ? root.danger : root.fg }
+                                        MouseArea { id: sCloseMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.launcherOpen = false }
+                                    }
                                 }
 
                                 Text {
@@ -9947,6 +9977,17 @@ ShellRoot {
                                         SportChip { theme: root; label: "Recent"; active: root.gamesSort === "recent"; onClicked: root.gamesSort = "recent" }
                                         SportChip { theme: root; label: "A–Z"; active: root.gamesSort === "az"; onClicked: root.gamesSort = "az" }
                                         SportChip { theme: root; icon: root.gamesLoading ? "" : ""; label: ""; onClicked: root.gamesRefresh() }
+                                        // close the Games / Store window (clicking outside it no longer does)
+                                        Rectangle {
+                                            implicitWidth: 44
+                                            implicitHeight: 44
+                                            radius: 16
+                                            color: gCloseMouse.containsMouse ? Qt.rgba(root.danger.r, root.danger.g, root.danger.b, 0.25) : root.surface
+                                            border.width: 1
+                                            border.color: root.glassEdge
+                                            Text { anchors.centerIn: parent; text: "\uf00d"; font.family: root.iconFont; font.pixelSize: 14; color: gCloseMouse.containsMouse ? root.danger : root.fg }
+                                            MouseArea { id: gCloseMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.launcherOpen = false }
+                                        }
                                     }
 
                                     GridView {
