@@ -8585,9 +8585,43 @@ ShellRoot {
     property string gamesMyCol: ""          // one of your collections, "" = none picked
     property bool gamesHiddenView: false    // showing the hidden games
 
-    function gamesIsHidden(key) { return gamesHidden.indexOf(key) >= 0; }
+    // Saved keys are matched to the games on your PC by the game's name-key too, so a game whose
+    // source label changed (e.g. Switch vs Switch 2, or one you'd added yourself) still lines up.
+    readonly property var gamesSlugMap: {
+        const m = {};
+        for (const g of gamesAll.concat(gamesAdded)) {
+            const r = /^(recomp|switch1|switch2):(.+)$/.exec(g.key || "");
+            if (r && !m[r[2]]) m[r[2]] = g.key;     // what the scan finds comes first
+        }
+        return m;
+    }
+    readonly property var gamesKeySet: {
+        const k = {};
+        for (const g of gamesAll.concat(gamesAdded)) k[g.key] = true;
+        return k;
+    }
+    function gamesResolve(key) {
+        if (gamesKeySet[key]) return key;
+        const r = /^(recomp|switch1|switch2):(.+)$/.exec(key || "");
+        return r && gamesSlugMap[r[2]] ? gamesSlugMap[r[2]] : key;
+    }
+    function gamesColKeys(col) { return (col.keys || []).map(k => gamesResolve(k)); }
+    function gamesColFound(col) { return gamesColKeys(col).filter(k => gamesKeySet[k]).length; }
+    function gamesColMissing(col) { return (col.keys || []).filter(k => !gamesKeySet[gamesResolve(k)]); }
+    // anything you put in one of your collections is never hidden
+    readonly property var gamesInCols: {
+        const k = {};
+        for (const c of gamesMyCols) for (const x of gamesColKeys(c)) k[x] = true;
+        return k;
+    }
+    readonly property var gamesHiddenSet: {
+        const k = {};
+        for (const h of gamesHidden) { const r = gamesResolve(h); if (!gamesInCols[r]) k[r] = true; }
+        return k;
+    }
+    function gamesIsHidden(key) { return gamesHiddenSet[key] === true; }
     function gamesHide(key, hide) {
-        const list = gamesHidden.filter(k => k !== key);
+        const list = gamesHidden.filter(k => gamesResolve(k) !== key);
         if (hide) list.push(key);
         gameStore.adapter.hidden = list;
     }
@@ -8600,14 +8634,17 @@ ShellRoot {
     }
     function gamesInCol(colId, key) {
         const c = gamesMyCols.find(x => x.id === colId);
-        return !!c && c.keys.indexOf(key) >= 0;
+        return !!c && gamesColKeys(c).indexOf(key) >= 0;
     }
     function gamesToggleCol(colId, key) {
         gameStore.adapter.collections = gamesMyCols.map(c => {
             if (c.id !== colId) return c;
-            const has = c.keys.indexOf(key) >= 0;
-            return { id: c.id, name: c.name, keys: has ? c.keys.filter(k => k !== key) : c.keys.concat([key]) };
+            const has = gamesColKeys(c).indexOf(key) >= 0;
+            return { id: c.id, name: c.name, keys: has ? c.keys.filter(k => gamesResolve(k) !== key) : c.keys.concat([key]) };
         });
+    }
+    function gamesUpdateCollection(colId, keysFn) {
+        gameStore.adapter.collections = gamesMyCols.map(c => c.id !== colId ? c : { id: c.id, name: c.name, keys: keysFn(c.keys || []) });
     }
     function gamesDeleteCol(colId) {
         gameStore.adapter.collections = gamesMyCols.filter(c => c.id !== colId);
@@ -8658,8 +8695,14 @@ ShellRoot {
         for (const g of gamesAll) known[g.key] = true;
         const all = gamesAll.concat(added.filter(a => !known[a.key]));
         // your edits on top (the originals are kept so "Original" / "Undo" work)
+        const bySlug = {};
+        for (const k in gamesEdits) {
+            const r = /^(recomp|switch1|switch2):(.+)$/.exec(k);
+            if (r) bySlug[r[2]] = gamesEdits[k];
+        }
         return all.map(g => {
-            const e = gamesEdits[g.key];
+            const r = /^(recomp|switch1|switch2):(.+)$/.exec(g.key || "");
+            const e = gamesEdits[g.key] || (r ? bySlug[r[2]] : null);
             if (!e) return g;
             const o = Object.assign({}, g, { origName: g.name, origCover: g.cover, origId: g.id });
             if (e.name) o.name = e.name;
@@ -8672,12 +8715,14 @@ ShellRoot {
     readonly property var gamesShown: {
         const q = gamesQuery.trim().toLowerCase();
         const mine = gamesMyCol === "" ? null : (gamesMyCols.find(c => c.id === gamesMyCol) || { keys: [] });
+        const mineKeys = mine ? gamesColKeys(mine) : [];
+        // one of your collections shows everything in it (hidden or not installed too)
         let list = gamesEverything.filter(g =>
-            (gamesHiddenView ? gamesIsHidden(g.key) : !gamesIsHidden(g.key))
+            (mine ? true : (gamesHiddenView ? gamesIsHidden(g.key) : !gamesIsHidden(g.key)))
             && (gamesHiddenView || mine || gamesSrc === "all" || g.src === gamesSrc)
             && (gamesHiddenView || mine || gamesCol === "" || (g.cols && g.cols.indexOf(gamesCol) >= 0))
-            && (!mine || mine.keys.indexOf(g.key) >= 0)
-            && (!gamesInstalledOnly || g.installed)
+            && (!mine || mineKeys.indexOf(g.key) >= 0)
+            && (mine || !gamesInstalledOnly || g.installed)
             && (q === "" || g.name.toLowerCase().indexOf(q) >= 0));
         if (gamesSort === "recent")
             list = list.slice().sort((a, b) => (b.last || 0) - (a.last || 0) || a.name.localeCompare(b.name));
@@ -9736,7 +9781,7 @@ ShellRoot {
                                             }
                                             // hidden games (only when you've hidden some)
                                             Rectangle {
-                                                visible: root.gamesHidden.length > 0
+                                                visible: Object.keys(root.gamesHiddenSet).length > 0
                                                 width: sideCol.width
                                                 height: 34
                                                 radius: 12
@@ -9748,7 +9793,7 @@ ShellRoot {
                                                     spacing: 10
                                                     Text { text: ""; font.family: root.iconFont; font.pixelSize: 13; color: root.gamesHiddenView ? root.bg : root.muted }
                                                     Text { Layout.fillWidth: true; text: "Hidden"; color: root.gamesHiddenView ? root.bg : root.muted; font.pixelSize: 12 }
-                                                    Text { text: root.gamesHidden.length; color: root.gamesHiddenView ? root.bg : root.muted; font.pixelSize: 11 }
+                                                    Text { text: Object.keys(root.gamesHiddenSet).filter(k => root.gamesKeySet[k]).length; color: root.gamesHiddenView ? root.bg : root.muted; font.pixelSize: 11 }
                                                 }
                                                 MouseArea { id: ghMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { root.gamesHiddenView = !root.gamesHiddenView; root.gamesMyCol = ""; root.gamesCol = ""; } }
                                             }
@@ -9779,7 +9824,7 @@ ShellRoot {
                                                         anchors.verticalCenter: parent.verticalCenter
                                                         anchors.right: parent.right
                                                         anchors.rightMargin: 30
-                                                        text: mc2.modelData.keys.length
+                                                        text: root.gamesColFound(mc2.modelData)
                                                         color: mc2.sel ? root.bg : root.muted
                                                         font.pixelSize: 11
                                                     }
@@ -9931,6 +9976,24 @@ ShellRoot {
                                         color: root.muted
                                         font.pixelSize: 10
                                         wrapMode: Text.Wrap
+                                    }
+                                    // games saved in this collection that aren't on your PC right now
+                                    Text {
+                                        readonly property var col: root.gamesMyCols.find(c => c.id === root.gamesMyCol) || null
+                                        readonly property var missing: col ? root.gamesColMissing(col) : []
+                                        visible: missing.length > 0
+                                        Layout.fillWidth: true
+                                        text: missing.length + (missing.length === 1 ? " game" : " games") + " in this collection " + (missing.length === 1 ? "isn't" : "aren't")
+                                              + " on your PC right now (moved, renamed or uninstalled). <a href=\"x\">Remove from list</a>"
+                                        textFormat: Text.StyledText
+                                        linkColor: root.accent
+                                        color: root.muted
+                                        font.pixelSize: 10
+                                        wrapMode: Text.Wrap
+                                        onLinkActivated: {
+                                            const gone = missing;
+                                            root.gamesUpdateCollection(col.id, keys => keys.filter(x => gone.indexOf(x) < 0));
+                                        }
                                     }
                                 }
 
