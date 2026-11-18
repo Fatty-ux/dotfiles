@@ -355,8 +355,26 @@ def emu_config_dirs(cfgnames):
             for line in (read(cfg) or "").splitlines():
                 m = re.match(r"^Paths\\gamedirs\\\d+\\path=(.+)$", line.strip())
                 if m and not m.group(1).startswith(("SDMC", "UserNAND", "SysNAND")):
-                    dirs.append(os.path.expanduser(m.group(1).strip()))
+                    dirs.append(portal_real(os.path.expanduser(m.group(1).strip())))
     return dirs
+
+def portal_real(p):
+    """A Flatpak app's folder picker can save a temporary /run/user/<id>/doc/... path instead of
+    the real folder. Ask Flatpak where it really is, so games there are found and start properly."""
+    if not (p.startswith("/run/user/") and "/doc/" in p) or not shutil.which("flatpak"):
+        return p
+    m = re.match(r"^(/run/user/\d+/doc/[^/]+/[^/]+)(.*)$", p)
+    if not m:
+        return p
+    try:
+        info = subprocess.run(["flatpak", "document-info", m.group(1)], capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return p
+    for line in info.splitlines():
+        k, _, v = line.partition(":")
+        if k.strip().lower() == "path" and v.strip().startswith("/"):
+            return v.strip() + m.group(2)
+    return p
 
 def guess_dirs(looks_like):
     """Folders named like 'Switch Roms' / 'Switch 2 Roms' in the usual places."""
