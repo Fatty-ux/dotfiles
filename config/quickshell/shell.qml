@@ -8335,6 +8335,7 @@ ShellRoot {
             stdout: StdioCollector {
                 onStreamFinished: {
                     const ok = text.trim() === "ok";
+                    root.flatpakAppsSync();                 // so it shows in your apps right away
                     root.storeSetBusy(sfp.appId, "");
                     if (ok) root.storeMark(sfp.appId, !sfp.removing);
                     root.toastSeq += 1;
@@ -8347,6 +8348,15 @@ ShellRoot {
             }
         }
     }
+
+    // Flatpak apps (like ones from the Store) don't show in the launcher unless the session knows
+    // Flatpak's folders. scripts/flatpak-apps.sh copies their shortcuts where the launcher looks.
+    Process {
+        id: flatpakApps
+        running: true                            // once at startup
+        command: ["bash", Quickshell.env("HOME") + "/.config/quickshell/scripts/flatpak-apps.sh"]
+    }
+    function flatpakAppsSync() { if (!flatpakApps.running) flatpakApps.running = true; }
 
     // ---------- Games library (in the launcher: the Games button) ----------
     // scripts/games.py reads Steam, Heroic and recomp folders and prints every game as JSON.
