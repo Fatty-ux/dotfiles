@@ -369,7 +369,7 @@ ShellRoot {
         [
             { title: "Apps & menus", icon: "", keys: [
                 [["Super", "K"], "This cheat sheet"],
-                [["Super"], "App launcher (search, Games, Store)"],
+                [["Super"], "App launcher (tap it on its own)"],
                 [["Super", "Space"], "App launcher too"],
                 [["Super", "X"], "Hub (clock, music, calendar)"],
                 [["Super", "Z"], "Hub: System (sound, Wi-Fi, power)"],
@@ -583,6 +583,12 @@ ShellRoot {
         target: "launcher"
         function toggle(): void {
             root.launcherOpen = !root.launcherOpen;
+        }
+        // tapping Super on its own (Hyprland: Super_L, on release). If the desktop switcher is
+        // open, letting go of Super means "go to the picked desktop", not "open the launcher".
+        function superTap(): void {
+            if (root.switcherOpen) root.switcherCommit();
+            else root.launcherOpen = !root.launcherOpen;
         }
     }
 
@@ -8481,11 +8487,13 @@ ShellRoot {
         id: gameStore
         path: Quickshell.env("HOME") + "/.local/state/joeos-games.json"
         property bool ready: false
-        onLoaded: { ready = true; root.gamesMigrate(); }
+        onLoaded: { ready = true; root.gamesLog("loaded"); root.gamesMigrate(); }
         onLoadFailed: error => {
+            root.gamesLog("could not load (" + error + ")");
             if (error === FileViewError.FileNotFound) { ready = true; root.gamesMigrate(); }
         }
         onAdapterUpdated: if (ready) writeAdapter()
+        onSaved: gamesBackupSoon.restart()
         adapter: JsonAdapter {
             property var hidden: []
             property var collections: []
@@ -8508,10 +8516,12 @@ ShellRoot {
         return b || base.toLowerCase();
     }
     // old keys were the game's full file path; turn them into the new lasting ones
+    // (even older keys used the emulator's name: eglantine = Switch 2, eden = Switch 1)
+    readonly property var gamesOldSrc: ({ added: "recomp", eglantine: "switch2", eden: "switch1" })
     function gamesCanon(key) {
-        const m = /^(recomp|switch1|switch2|added):(\/.*)$/.exec(key || "");
+        const m = /^(recomp|switch1|switch2|added|eglantine|eden):(\/.*)$/.exec(key || "");
         if (!m) return key;
-        return (m[1] === "added" ? "recomp" : m[1]) + ":" + gamesSlug(m[2]);
+        return (gamesOldSrc[m[1]] || m[1]) + ":" + gamesSlug(m[2]);
     }
     // Moves everything you saved onto the lasting keys. Info saved under an old file path (from
     // before a game updated) gets joined back up with the game; newer info wins where both exist.
@@ -8547,11 +8557,32 @@ ShellRoot {
             addedBy[c] = { key: c, name: g.name, path: g.path };     // the newest one you added wins
         }
         if (!changed) return;
+        gamesLog("before key tidy-up");
         a.edits = edits;
         a.hidden = hidden;
         a.collections = cols;
         a.added = Object.keys(addedBy).map(k => addedBy[k]);
         gameStore.writeAdapter();
+        gamesLog("after key tidy-up");
+    }
+
+    // A copy of your games data is kept after every change (the last 30), so anything that goes
+    // missing can be put back:  ~/.local/state/joeos-games-backups/
+    Timer {
+        id: gamesBackupSoon
+        interval: 4000
+        onTriggered: Quickshell.execDetached(["sh", "-c",
+            'd="$HOME/.local/state/joeos-games-backups"; mkdir -p "$d" && cp "$HOME/.local/state/joeos-games.json" "$d/joeos-games-$(date +%Y%m%d-%H%M%S).json" '
+            + '&& ls -1t "$d"/joeos-games-*.json | tail -n +31 | xargs -r rm --'])
+    }
+    // ...and a one-line note of what changed and why, to track down anything that removes things:
+    // ~/.cache/joeos/games-changes.log
+    function gamesLog(reason) {
+        const a = gameStore.adapter;
+        const cols = (a.collections || []).map(c => c.name + ":" + (c.keys || []).length).join(", ");
+        const line = new Date().toISOString() + "  " + reason + "  | collections [" + cols + "] edits " + Object.keys(a.edits || {}).length
+            + " hidden " + (a.hidden || []).length + " added " + (a.added || []).length;
+        Quickshell.execDetached(["sh", "-c", 'mkdir -p "$HOME/.cache/joeos"; printf "%s\\n" "$1" >> "$HOME/.cache/joeos/games-changes.log"', "sh", line]);
     }
 
     function gamesMigrate() {
@@ -8579,6 +8610,7 @@ ShellRoot {
         if (Object.keys(clean).length) all[key] = clean;
         else delete all[key];
         gameStore.adapter.edits = all;
+        gamesLog((Object.keys(clean).length ? "edited " : "cleared edits of ") + key);
     }
     // pick a picture for a cover
     property var gamesArtPicked: null           // function(path) waiting for the picker
@@ -8649,12 +8681,14 @@ ShellRoot {
         const list = gamesHidden.filter(k => gamesResolve(k) !== key);
         if (hide) list.push(key);
         gameStore.adapter.hidden = list;
+        gamesLog((hide ? "hid " : "unhid ") + key);
     }
     function gamesNewCollection(name, firstKey) {
         name = name.trim();
         if (name === "") return "";
         const id = "my-" + Date.now();
         gameStore.adapter.collections = gamesMyCols.concat([{ id: id, name: name, keys: firstKey ? [firstKey] : [] }]);
+        gamesLog("new collection " + name + (firstKey ? " with " + firstKey : ""));
         return id;
     }
     function gamesInCol(colId, key) {
@@ -8667,12 +8701,15 @@ ShellRoot {
             const has = gamesColKeys(c).indexOf(key) >= 0;
             return { id: c.id, name: c.name, keys: has ? c.keys.filter(k => gamesResolve(k) !== key) : c.keys.concat([key]) };
         });
+        gamesLog("toggled " + key + " in " + colId);
     }
     function gamesUpdateCollection(colId, keysFn) {
         gameStore.adapter.collections = gamesMyCols.map(c => c.id !== colId ? c : { id: c.id, name: c.name, keys: keysFn(c.keys || []) });
+        gamesLog("removed missing games from " + colId);
     }
     function gamesDeleteCol(colId) {
         gameStore.adapter.collections = gamesMyCols.filter(c => c.id !== colId);
+        gamesLog("deleted collection " + colId);
         if (gamesMyCol === colId) gamesMyCol = "";
     }
     // a game you picked yourself (any program or AppImage)
@@ -8686,9 +8723,11 @@ ShellRoot {
         // adding a newer build of a game you already added replaces the old one (same key, so its
         // collections, cover and name carry over)
         gameStore.adapter.added = gamesAdded.filter(g => g.key !== key).concat([{ key: key, name: name, path: path }]);
+        gamesLog("added game " + path);
     }
     function gamesRemoveAdded(key) {
         gameStore.adapter.added = gamesAdded.filter(g => g.key !== key);
+        gamesLog("removed added game " + key);
     }
     Process {
         id: gamesPicker
@@ -10005,7 +10044,8 @@ ShellRoot {
                                     // games saved in this collection that aren't on your PC right now
                                     Text {
                                         readonly property var col: root.gamesMyCols.find(c => c.id === root.gamesMyCol) || null
-                                        readonly property var missing: col ? root.gamesColMissing(col) : []
+                                        // only once the full game list is in, so nothing is called missing while it loads
+                                        readonly property var missing: col && !root.gamesLoading && root.gamesAll.length > 0 ? root.gamesColMissing(col) : []
                                         visible: missing.length > 0
                                         Layout.fillWidth: true
                                         text: missing.length + (missing.length === 1 ? " game" : " games") + " in this collection " + (missing.length === 1 ? "isn't" : "aren't")
@@ -12005,7 +12045,10 @@ ShellRoot {
 
                                     MouseArea {
                                         anchors.fill: parent
+                                        hoverEnabled: true
                                         cursorShape: Qt.PointingHandCursor
+                                        // pointing at a desktop picks it: let go of Super (or click) to go there
+                                        onEntered: root.switcherSel = dcard.index
                                         onClicked: {
                                             root.switcherSel = dcard.index;
                                             root.switcherCommit();
