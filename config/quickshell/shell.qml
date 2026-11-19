@@ -14831,8 +14831,9 @@ ShellRoot {
                         }
                     }
 
-                    // Music controls: play/pause, next, volume up/down (dim when Spotify is closed)
+                    // Music controls: play/pause, next, volume up/down (taken off the pill: they're in the panel)
                     Column {
+                        visible: false
                         anchors.horizontalCenter: parent.horizontalCenter
                         spacing: 6
                         opacity: root.spotify ? 1 : 0.35
@@ -15912,10 +15913,9 @@ ShellRoot {
                                 }
 
                                 // ---- Spotify ----
-                                // (taken off the Controls tab: music controls live in the hub's Media tab and on Lyrics)
                                 HubCard {
                                     theme: root
-                                    visible: false
+                                    visible: root.sideView === "main"
                                     Layout.fillWidth: true
                                     Layout.preferredHeight: spCol.implicitHeight + 28
 
