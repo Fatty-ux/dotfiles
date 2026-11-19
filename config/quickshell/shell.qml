@@ -212,6 +212,7 @@ ShellRoot {
             property bool topPillAlways: true    // the top pill stays on screen (no pull tab)
             property bool lyricsOpen: false      // the left panel stays open across restarts
             property string leftTab: "lyrics"    // which tab the left panel shows
+            property string rightLastTab: "main" // the right pill opens on the tab you used last
             property var gameHidden: []          // Games: hidden games (their keys)
             property var gameCollections: []     // Games: your own collections
             property var gameAdded: []           // Games: games you added yourself
@@ -368,7 +369,8 @@ ShellRoot {
         [
             { title: "Apps & menus", icon: "", keys: [
                 [["Super", "K"], "This cheat sheet"],
-                [["Super", "Space"], "App launcher (search, Games, Store)"],
+                [["Super"], "App launcher (search, Games, Store)"],
+                [["Super", "Space"], "App launcher too"],
                 [["Super", "X"], "Hub (clock, music, calendar)"],
                 [["Super", "Z"], "Hub: System (sound, Wi-Fi, power)"],
                 [["Super", "Alt", "C"], "Hub: System (power buttons)"],
@@ -1853,6 +1855,7 @@ ShellRoot {
                 right: true
             }
             implicitHeight: 34
+            visible: false                     // (the bottom pill is gone: press Super to open the launcher)
             color: "transparent"
             WlrLayershell.namespace: "quickshell-bar"
 
@@ -3903,6 +3906,7 @@ ShellRoot {
         property string label: ""
         property string icon: ""
         property bool active: false
+        property string tip: ""        // shown under it while the mouse rests on it
         signal clicked()
         implicitWidth: scRow.implicitWidth + (sc.label === "" ? 20 : 24)
         implicitHeight: 32
@@ -3942,6 +3946,27 @@ ShellRoot {
             hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
             onClicked: sc.clicked()
+        }
+
+        Rectangle {
+            visible: sc.tip !== "" && scMouse.containsMouse
+            anchors.top: parent.bottom
+            anchors.topMargin: 6
+            anchors.horizontalCenter: parent.horizontalCenter
+            z: 10
+            width: scTip.implicitWidth + 16
+            height: 24
+            radius: 8
+            color: sc.theme ? sc.theme.popupBg : "black"
+            border.width: 1
+            border.color: sc.theme ? sc.theme.glassEdge : "transparent"
+            Text {
+                id: scTip
+                anchors.centerIn: parent
+                text: sc.tip
+                color: sc.theme ? sc.theme.fg : "white"
+                font.pixelSize: 11
+            }
         }
     }
 
@@ -12190,6 +12215,7 @@ ShellRoot {
     }
 
     function openLyricsPanel(screenName) {
+        sideOpen = false;
         lyricsScreen = screenName;
         pins.adapter.lyricsOpen = true;
     }
@@ -12222,6 +12248,26 @@ ShellRoot {
         { id: "input",   name: "Input",     icon: "\uf11c" }
     ]
     readonly property string leftTab: pins.adapter.leftTab || "lyrics"
+
+    // The right pill's panel has every tab now: its own (Controls, Signal) plus the old left panel's.
+    // Controls / Signal show in the pill's panel; the others in the bigger panel that opens in its place.
+    readonly property var rightTabs: [
+        { id: "main", name: "Controls", icon: "\uf1de" },
+        { id: "signal", name: "Signal", icon: "\uf27a" }
+    ].concat(leftTabs)
+    readonly property string rightTab: lyricsOpen ? leftTab : ((sideView === "signal" || sideView === "signalChat") ? "signal" : "main")
+    function openRightTab(id) {
+        pins.adapter.rightLastTab = id;
+        if (id === "main" || id === "signal") {
+            closeLyricsPanel();
+            sideView = id === "signal" && sigAccount !== "" ? "signal" : "main";
+            sideOpen = true;
+        } else {
+            sideOpen = false;
+            pins.adapter.leftTab = id;
+            openLyricsPanel(Hyprland.focusedMonitor ? Hyprland.focusedMonitor.name : "");
+        }
+    }
 
     // ---------- Keyboard & mouse (the Input tab in the hub and the left panel) ----------
     // Speed, acceleration, scrolling and key repeat are Hyprland settings (set live with
@@ -12875,6 +12921,7 @@ ShellRoot {
             // ----- the tab, same look as the one for the right bar -----
             PanelWindow {
                 id: lyrTabWin
+                visible: false                 // (the left pill is gone: its tabs are in the right pill)
                 screen: lyrScope.modelData
                 anchors {
                     top: true
@@ -12921,17 +12968,17 @@ ShellRoot {
                 anchors {
                     top: true
                     bottom: true
-                    left: true
+                    right: true
                 }
                 implicitWidth: 500
                 exclusionMode: ExclusionMode.Ignore
                 color: "transparent"
-                WlrLayershell.layer: WlrLayer.Top
+                WlrLayershell.layer: WlrLayer.Overlay
                 WlrLayershell.namespace: "quickshell-lyrics"
                 WlrLayershell.keyboardFocus: lyrScope.here && (root.leftTab === "clip" || root.leftTab === "notes" || root.leftTab === "input")
                     ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None   // only takes typing on Clipboard / Notes, when you click in
                 // only the card catches the mouse; everything else goes to the windows underneath
-                readonly property bool showing: lyrScope.here || lyrCard.x > -lyrCard.width
+                readonly property bool showing: lyrScope.here || lyrCard.x < width
                 mask: showing ? lyrCardMask : lyrOffMask
                 Region { id: lyrCardMask; item: lyrCard }
                 Region { id: lyrOffMask }
@@ -12949,7 +12996,7 @@ ShellRoot {
                     anchors.verticalCenter: parent.verticalCenter
                     width: 440
                     height: Math.min(760, parent.height * 0.76)
-                    x: lyrScope.here ? 14 : -width - 30
+                    x: lyrScope.here ? parent.width - width - 8 : parent.width + 30
                     opacity: lyrScope.here ? 1 : 0
                     radius: 30
                     color: root.popupBg
@@ -13012,19 +13059,19 @@ ShellRoot {
                         RowLayout {
                             Layout.fillWidth: true
                             spacing: 6
+                            z: 5
                             Repeater {
-                                model: root.leftTabs
+                                model: root.rightTabs
                                 delegate: SportChip {
                                     required property var modelData
+                                    Layout.fillWidth: true
                                     theme: root
                                     icon: modelData.icon
-                                    // the name shows on the open tab so they all fit
-                                    label: root.leftTab === modelData.id ? modelData.name : ""
-                                    active: root.leftTab === modelData.id
-                                    onClicked: pins.adapter.leftTab = modelData.id
+                                    tip: modelData.name
+                                    active: root.rightTab === modelData.id
+                                    onClicked: root.openRightTab(modelData.id)
                                 }
                             }
-                            Item { Layout.fillWidth: true }
                             // close: the only way to put it away
                             Rectangle {
                                 Layout.preferredWidth: 34
@@ -13821,7 +13868,8 @@ ShellRoot {
     IpcHandler {
         target: "sidebar"
         function toggle(): void {
-            root.sideOpen = !root.sideOpen;
+            if (root.sideOpen || root.lyricsOpen) { root.sideOpen = false; root.closeLyricsPanel(); }
+            else root.openRightLast();
         }
     }
 
@@ -13862,7 +13910,10 @@ ShellRoot {
     }
 
     onSideOpenChanged: {
-        if (sideOpen) refreshBrightness();
+        if (sideOpen) {
+            refreshBrightness();
+            if (lyricsOpen) closeLyricsPanel();      // only one right-side panel at a time
+        }
         else sideView = "main";
     }
 
@@ -13880,10 +13931,8 @@ ShellRoot {
         if (sideView === "signalChat") sigMarkRead(sigCurrent);
     }
 
-    function showLyrics() {
-        sideView = "lyrics";
-        sideOpen = true;
-    }
+    function showLyrics() { openRightTab("lyrics"); }
+    function openRightLast() { openRightTab(pins.adapter.rightLastTab || "main"); }
 
     // "[01:23.45] some words" -> one entry per time stamp
     function parseLrc(text) {
@@ -14560,6 +14609,8 @@ ShellRoot {
 
             readonly property bool focusedHere: !Hyprland.focusedMonitor || Hyprland.focusedMonitor.name === modelData.name
             readonly property bool openHere: root.sideOpen && focusedHere
+            readonly property bool bigHere: root.lyricsOpen
+                && (root.lyricsScreen === "" ? modelData === Quickshell.screens[0] : root.lyricsScreen === modelData.name)
 
             // ----- Pull tab -----
             // With auto-hide on, the pill stays tucked away until you click the little tab on the
@@ -14589,7 +14640,7 @@ ShellRoot {
             // the tab: sticks out from the right edge, rides left of the pill when it's out
             Rectangle {
                 id: sideTab
-                visible: side.wantHide && !side.openHere
+                visible: side.wantHide && !side.openHere && !side.bigHere
                 anchors.verticalCenter: parent.verticalCenter
                 x: side.barShown ? sidePill.x - width - 4 : parent.width - width + 10
                 width: sideTabMouse.containsMouse ? 26 : 22
@@ -14625,7 +14676,7 @@ ShellRoot {
                 color: root.popupBg
                 border.width: 1
                 border.color: root.glassEdge
-                opacity: side.openHere ? 0 : 1
+                opacity: side.openHere || side.bigHere ? 0 : 1
                 scale: sideMouse.pressed ? 0.96 : (sidePillHover.hovered ? 1.04 : 1)
                 Behavior on x { NumberAnimation { duration: root.animMs * 2; easing.type: Easing.OutCubic } }
                 Behavior on opacity { NumberAnimation { duration: root.animMs } }
@@ -14639,7 +14690,7 @@ ShellRoot {
                     id: sideMouse
                     anchors.fill: parent
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: root.sideOpen = true
+                    onClicked: root.openRightLast()
                 }
 
                 Column {
@@ -14681,7 +14732,7 @@ ShellRoot {
                             anchors.fill: parent
                             anchors.margins: -6
                             cursorShape: Qt.PointingHandCursor
-                            onClicked: root.sideOpen = true
+                            onClicked: root.openRightLast()
                             onWheel: wheel => {
                                 if (root.brightAvg < 0) return;
                                 root.setAllBrightness(root.brightAvg + (wheel.angleDelta.y > 0 ? 5 : -5));
@@ -14912,7 +14963,7 @@ ShellRoot {
                 screen: side.screen
                 visible: true
                 anchors.right: true
-                implicitWidth: 420
+                implicitWidth: 470
                 implicitHeight: Math.max(600, side.height - 40)
                 exclusionMode: ExclusionMode.Ignore
                 color: "transparent"
@@ -14965,7 +15016,7 @@ ShellRoot {
                     anchors.verticalCenter: parent.verticalCenter
                     anchors.right: parent.right
                     anchors.rightMargin: 8
-                    width: side.openHere ? 380 : sidePill.width
+                    width: side.openHere ? 440 : sidePill.width
                     height: side.openHere ? Math.min(sideContent.implicitHeight + 36, sideWin.height - 20) : sidePill.height
                     radius: side.openHere ? 30 : 23
                     color: root.popupBg
@@ -14982,7 +15033,7 @@ ShellRoot {
 
                     ColumnLayout {
                         id: sideContent
-                        width: 344
+                        width: 404
                         anchors.right: parent.right
                         anchors.rightMargin: 18
                         y: 18
@@ -15007,6 +15058,25 @@ ShellRoot {
                                 font.family: root.iconFont
                                 font.pixelSize: 14
                                 MouseArea { anchors.fill: parent; anchors.margins: -8; cursorShape: Qt.PointingHandCursor; onClicked: root.sideOpen = false }
+                            }
+                        }
+
+                        // ---- every tab: Controls, Signal, Lyrics, Display, Monitors, Clipboard, Notes, Input ----
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 6
+                            z: 5
+                            Repeater {
+                                model: root.rightTabs
+                                delegate: SportChip {
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    theme: root
+                                    icon: modelData.icon
+                                    tip: modelData.name
+                                    active: root.rightTab === modelData.id
+                                    onClicked: root.openRightTab(modelData.id)
+                                }
                             }
                         }
 

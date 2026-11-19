@@ -174,3 +174,4 @@ hl.bind(mainMod .. " + CONTROL + mouse_down", hl.dsp.exec_cmd(qs .. "desktops ne
 hl.bind(mainMod .. " + SHIFT + S", hl.dsp.window.move({ workspace = "special" }))
 hl.bind(mainMod .. " + S",         hl.dsp.workspace.toggle_special())
 hl.bind("SUPER + K", hl.dsp.exec_cmd("qs ipc call keys toggle"))  -- keyboard shortcut cheat sheet
+hl.bind("Super_L", hl.dsp.exec_cmd("qs ipc call launcher toggle"), { release = true })  -- tap Super: app launcher
