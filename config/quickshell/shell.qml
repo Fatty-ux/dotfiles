@@ -15912,9 +15912,10 @@ ShellRoot {
                                 }
 
                                 // ---- Spotify ----
+                                // (taken off the Controls tab: music controls live in the hub's Media tab and on Lyrics)
                                 HubCard {
                                     theme: root
-                                    visible: root.sideView === "main"
+                                    visible: false
                                     Layout.fillWidth: true
                                     Layout.preferredHeight: spCol.implicitHeight + 28
 
