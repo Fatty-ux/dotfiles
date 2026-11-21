@@ -2,7 +2,8 @@
 # JoeOS: set up automatic updates (run once; it asks for your password).
 #
 # Installs a small system service that updates pacman packages and Flatpak apps
-# without asking, once a day (and whenever you press Update in the bar).
+# without asking, about every 2 weeks: on the 1st and 15th of each month (and whenever
+# you press Update in the bar). If the computer is off then, it runs soon after it's next on.
 # AUR packages are NOT updated automatically, because they're built from scripts
 # anyone can upload; the bar tells you when there are some and installs them when you click.
 #
@@ -77,13 +78,12 @@ EOF
 
 sudo tee "$TIMER" >/dev/null <<'EOF'
 [Unit]
-Description=JoeOS automatic update, once a day
+Description=JoeOS automatic update, about every 2 weeks (the 1st and 15th)
 
 [Timer]
-OnCalendar=daily
+OnCalendar=*-*-01,15 12:00
 Persistent=true
 RandomizedDelaySec=45min
-OnBootSec=20min
 
 [Install]
 WantedBy=timers.target
@@ -104,5 +104,5 @@ EOF
 sudo systemctl daemon-reload
 sudo systemctl enable --now joeos-update.timer
 echo
-echo "Done! Your computer now updates itself once a day, and the Update button works without a password."
+echo "Done! Your computer now updates itself about every 2 weeks (the 1st and 15th), and the Update button works without a password."
 echo "Log: /var/log/joeos-update.log    To undo: $0 remove"

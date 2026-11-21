@@ -2526,7 +2526,7 @@ ShellRoot {
         stdout: StdioCollector { onStreamFinished: root.updAuto = text.trim() === "yes" }
     }
 
-    // watch the background update (started here, or by the daily timer)
+    // watch the background update (started here, or by the 2-weekly timer)
     Process {
         id: updStatus
         command: ["sh", "-c", "systemctl is-active joeos-update.service 2>/dev/null; cat /var/lib/joeos-update/last 2>/dev/null"]
@@ -2560,7 +2560,7 @@ ShellRoot {
         running: root.updRunning && root.updAuto
         onTriggered: if (!updStatus.running) updStatus.running = true
     }
-    Timer {                                // and a slow one to notice the daily update
+    Timer {                                // and a slow one to notice the scheduled update
         interval: 60000
         repeat: true
         running: root.updAuto && !root.updRunning
@@ -5595,7 +5595,7 @@ ShellRoot {
                                                                     : root.updState === "failed" ? "Needs you · tap to fix"
                                                                     : (root.updSystem + root.updFlatpak) > 0 ? (root.updSystem + root.updFlatpak) + " waiting · tap to install"
                                                                     : root.updAur > 0 ? root.updAur + " AUR · tap to install"
-                                                                    : "Auto · " + (root.updStateAt ? "updated " + root.updAgo(root.updStateAt) : "daily"),
+                                                                    : "Auto · " + (root.updStateAt ? "updated " + root.updAgo(root.updStateAt) : "every 2 weeks"),
                                                                 active: root.updRunning || root.updTotal > 0, ok: true,
                                                                 run: () => {
                                                                     if (!root.updAuto || root.updTotal > 0 || root.updState === "failed") { root.hubOpen = false; root.runUpdates(); }
