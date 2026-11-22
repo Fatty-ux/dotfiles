@@ -230,6 +230,11 @@ ShellRoot {
             property int mouseRate: 0            //   libratbag polling rate
             property string rgbColor: ""         //   OpenRGB colour ("" = never set)
             property bool rgbFollowTheme: false  //   lights follow the theme colour
+            property bool cursorTouched: false   // Pointer: only apply once you've picked something
+            property string cursorTheme: ""      //   pointer theme (folder name)
+            property int cursorSize: 24          //   pointer size in pixels
+            property bool cursorHideTyping: false //  hide the pointer while typing
+            property int cursorIdle: 0           //   hide the pointer after this many idle seconds (0 = never)
             property bool micDenoise: false      // Capture tab: background noise removal for the mic
             property string micDenoiseLevel: "normal"
             property int recSysLevel: 70         // Capture tab: computer sound level in "Both" recordings (%)
@@ -12384,6 +12389,7 @@ ShellRoot {
     function inputPageShown() {
         if (!inputRead.running) inputRead.running = true;
         if (!inputTools.running) inputTools.running = true;
+        cursorRefresh();
     }
 
     // lighting: one colour on every RGB device OpenRGB can see ("" = leave it alone, "000000" = off)
@@ -12418,12 +12424,100 @@ ShellRoot {
         Quickshell.execDetached(["ratbagctl", ratbagDev, "rate", "set", String(v)]);
     }
 
+    // ---------- Pointer: theme, size and behaviour of the mouse cursor ----------
+    // scripts/cursors.py finds the installed pointer themes (with preview pictures), switches the
+    // pointer live in Hyprland, XWayland and GTK apps, and downloads extra themes from GitHub.
+    // Hide-while-typing and hide-when-idle are Hyprland settings, set live like the mouse speed above.
+    readonly property string cursorScript: Quickshell.env("HOME") + "/.config/quickshell/scripts/cursors.py"
+    property var cursorThemes: []            // [{name, preview, nominal, pw, ph}]
+    property var cursorCatalog: []           // [{key, name, note, installed}]
+    property string cursorBusy: ""           // catalog key being downloaded right now
+    property string cursorMsg: ""
+
+    function cursorLabel(name) {
+        return name.replace(/[-_]+/g, " ").replace(/\s*\b(cursors?|linux)\b/ig, "").trim()
+            .replace(/\b([a-z])/g, c => c.toUpperCase());
+    }
+    function cursorInfo(name) {
+        for (let i = 0; i < cursorThemes.length; i++) if (cursorThemes[i].name === name) return cursorThemes[i];
+        return null;
+    }
+    function cursorLua() {
+        return 'hl.config({ cursor = { hide_on_key_press = ' + (inp.cursorHideTyping ? "true" : "false")
+            + ', inactive_timeout = ' + Math.round(inp.cursorIdle) + ' } })';
+    }
+    function applyCursor() {
+        if (!inp.cursorTouched) return;        // never override your own pointer until you pick something here
+        if (inp.cursorTheme !== "")
+            Quickshell.execDetached(["python3", cursorScript, "set", inp.cursorTheme, String(inp.cursorSize)]);
+        Quickshell.execDetached(["hyprctl", "eval", cursorLua()]);
+    }
+    function setCursor(key, v) {
+        inp[key] = v;
+        inp.cursorTouched = true;
+        cursorTimer.restart();
+    }
+    function pickCursor(name) { setCursor("cursorTheme", name); }
+    function resetCursor() {
+        inp.cursorHideTyping = false;
+        inp.cursorIdle = 0;
+        inp.cursorSize = 24;
+        setCursor("cursorTheme", "Adwaita");
+    }
+    function getCursor(key) {
+        if (cursorBusy !== "") return;
+        cursorBusy = key;
+        cursorMsg = "Downloading…";
+        cursorGetProc.command = ["python3", cursorScript, "get", key];
+        cursorGetProc.running = true;
+    }
+    function cursorRefresh() {
+        if (!cursorListProc.running) cursorListProc.running = true;
+        if (!cursorCatProc.running) cursorCatProc.running = true;
+    }
+    Timer { id: cursorTimer; interval: 250; onTriggered: root.applyCursor() }
+    Process {
+        id: cursorListProc
+        command: ["python3", root.cursorScript, "list"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    const d = JSON.parse(text);
+                    root.cursorThemes = d.themes;
+                    if (!root.inp.cursorTouched) {       // start from the pointer you really have
+                        root.inp.cursorTheme = d.theme;
+                        root.inp.cursorSize = d.size;
+                    }
+                } catch (e) {}
+            }
+        }
+    }
+    Process {
+        id: cursorCatProc
+        command: ["python3", root.cursorScript, "catalog"]
+        stdout: StdioCollector {
+            onStreamFinished: { try { root.cursorCatalog = JSON.parse(text); } catch (e) {} }
+        }
+    }
+    Process {
+        id: cursorGetProc
+        stdout: StdioCollector {
+            onStreamFinished: {
+                const t = text.trim();
+                root.cursorMsg = t === "ok" ? "Installed. Pick it from the list above." : "Couldn't get it (" + (t === "" ? "no answer" : t.slice(0, 100)) + "). Check your internet and try again.";
+                root.cursorBusy = "";
+                root.cursorRefresh();
+            }
+        }
+    }
+
     // put everything back after starting up
     Timer {
         interval: 3500
         running: true
         onTriggered: {
             root.applyInput();
+            root.applyCursor();
             inputTools.running = true;
             if (root.inp.rgbFollowTheme || root.inp.rgbColor !== "") rgbRestore.start();
         }
@@ -12658,6 +12752,246 @@ ShellRoot {
                             Text { Layout.fillWidth: true; text: "Quick set"; color: root.muted; font.pixelSize: 11 }
                             SportChip { theme: root; label: "Gaming"; onClicked: { root.setInput("inRepeatDelay", 200); root.setInput("inRepeatRate", 50); } }
                             SportChip { theme: root; label: "Normal"; onClicked: { root.setInput("inRepeatDelay", 600); root.setInput("inRepeatRate", 25); } }
+                        }
+                    }
+                }
+
+                // ================= Pointer (mouse cursor look) =================
+                HubCard {
+                    theme: root
+                    Layout.fillWidth: true
+                    Layout.columnSpan: ipFlick.wide ? 2 : 1
+                    implicitHeight: ptrCol.implicitHeight + 28
+                    radius: 20
+
+                    ColumnLayout {
+                        id: ptrCol
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: 14
+                        spacing: 10
+
+                        // title + the pointer you have now, at its real size
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 10
+                            Text { text: ""; color: root.accent; font.family: root.iconFont; font.pixelSize: 15 }
+                            ColumnLayout {
+                                spacing: 0
+                                Text { text: "Pointer"; color: root.fg; font.pixelSize: 15; font.bold: true }
+                                Text {
+                                    text: root.inp.cursorTheme === "" ? "" : root.cursorLabel(root.inp.cursorTheme) + "  ·  " + root.inp.cursorSize + " px"
+                                    color: root.muted
+                                    font.pixelSize: 11
+                                    elide: Text.ElideRight
+                                    Layout.maximumWidth: 240
+                                }
+                            }
+                            Item { Layout.fillWidth: true }
+                            Rectangle {
+                                id: ptrNow
+                                readonly property var info: root.cursorInfo(root.inp.cursorTheme)
+                                visible: info !== null && info.preview !== ""
+                                Layout.preferredWidth: 72
+                                Layout.preferredHeight: 72
+                                radius: 14
+                                color: Qt.rgba(0.62, 0.62, 0.68, 0.55)      // mid-grey so black and white pointers both show
+                                border.width: 1
+                                border.color: root.glassEdge
+                                Image {
+                                    anchors.centerIn: parent
+                                    visible: ptrNow.info !== null
+                                    source: ptrNow.info && ptrNow.info.preview !== "" ? "file://" + ptrNow.info.preview : ""
+                                    readonly property real px: ptrNow.info && ptrNow.info.nominal > 0
+                                        ? Math.min(64, ptrNow.info.pw * root.inp.cursorSize / ptrNow.info.nominal) : 32
+                                    width: px
+                                    height: px * (ptrNow.info && ptrNow.info.pw > 0 ? ptrNow.info.ph / ptrNow.info.pw : 1)
+                                    fillMode: Image.PreserveAspectFit
+                                    smooth: true
+                                    mipmap: true
+                                    asynchronous: true
+                                }
+                            }
+                            SportChip {
+                                theme: root
+                                label: "Back to default"
+                                onClicked: root.resetCursor()
+                            }
+                        }
+
+                        // size
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Text { Layout.fillWidth: true; text: "Size"; color: root.fg; font.pixelSize: 12 }
+                            Text { text: root.inp.cursorSize + " px"; color: root.muted; font.pixelSize: 12 }
+                        }
+                        ValueBar {
+                            Layout.fillWidth: true
+                            theme: root
+                            value: (root.inp.cursorSize - 16) / 80
+                            onMoved: v => root.setCursor("cursorSize", Math.round((16 + v * 80) / 2) * 2)
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 6
+                            Text { Layout.fillWidth: true; text: "Quick size"; color: root.muted; font.pixelSize: 11 }
+                            Repeater {
+                                model: [{ n: "Small", px: 20 }, { n: "Normal", px: 24 }, { n: "Big", px: 32 }, { n: "Large", px: 48 }, { n: "Huge", px: 64 }]
+                                delegate: SportChip {
+                                    required property var modelData
+                                    theme: root
+                                    label: modelData.n
+                                    active: root.inp.cursorSize === modelData.px
+                                    onClicked: root.setCursor("cursorSize", modelData.px)
+                                }
+                            }
+                        }
+
+                        Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: root.glassEdge }
+
+                        // the themes you have
+                        Text { text: "Style"; color: root.fg; font.pixelSize: 12 }
+                        Flow {
+                            Layout.fillWidth: true
+                            spacing: 8
+                            Repeater {
+                                model: root.cursorThemes
+                                delegate: Rectangle {
+                                    id: ptrTile
+                                    required property var modelData
+                                    readonly property bool current: root.inp.cursorTheme === ptrTile.modelData.name
+                                    width: 104
+                                    height: 108
+                                    radius: 14
+                                    color: ptrTile.current ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.16) : (ptrMouse.containsMouse ? root.overlay : "transparent")
+                                    border.width: ptrTile.current ? 2 : 1
+                                    border.color: ptrTile.current ? root.accent : root.glassEdge
+                                    scale: ptrMouse.pressed ? 0.95 : 1
+                                    Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutBack } }
+                                    Behavior on color { ColorAnimation { duration: 150 } }
+
+                                    Item {
+                                        anchors.top: parent.top
+                                        anchors.topMargin: 8
+                                        anchors.horizontalCenter: parent.horizontalCenter
+                                        width: 56
+                                        height: 56
+                                        Rectangle { anchors.fill: parent; radius: 10; color: Qt.rgba(0.62, 0.62, 0.68, 0.55) }
+                                        Image {
+                                            anchors.centerIn: parent
+                                            visible: ptrTile.modelData.preview !== ""
+                                            source: ptrTile.modelData.preview !== "" ? "file://" + ptrTile.modelData.preview : ""
+                                            width: 48
+                                            height: 48 * (ptrTile.modelData.pw > 0 ? ptrTile.modelData.ph / ptrTile.modelData.pw : 1)
+                                            fillMode: Image.PreserveAspectFit
+                                            smooth: true
+                                            mipmap: true
+                                            asynchronous: true
+                                        }
+                                        Text {
+                                            anchors.centerIn: parent
+                                            visible: ptrTile.modelData.preview === ""
+                                            text: "?"
+                                            color: root.muted
+                                            font.pixelSize: 20
+                                        }
+                                    }
+                                    Text {
+                                        anchors.bottom: parent.bottom
+                                        anchors.bottomMargin: 8
+                                        anchors.left: parent.left
+                                        anchors.right: parent.right
+                                        anchors.leftMargin: 6
+                                        anchors.rightMargin: 6
+                                        horizontalAlignment: Text.AlignHCenter
+                                        text: root.cursorLabel(ptrTile.modelData.name)
+                                        wrapMode: Text.Wrap
+                                        maximumLineCount: 2
+                                        elide: Text.ElideRight
+                                        color: ptrTile.current ? root.fg : root.muted
+                                        font.pixelSize: 11
+                                        font.bold: ptrTile.current
+                                    }
+                                    MouseArea {
+                                        id: ptrMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: root.pickCursor(ptrTile.modelData.name)
+                                    }
+                                }
+                            }
+                        }
+                        Text {
+                            visible: root.cursorThemes.length === 0
+                            Layout.fillWidth: true
+                            text: "Looking for pointer styles…"
+                            color: root.muted
+                            font.pixelSize: 11
+                        }
+
+                        Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: root.glassEdge }
+
+                        // behaviour
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 6
+                            Text { Layout.fillWidth: true; text: "Hide while typing"; color: root.fg; font.pixelSize: 12 }
+                            SportChip { theme: root; label: "Off"; active: !root.inp.cursorHideTyping; onClicked: root.setCursor("cursorHideTyping", false) }
+                            SportChip { theme: root; label: "On"; active: root.inp.cursorHideTyping; onClicked: root.setCursor("cursorHideTyping", true) }
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 6
+                            Text { Layout.fillWidth: true; text: "Hide when not moving"; color: root.fg; font.pixelSize: 12 }
+                            Repeater {
+                                model: [{ n: "Never", s: 0 }, { n: "3 s", s: 3 }, { n: "10 s", s: 10 }, { n: "30 s", s: 30 }]
+                                delegate: SportChip {
+                                    required property var modelData
+                                    theme: root
+                                    label: modelData.n
+                                    active: root.inp.cursorIdle === modelData.s
+                                    onClicked: root.setCursor("cursorIdle", modelData.s)
+                                }
+                            }
+                        }
+
+                        Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: root.glassEdge }
+
+                        // more styles from the internet
+                        Text { text: "Get more styles"; color: root.fg; font.pixelSize: 12 }
+                        Flow {
+                            Layout.fillWidth: true
+                            spacing: 6
+                            Repeater {
+                                model: root.cursorCatalog
+                                delegate: SportChip {
+                                    required property var modelData
+                                    theme: root
+                                    icon: modelData.installed ? "" : ""
+                                    label: root.cursorBusy === modelData.key ? "Downloading…" : modelData.name
+                                    active: false
+                                    tip: modelData.installed ? "Already here. Pick it above." : modelData.note
+                                    opacity: root.cursorBusy !== "" && root.cursorBusy !== modelData.key ? 0.5 : 1
+                                    onClicked: if (!modelData.installed) root.getCursor(modelData.key)
+                                }
+                            }
+                        }
+                        Text {
+                            visible: root.cursorMsg !== ""
+                            Layout.fillWidth: true
+                            text: root.cursorMsg
+                            color: root.muted
+                            font.pixelSize: 11
+                            wrapMode: Text.Wrap
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: "Some programs only pick up a new pointer the next time they open."
+                            color: root.muted
+                            font.pixelSize: 11
+                            wrapMode: Text.Wrap
                         }
                     }
                 }

@@ -16,11 +16,11 @@ hl.window_rule({
 local gamingApps = "^(steam_app.*|gamescope)$"
 local gamingWorkspace = "name:gaming"
 
-hl.window_rule({ match = { content = "game" }, workspace = gamingWorkspace })
-hl.window_rule({ match = { xdg_tag = "^(.*game.*)$" }, workspace = gamingWorkspace, fullscreen_state = 2, content = "game", sync_fullscreen = true })
-hl.window_rule({ match = { class = gamingApps }, workspace = gamingWorkspace })
+-- (off: games open on your current desktop) hl.window_rule({ match = { content = "game" }, workspace = gamingWorkspace })
+hl.window_rule({ match = { xdg_tag = "^(.*game.*)$" }, fullscreen_state = 2, content = "game", sync_fullscreen = true })
+-- (off: games open on your current desktop) hl.window_rule({ match = { class = gamingApps }, workspace = gamingWorkspace })
 hl.window_rule({ match = { class = "^(steam)$", title = "^(Friends List)$" }, float = true })
-hl.window_rule({ match = { class = "^(steam)$", title = "^(Launching\\.{3})$" }, float = true, center = true, workspace = gamingWorkspace })
+hl.window_rule({ match = { class = "^(steam)$", title = "^(Launching\\.{3})$" }, float = true, center = true })
 hl.window_rule({
     match = {
         class         = gamingApps,
@@ -42,7 +42,7 @@ hl.window_rule({
     float            = true,
     fullscreen       = false,
     fullscreen_state = 0,
-    workspace        = gamingWorkspace,
+--     workspace        = gamingWorkspace,  (off: games open on your current desktop)
 })
 
 -- Apps
