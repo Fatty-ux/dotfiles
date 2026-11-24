@@ -54,6 +54,8 @@ copy "$HOME/.config/qt6ct"                "config/qt6ct"
 for s in login-wallpaper-setup dolphin-glass-setup thunar-setup; do
     [ -n "$(command -v "$s")" ] && copy "$(command -v "$s")" "bin/$s"
 done
+# list of every installed app, for setting up a new computer
+pacman -Qqe > "$DOTS/pkglist.txt" && echo "   saved: app list (pkglist.txt)"
 
 # LibreWolf: only the theme and settings, never the rest of the profile
 prefs="$(find "$HOME/.librewolf" "$HOME/.config/librewolf" "$HOME/.var/app/io.gitlab.librewolf-community" \
